@@ -1,0 +1,102 @@
+// tests/orchestrator/issue-parser.test.ts
+import { describe, it, expect } from 'vitest'
+import { parseReviewerOutput, deduplicateIssues } from '../../src/orchestrator/issue-parser'
+
+describe('parseReviewerOutput', () => {
+  it('should parse valid JSON block from response', () => {
+    const response = `Here is my review analysis.
+
+\`\`\`json
+{
+  "issues": [
+    {
+      "severity": "critical",
+      "category": "security",
+      "file": "src/auth.ts",
+      "line": 42,
+      "title": "SQL injection risk",
+      "description": "User input concatenated into query"
+    }
+  ],
+  "verdict": "request_changes",
+  "summary": "Critical security issue found"
+}
+\`\`\``
+    const result = parseReviewerOutput(response)
+    expect(result).not.toBeNull()
+    expect(result!.issues).toHaveLength(1)
+    expect(result!.issues[0].severity).toBe('critical')
+    expect(result!.verdict).toBe('request_changes')
+  })
+
+  it('should return null for response without JSON block', () => {
+    const response = 'This is just a plain text review with no JSON.'
+    const result = parseReviewerOutput(response)
+    expect(result).toBeNull()
+  })
+
+  it('should return null for malformed JSON', () => {
+    const response = '```json\n{ broken json }\n```'
+    const result = parseReviewerOutput(response)
+    expect(result).toBeNull()
+  })
+
+  it('should handle missing optional fields', () => {
+    const response = '```json\n{"issues":[],"verdict":"approve","summary":"ok"}\n```'
+    const result = parseReviewerOutput(response)
+    expect(result).not.toBeNull()
+    expect(result!.issues).toHaveLength(0)
+  })
+
+  it('should validate severity values', () => {
+    const response = `\`\`\`json
+{"issues":[{"severity":"invalid","category":"x","file":"a.ts","title":"t","description":"d"}],"verdict":"approve","summary":"ok"}
+\`\`\``
+    const result = parseReviewerOutput(response)
+    expect(result).not.toBeNull()
+    expect(result!.issues).toHaveLength(0) // invalid issue filtered out
+  })
+})
+
+describe('deduplicateIssues', () => {
+  it('should merge issues with same file and similar title', () => {
+    const issuesByReviewer = new Map([
+      ['claude', [
+        { severity: 'high' as const, category: 'security', file: 'src/auth.ts', line: 42, title: 'SQL injection risk', description: 'From claude' }
+      ]],
+      ['gemini', [
+        { severity: 'critical' as const, category: 'security', file: 'src/auth.ts', line: 42, title: 'SQL injection vulnerability', description: 'From gemini' }
+      ]]
+    ])
+    const merged = deduplicateIssues(issuesByReviewer)
+    expect(merged).toHaveLength(1)
+    expect(merged[0].raisedBy).toContain('claude')
+    expect(merged[0].raisedBy).toContain('gemini')
+    expect(merged[0].severity).toBe('critical') // keeps highest
+  })
+
+  it('should keep distinct issues separate', () => {
+    const issuesByReviewer = new Map([
+      ['claude', [
+        { severity: 'high' as const, category: 'security', file: 'src/auth.ts', line: 42, title: 'SQL injection', description: 'd1' }
+      ]],
+      ['gemini', [
+        { severity: 'medium' as const, category: 'performance', file: 'src/db.ts', line: 10, title: 'Slow query', description: 'd2' }
+      ]]
+    ])
+    const merged = deduplicateIssues(issuesByReviewer)
+    expect(merged).toHaveLength(2)
+  })
+
+  it('should sort by severity', () => {
+    const issuesByReviewer = new Map([
+      ['claude', [
+        { severity: 'low' as const, category: 'style', file: 'a.ts', title: 'Naming', description: 'd1' },
+        { severity: 'critical' as const, category: 'security', file: 'b.ts', title: 'Injection', description: 'd2' }
+      ]]
+    ])
+    const merged = deduplicateIssues(issuesByReviewer)
+    expect(merged[0].severity).toBe('critical')
+    expect(merged[1].severity).toBe('low')
+  })
+})
