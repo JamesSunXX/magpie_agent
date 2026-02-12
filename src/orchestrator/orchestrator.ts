@@ -8,12 +8,11 @@ import type {
   OrchestratorOptions,
   TokenUsage,
   ReviewerStatus,
-  ReviewIssue,
   MergedIssue
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
-import { parseReviewerOutput, deduplicateIssues, parseFocusAreas } from './issue-parser.js'
+import { parseReviewerOutput, parseFocusAreas } from './issue-parser.js'
 import { formatCallChainForReviewer } from '../context-gatherer/collectors/reference-collector.js'
 
 export class DebateOrchestrator {
@@ -590,25 +589,9 @@ Previous rounds discussion:`
     return this.reviewers
   }
 
-  /** Extract and deduplicate structured issues from all debate messages.
-   *  Falls back to AI structurization if no JSON blocks found. */
+  /** Extract structured issues from review discussion using AI.
+   *  Always uses the summarizer to produce consistent, controlled output. */
   private async extractIssues(): Promise<MergedIssue[]> {
-    const issuesByReviewer = new Map<string, ReviewIssue[]>()
-
-    for (const msg of this.conversationHistory) {
-      if (msg.reviewerId === 'user') continue
-      const parsed = parseReviewerOutput(msg.content)
-      if (parsed && parsed.issues.length > 0) {
-        // Use latest round's issues for each reviewer (overwrite previous)
-        issuesByReviewer.set(msg.reviewerId, parsed.issues)
-      }
-    }
-
-    if (issuesByReviewer.size > 0) {
-      return deduplicateIssues(issuesByReviewer)
-    }
-
-    // No structured JSON found — ask the summarizer to extract issues from the conversation
     return this.structurizeIssues()
   }
 
