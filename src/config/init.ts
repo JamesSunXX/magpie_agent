@@ -158,7 +158,7 @@ analyzer:
     6. **Suggested Review Focus** - List 2-4 key areas reviewers should focus on for THIS specific PR
 
     Use 'gh pr view' and 'gh pr diff' to get the PR details.
-    Be concise but thorough.
+    Be concise but thorough. Start your response directly with the analysis — do NOT include any preamble, thinking, or meta-commentary like "Here's my analysis" or "Let me look at this".
 
 # Summarizer configuration
 summarizer:
