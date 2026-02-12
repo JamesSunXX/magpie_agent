@@ -253,29 +253,31 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     this.summarizer.provider.startSession?.(`Magpie | ${label} | summarizer`)
 
     try {
-      // Run context gathering first (if enabled)
-      if (this.contextGatherer) {
-        this.options.onWaiting?.('context-gatherer')
-        try {
-          const diff = this.extractDiffFromPrompt(prompt)
-          this.gatheredContext = await this.contextGatherer.gather(diff, label, 'main')
-          this.options.onContextGathered?.(this.gatheredContext)
-        } catch (error) {
-          // Context gathering is optional, continue without it
-          console.warn('Context gathering failed:', error)
+      // Run context gathering and analysis in parallel (they're independent)
+      const contextPromise = this.contextGatherer
+        ? (async () => {
+            this.options.onWaiting?.('context-gatherer')
+            try {
+              const diff = this.extractDiffFromPrompt(prompt)
+              this.gatheredContext = await this.contextGatherer!.gather(diff, label, 'main')
+              this.options.onContextGathered?.(this.gatheredContext)
+            } catch (error) {
+              console.warn('Context gathering failed:', error)
+            }
+          })()
+        : Promise.resolve()
+
+      const analysisPromise = (async () => {
+        const analyzeMessages: Message[] = [{ role: 'user', content: prompt }]
+        this.options.onWaiting?.('analyzer')
+        for await (const chunk of this.analyzer.provider.chatStream(analyzeMessages, this.analyzer.systemPrompt)) {
+          this.analysis += chunk
+          this.options.onMessage?.('analyzer', chunk)
         }
-      }
+        this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), this.analysis)
+      })()
 
-      // Run pre-analysis (with streaming)
-      const analyzeMessages: Message[] = [{ role: 'user', content: prompt }]
-
-      // Stream the analysis
-      this.options.onWaiting?.('analyzer')
-      for await (const chunk of this.analyzer.provider.chatStream(analyzeMessages, this.analyzer.systemPrompt)) {
-        this.analysis += chunk
-        this.options.onMessage?.('analyzer', chunk)
-      }
-      this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), this.analysis)
+      await Promise.all([contextPromise, analysisPromise])
 
       // Post-analysis Q&A: let user ask specific reviewers questions before debate
       if (this.options.onPostAnalysisQA) {
