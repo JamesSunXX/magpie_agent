@@ -67,7 +67,27 @@ const REVIEW_PROMPT = `Review this PR thoroughly. Analyze the code changes and p
       - Code quality and maintainability
       - Any other issues you notice
 
-      Use 'gh pr view' and 'gh pr diff' to get the PR details.`
+      Use 'gh pr view' and 'gh pr diff' to get the PR details.
+
+      After your analysis, output your findings as a structured JSON block:
+      \`\`\`json
+      {
+        "issues": [
+          {
+            "severity": "critical|high|medium|low|nitpick",
+            "category": "security|performance|error-handling|style|correctness|...",
+            "file": "path/to/file.ts",
+            "line": 42,
+            "title": "One-line summary",
+            "description": "Detailed explanation",
+            "suggestedFix": "What to do about it"
+          }
+        ],
+        "verdict": "approve|request_changes|comment",
+        "summary": "Brief overall assessment"
+      }
+      \`\`\`
+      You may include free-form discussion before the JSON block.`
 
 export function generateConfig(selectedReviewerIds: string[]): string {
   const selectedReviewers = AVAILABLE_REVIEWERS.filter(r => selectedReviewerIds.includes(r.id))
