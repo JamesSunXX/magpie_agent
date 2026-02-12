@@ -7,10 +7,13 @@ import type {
   DebateResult,
   OrchestratorOptions,
   TokenUsage,
-  ReviewerStatus
+  ReviewerStatus,
+  ReviewIssue,
+  MergedIssue
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
+import { parseReviewerOutput, deduplicateIssues } from './issue-parser.js'
 
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
@@ -220,6 +223,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     // Get final conclusion from summarizer
     const finalConclusion = await this.getFinalConclusion(summaries)
 
+    const parsedIssues = this.extractIssues()
+
     return {
       prNumber: label,
       analysis: this.analysis,
@@ -227,7 +232,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       summaries,
       finalConclusion,
       tokenUsage: this.getTokenUsage(),
-      convergedAtRound
+      convergedAtRound,
+      ...(parsedIssues.length > 0 ? { parsedIssues } : {})
     }
   }
 
@@ -239,12 +245,12 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     this.taskPrompt = prompt
     let convergedAtRound: number | undefined
 
-    // Start sessions for reviewers that support it
+    // Start sessions for reviewers that support it (with descriptive names for session listings)
     for (const reviewer of this.reviewers) {
-      reviewer.provider.startSession?.()
+      reviewer.provider.startSession?.(`Magpie | ${label} | ${reviewer.id}`)
     }
-    this.analyzer.provider.startSession?.()
-    this.summarizer.provider.startSession?.()
+    this.analyzer.provider.startSession?.(`Magpie | ${label} | analyzer`)
+    this.summarizer.provider.startSession?.(`Magpie | ${label} | summarizer`)
 
     try {
       // Run context gathering first (if enabled)
@@ -411,6 +417,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const summaries = await this.collectSummaries()
       const finalConclusion = await this.getFinalConclusion(summaries)
 
+      const parsedIssues = this.extractIssues()
+
       return {
         prNumber: label,
         analysis: this.analysis,
@@ -419,7 +427,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         summaries,
         finalConclusion,
         tokenUsage: this.getTokenUsage(),
-        convergedAtRound
+        convergedAtRound,
+        ...(parsedIssues.length > 0 ? { parsedIssues } : {})
       }
     } finally {
       // End sessions
@@ -553,6 +562,23 @@ Previous rounds discussion:`
   // Update what a reviewer has seen after they respond
   private markAsSeen(reviewerId: string): void {
     this.lastSeenIndex.set(reviewerId, this.conversationHistory.length - 1)
+  }
+
+  /** Extract and deduplicate structured issues from all debate messages */
+  private extractIssues(): MergedIssue[] {
+    const issuesByReviewer = new Map<string, ReviewIssue[]>()
+
+    for (const msg of this.conversationHistory) {
+      if (msg.reviewerId === 'user') continue
+      const parsed = parseReviewerOutput(msg.content)
+      if (parsed && parsed.issues.length > 0) {
+        // Use latest round's issues for each reviewer (overwrite previous)
+        issuesByReviewer.set(msg.reviewerId, parsed.issues)
+      }
+    }
+
+    if (issuesByReviewer.size === 0) return []
+    return deduplicateIssues(issuesByReviewer)
   }
 
   private async collectSummaries(): Promise<DebateSummary[]> {

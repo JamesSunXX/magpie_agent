@@ -35,6 +35,7 @@ export interface DebateResult {
   finalConclusion: string
   tokenUsage: TokenUsage[]
   convergedAtRound?: number  // If converged early
+  parsedIssues?: MergedIssue[]   // Deduplicated structured issues (if reviewers output JSON)
 }
 
 export interface ReviewerStatus {
