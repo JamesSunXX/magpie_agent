@@ -715,6 +715,37 @@ export const reviewCommand = new Command('review')
       // Render markdown for terminal
       console.log(marked(fixMarkdown(result.finalConclusion)))
 
+      // Display structured issues table (if available)
+      if (result.parsedIssues && result.parsedIssues.length > 0) {
+        const issues = result.parsedIssues
+        const severityColors: Record<string, (s: string) => string> = {
+          critical: chalk.red.bold,
+          high: chalk.red,
+          medium: chalk.yellow,
+          low: chalk.blue,
+          nitpick: chalk.dim
+        }
+        const totalRaw = issues.reduce((sum, i) => sum + i.raisedBy.length, 0)
+
+        console.log(chalk.magenta.bold(`\n${'─'.repeat(50)}`))
+        console.log(chalk.magenta.bold(`  📋 Issues Found (${issues.length} unique, ${totalRaw} total across reviewers)`))
+        console.log(chalk.magenta.bold(`${'─'.repeat(50)}\n`))
+
+        for (let i = 0; i < issues.length; i++) {
+          const issue = issues[i]
+          const color = severityColors[issue.severity] || chalk.white
+          const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+          const reviewers = issue.raisedBy.map(r => chalk.cyan(r)).join(', ')
+
+          console.log(color(`  ${String(i + 1).padStart(2)}. [${issue.severity.toUpperCase().padEnd(8)}] ${issue.title}`))
+          console.log(chalk.dim(`      ${location}  [${reviewers}]`))
+          if (issue.suggestedFix) {
+            console.log(chalk.green(`      Fix: ${issue.suggestedFix.slice(0, 100)}`))
+          }
+          console.log()
+        }
+      }
+
       // Display token usage
       console.log(chalk.dim(`\n${'─'.repeat(50)}`))
       console.log(chalk.dim(`  📊 Token Usage (Estimated)`))
