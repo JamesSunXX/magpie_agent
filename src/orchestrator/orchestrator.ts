@@ -580,6 +580,11 @@ Previous rounds discussion:`
     this.lastSeenIndex.set(reviewerId, this.conversationHistory.length - 1)
   }
 
+  /** Expose reviewers for post-review discussion */
+  getReviewers(): Reviewer[] {
+    return this.reviewers
+  }
+
   /** Extract and deduplicate structured issues from all debate messages */
   private extractIssues(): MergedIssue[] {
     const issuesByReviewer = new Map<string, ReviewIssue[]>()

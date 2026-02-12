@@ -6,7 +6,7 @@ import { execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
 import { createProvider } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
-import type { Reviewer, ReviewerStatus } from '../orchestrator/types.js'
+import type { Reviewer, ReviewerStatus, MergedIssue } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
@@ -232,6 +232,200 @@ interface ReviewTarget {
   type: 'pr' | 'local' | 'branch' | 'files'
   label: string
   prompt: string  // The prompt telling AI what to review
+}
+
+async function interactiveCommentReview(
+  rl: ReturnType<typeof createInterface>,
+  issues: MergedIssue[],
+  reviewers: Reviewer[],
+  prNumber: string,
+  spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null }
+): Promise<void> {
+  const approved: { issue: MergedIssue; comment: string }[] = []
+
+  console.log(chalk.cyan('\n📝 Post-processing: Review each issue before posting to GitHub'))
+  console.log(chalk.dim('   [p] Post as-is  [e] Edit  [d] Discuss with reviewer  [s] Skip  [q] Stop\n'))
+
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i]
+    const severityColors: Record<string, (s: string) => string> = {
+      critical: chalk.red.bold, high: chalk.red, medium: chalk.yellow, low: chalk.blue, nitpick: chalk.dim
+    }
+    const color = severityColors[issue.severity] || chalk.white
+    const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+
+    console.log(chalk.bold(`\n${'─'.repeat(50)}`))
+    console.log(color(`  ${i + 1}/${issues.length} [${issue.severity.toUpperCase()}] ${issue.title}`))
+    console.log(chalk.dim(`  ${location}  [${issue.raisedBy.join(', ')}]`))
+    console.log()
+    console.log(`  ${issue.description}`)
+    if (issue.suggestedFix) {
+      console.log(chalk.green(`\n  Fix: ${issue.suggestedFix}`))
+    }
+
+    const action = await new Promise<string>(resolve => {
+      rl.question(chalk.yellow(`\n  Action [p/e/d/s/q]: `), resolve)
+    })
+
+    const choice = action.trim().toLowerCase()
+
+    if (choice === 'q') {
+      console.log(chalk.dim('  Stopping post-processing.'))
+      break
+    }
+
+    if (choice === 's' || choice === '') {
+      console.log(chalk.dim('  Skipped.'))
+      continue
+    }
+
+    if (choice === 'p') {
+      const comment = formatIssueForGitHub(issue)
+      approved.push({ issue, comment })
+      console.log(chalk.green('  ✓ Will post.'))
+      continue
+    }
+
+    if (choice === 'e') {
+      const edited = await new Promise<string>(resolve => {
+        rl.question(chalk.yellow('  Enter comment text: '), resolve)
+      })
+      if (edited.trim()) {
+        approved.push({ issue, comment: edited.trim() })
+        console.log(chalk.green('  ✓ Will post (edited).'))
+      }
+      continue
+    }
+
+    if (choice === 'd') {
+      // Discuss with reviewer
+      let targetReviewer: Reviewer | undefined
+
+      if (issue.raisedBy.length === 1) {
+        targetReviewer = reviewers.find(r => r.id === issue.raisedBy[0])
+      } else {
+        console.log(chalk.dim(`  Found by: ${issue.raisedBy.join(', ')}`))
+        const pickAnswer = await new Promise<string>(resolve => {
+          rl.question(chalk.yellow(`  Discuss with whom? [${issue.raisedBy.join('/')}]: `), resolve)
+        })
+        targetReviewer = reviewers.find(r => r.id === pickAnswer.trim())
+        if (!targetReviewer) {
+          targetReviewer = reviewers.find(r => r.id === issue.raisedBy[0])
+        }
+      }
+
+      if (targetReviewer) {
+        console.log(chalk.dim(`  Discussing with ${targetReviewer.id}. (Empty line to end discussion)`))
+        // Discussion loop
+        while (true) {
+          const question = await new Promise<string>(resolve => {
+            rl.question(chalk.yellow(`  You → ${targetReviewer!.id}: `), resolve)
+          })
+          if (!question.trim()) break
+
+          const discussPrompt = `Regarding this issue you found:
+[${issue.severity.toUpperCase()}] ${issue.title} at ${issue.file}${issue.line ? ':' + issue.line : ''}
+${issue.description}
+
+The human reviewer says: ${question}
+
+Respond concisely. If the human's point is valid, update your assessment. If asked, regenerate the comment text for this issue.`
+
+          let response = ''
+          if (spinnerRef.spinner) spinnerRef.spinner.stop()
+          const spinner = ora(`${targetReviewer.id} is thinking...`).start()
+
+          for await (const chunk of targetReviewer.provider.chatStream(
+            [{ role: 'user', content: discussPrompt }],
+            targetReviewer.systemPrompt
+          )) {
+            if (spinner.isSpinning) { spinner.stop() }
+            response += chunk
+            process.stdout.write(chunk)
+          }
+          console.log()
+        }
+
+        // After discussion, decide
+        const postAction = await new Promise<string>(resolve => {
+          rl.question(chalk.yellow('  Post this issue? [p] Post / [e] Edit / [s] Skip: '), resolve)
+        })
+
+        if (postAction.trim().toLowerCase() === 'p') {
+          approved.push({ issue, comment: formatIssueForGitHub(issue) })
+          console.log(chalk.green('  ✓ Will post.'))
+        } else if (postAction.trim().toLowerCase() === 'e') {
+          const edited = await new Promise<string>(resolve => {
+            rl.question(chalk.yellow('  Enter comment text: '), resolve)
+          })
+          if (edited.trim()) {
+            approved.push({ issue, comment: edited.trim() })
+            console.log(chalk.green('  ✓ Will post (edited).'))
+          }
+        } else {
+          console.log(chalk.dim('  Skipped.'))
+        }
+      }
+      continue
+    }
+  }
+
+  // Batch post
+  if (approved.length === 0) {
+    console.log(chalk.dim('\nNo comments to post.'))
+    return
+  }
+
+  console.log(chalk.cyan.bold(`\n${'═'.repeat(50)}`))
+  console.log(chalk.cyan.bold(`  Ready to post ${approved.length} comments to PR #${prNumber}`))
+  console.log(chalk.cyan.bold(`${'═'.repeat(50)}`))
+
+  for (const { issue, comment } of approved) {
+    const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+    console.log(chalk.dim(`  - [${issue.severity.toUpperCase()}] ${issue.title} @ ${location}`))
+  }
+
+  const confirm = await new Promise<string>(resolve => {
+    rl.question(chalk.yellow('\n  Post all comments? (y/n): '), resolve)
+  })
+
+  if (confirm.trim().toLowerCase() === 'y') {
+    try {
+      const { buildPRReviewPayload, postPRReview, getPRHeadSha } = await import('../github/commenter.js')
+      const headSha = getPRHeadSha(prNumber)
+      const overallVerdict = approved.some(a => a.issue.severity === 'critical' || a.issue.severity === 'high')
+        ? 'request_changes' : 'comment'
+      const payload = buildPRReviewPayload(
+        approved.map(a => a.issue),
+        overallVerdict,
+        headSha
+      )
+      // Override comments with user-edited text
+      payload.comments = approved
+        .filter(a => a.issue.line != null)
+        .map(a => ({ path: a.issue.file, line: a.issue.line!, body: a.comment }))
+      payload.body = approved
+        .filter(a => a.issue.line == null)
+        .map(a => a.comment)
+        .join('\n\n---\n\n')
+
+      postPRReview(prNumber, payload)
+      console.log(chalk.green(`\n  ✓ Posted ${approved.length} comments to PR #${prNumber}`))
+    } catch (error) {
+      console.error(chalk.red(`\n  Failed to post: ${error instanceof Error ? error.message : error}`))
+    }
+  } else {
+    console.log(chalk.dim('  Cancelled.'))
+  }
+}
+
+function formatIssueForGitHub(issue: MergedIssue): string {
+  let comment = `**[${issue.severity.toUpperCase()}]** ${issue.title}\n\n${issue.description}`
+  if (issue.suggestedFix) {
+    comment += `\n\n**Suggested fix:** ${issue.suggestedFix}`
+  }
+  comment += `\n\n_Found by: ${issue.raisedBy.join(', ')} via Magpie_`
+  return comment
 }
 
 export const reviewCommand = new Command('review')
@@ -743,6 +937,20 @@ export const reviewCommand = new Command('review')
             console.log(chalk.green(`      Fix: ${issue.suggestedFix.slice(0, 100)}`))
           }
           console.log()
+        }
+      }
+
+      // Post-processing: comment flow (only for PR reviews with structured issues)
+      if (target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
+        if (!rl) {
+          rl = createInterface({ input: process.stdin, output: process.stdout })
+        }
+        const enterPostProcess = await new Promise<string>(resolve => {
+          rl!.question(chalk.yellow('\n  Enter post-processing to review and post comments to GitHub? (y/n): '), resolve)
+        })
+        if (enterPostProcess.trim().toLowerCase() === 'y') {
+          const prNum = target.label.match(/\d+/)?.[0] || target.label
+          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef)
         }
       }
 
