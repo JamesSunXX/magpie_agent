@@ -248,7 +248,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
     // Start sessions for reviewers that support it (with descriptive names for session listings)
     for (const reviewer of this.reviewers) {
-      reviewer.provider.startSession?.(`Magpie | ${label} | ${reviewer.id}`)
+      reviewer.provider.startSession?.(`Magpie | ${label} | reviewer:${reviewer.id}`)
     }
     this.analyzer.provider.startSession?.(`Magpie | ${label} | analyzer`)
     this.summarizer.provider.startSession?.(`Magpie | ${label} | summarizer`)
