@@ -52,5 +52,6 @@ export class GeminiProvider implements AIProvider {
         yield text
       }
     }
+    // Gemini SDK doesn't expose stream.close(); consuming all chunks is sufficient cleanup
   }
 }

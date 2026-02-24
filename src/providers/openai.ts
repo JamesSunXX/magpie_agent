@@ -49,11 +49,15 @@ export class OpenAIProvider implements AIProvider {
       stream: true
     })
 
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content
-      if (content) {
-        yield content
+    try {
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content
+        if (content) {
+          yield content
+        }
       }
+    } finally {
+      stream.controller.abort()
     }
   }
 }

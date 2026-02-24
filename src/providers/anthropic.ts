@@ -37,10 +37,14 @@ export class AnthropicProvider implements AIProvider {
       }))
     })
 
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        yield event.delta.text
+    try {
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          yield event.delta.text
+        }
       }
+    } finally {
+      stream.abort()
     }
   }
 }
