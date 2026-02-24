@@ -17,11 +17,14 @@ Multi-AI adversarial PR review tool. Let different AI models review your code li
 | `claude-code` | CLI | Claude Code CLI (uses your subscription, no API key) |
 | `codex-cli` | CLI | OpenAI Codex CLI (uses your subscription, no API key) |
 | `gemini-cli` | CLI | Gemini CLI (uses Google account login, no API key) |
+| `qwen-code` | CLI | Alibaba Qwen Code CLI (uses OAuth login, no API key) |
 | `claude-*` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
 | `gpt-*` | API | OpenAI API (requires OPENAI_API_KEY) |
 | `gemini-*` | API | Google Gemini API (requires GOOGLE_API_KEY) |
+| `minimax` | API | MiniMax API (requires MINIMAX_API_KEY) |
+| `mock` | Debug | Mock provider for testing (no API key, see [Debug Mode](#debug-mode)) |
 
-**Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli) - they're free with your subscriptions and don't require API keys.
+**Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code) - they're free with your subscriptions and don't require API keys.
 
 ## Installation
 
@@ -67,8 +70,10 @@ magpie discuss "Should we use microservices or monolith?"
 Config file is located at `~/.magpie/config.yaml`:
 
 ```yaml
-# AI Providers (CLI tools don't need config)
-providers: {}
+# AI Providers
+providers:
+  minimax:
+    api_key: your-minimax-api-key   # or set MINIMAX_API_KEY env var
 
 # Default settings
 defaults:
@@ -367,8 +372,10 @@ Reviewers that support sessions maintain context across debate rounds, reducing 
 |----------|-----------------|-------|
 | `claude-code` | Yes | Full session with explicit ID |
 | `codex-cli` | Yes | Full session with explicit ID |
+| `qwen-code` | Yes | Full session with explicit ID |
+| `minimax` | Yes | Conversation history maintained |
 | `gemini-cli` | No | Uses full context each round |
-| API providers | No | Uses full context each round |
+| Other API providers | No | Uses full context each round |
 
 ### Parallel Execution
 
@@ -438,6 +445,42 @@ While waiting for AI reviewers, enjoy programmer jokes:
 
 ```
 ⠋ claude is thinking... | Why do programmers confuse Halloween and Christmas? Because Oct 31 = Dec 25
+```
+
+### Post-Processing (PR Review)
+
+After the debate concludes, Magpie extracts structured issues and lets you review them one by one:
+
+- **Progress tracking**: Shows running tally of posted/edited/discussed/skipped issues
+- **Per-issue actions**:
+  - **Post** (`y`) — Posts as an inline comment on the exact PR line
+  - **Edit** (`e`) — Edit the comment before posting
+  - **Discuss** (`d`) — Start a multi-turn discussion with the reviewer
+  - **Skip** (`n`) — Skip this issue
+- **Inline comments**: Each issue is posted as an individual inline comment on the specific line in the PR diff. Falls back to a regular PR comment if the line is not in the diff.
+- **Auto-explain**: When you choose to discuss, the reviewer automatically explains the issue in detail first (where the problem is, why it's a problem, how to fix it) before you start asking questions.
+
+### Debug Mode
+
+Use the mock provider to test Magpie workflows without real AI calls:
+
+```bash
+# Enable mock mode globally (all models become mock)
+# In config: mock: true
+
+# Or use mock as a model name
+# reviewers:
+#   test-reviewer:
+#     model: mock
+#     prompt: "test prompt"
+
+# Environment variables
+MAGPIE_MOCK_RESPONSE="fixed response text"   # Return fixed text
+MAGPIE_MOCK_FILE=/path/to/response.txt       # Return content from file
+MAGPIE_MOCK_DELAY=100                         # Delay between words in ms (default: 50)
+
+# Example: test the discussion flow quickly
+MAGPIE_MOCK_DELAY=50 magpie review 123 --reviewers test-reviewer
 ```
 
 ## Development
