@@ -193,9 +193,6 @@ async function runDiscussion(
   options: DiscussOptions,
   spinner: ReturnType<typeof ora>
 ): Promise<{ result: DebateResult }> {
-  const maxRounds = parseInt(options.rounds, 10)
-  const checkConvergence = options.converge !== false && (config.defaults.check_convergence !== false)
-
   const reviewers: Reviewer[] = selectedIds.map(id => ({
     id,
     provider: createProvider(config.reviewers[id].model, config),
@@ -211,6 +208,10 @@ async function runDiscussion(
       systemPrompt: buildSystemPromptWithContext(DEVIL_ADVOCATE_PROMPT, daModel)
     })
   }
+
+  const isSoloDiscussion = reviewers.length === 1
+  const maxRounds = isSoloDiscussion ? 1 : parseInt(options.rounds, 10)
+  const checkConvergence = !isSoloDiscussion && options.converge !== false && (config.defaults.check_convergence !== false)
 
   const summarizer: Reviewer = {
     id: 'summarizer',
@@ -307,7 +308,7 @@ async function runDiscussion(
       }
 
       spinnerRef.parallelStatuses = null
-      spinnerRef.spinner = ora(`${baseLabel}...`).start()
+      spinnerRef.spinner = ora({ text: `${baseLabel}...`, discardStdin: false }).start()
       updateSpinner()
       spinnerRef.interval = setInterval(updateSpinner, 8000)
     },
@@ -465,9 +466,9 @@ export const discussCommand = new Command('discuss')
         selectedIds = await selectReviewers(allReviewerIds)
       }
 
-      if (selectedIds.length < 2) {
+      if (selectedIds.length < 1) {
         spinner.fail('Error')
-        console.error(chalk.red('Need at least 2 reviewers for a discussion'))
+        console.error(chalk.red('Need at least 1 reviewer'))
         process.exit(1)
       }
 

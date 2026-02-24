@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
 import { createProvider } from '../providers/factory.js'
+import type { Message } from '../providers/types.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { Reviewer, ReviewerStatus, MergedIssue } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
@@ -195,7 +196,7 @@ Provide a focused, helpful response.`
       console.log(chalk.cyan(`│`))
 
       if (spinnerRef.spinner) spinnerRef.spinner.stop()
-      spinnerRef.spinner = ora(`${reviewer.id} is thinking...`).start()
+      spinnerRef.spinner = ora({ text: `${reviewer.id} is thinking...`, discardStdin: false }).start()
 
       let response = ''
       try {
@@ -239,8 +240,16 @@ async function interactiveCommentReview(
   issues: MergedIssue[],
   reviewers: Reviewer[],
   prNumber: string,
-  spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null }
+  spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null },
+  debateResult: { analysis: string; messages: Array<{ reviewerId: string; content: string }>; summaries: Array<{ reviewerId: string; summary: string }> }
 ): Promise<void> {
+  // Guard against unhandled promise rejections from async generator cleanup
+  // (e.g., provider stream teardown) crashing the entire process
+  const rejectHandler = (reason: unknown) => {
+    console.error(chalk.red(`\n  Async error (non-fatal): ${reason}`))
+  }
+  process.on('unhandledRejection', rejectHandler)
+
   const approved: { issue: MergedIssue; comment: string }[] = []
 
   console.log(chalk.cyan('\n📝 Post-processing: Review each issue before posting to GitHub'))
@@ -320,55 +329,161 @@ async function interactiveCommentReview(
       }
 
       if (targetReviewer) {
+        try {
         console.log(chalk.dim(`  Discussing with ${targetReviewer.id}. (Empty line to end discussion)`))
-        // Discussion loop
+
+        // Multi-turn discussion with conversation history
+        // Include original debate context from this reviewer
+        const reviewerMessages = debateResult.messages
+          .filter(m => m.reviewerId === targetReviewer!.id)
+          .map(m => m.content)
+        const reviewerSummary = debateResult.summaries
+          .find(s => s.reviewerId === targetReviewer!.id)?.summary || ''
+        const originalContext = [
+          reviewerMessages.length > 0 ? `Your original review analysis:\n${reviewerMessages.join('\n\n')}` : '',
+          reviewerSummary ? `Your review summary:\n${reviewerSummary}` : '',
+          debateResult.analysis ? `Initial PR analysis:\n${debateResult.analysis}` : '',
+        ].filter(Boolean).join('\n\n---\n\n')
+
+        const issueContext = `${originalContext}\n\n---\n\nNow discussing this specific issue you raised:\n[${issue.severity.toUpperCase()}] ${issue.title} at ${issue.file}${issue.line ? ':' + issue.line : ''}\n${issue.description}${issue.suggestedFix ? '\nSuggested fix: ' + issue.suggestedFix : ''}\n\nThe human reviewer wants to discuss this with you. Respond concisely. If their points are valid, update your assessment. Be willing to change severity, revise the description, or withdraw the issue entirely if convinced.`
+        const conversationHistory: Message[] = []
+        let discussionHappened = false
+
         while (true) {
-          const question = await new Promise<string>(resolve => {
+          // Ensure stdin is flowing before each question (ora/spinner may have paused it)
+          if (process.stdin.isPaused?.()) {
+            process.stderr.write(chalk.dim('[debug] stdin was paused, resuming\n'))
+            process.stdin.resume()
+          }
+          const question = await new Promise<string>((resolve, reject) => {
+            if ((rl as any).closed) {
+              process.stderr.write(chalk.red('[debug] readline is CLOSED before question!\n'))
+              resolve('')
+              return
+            }
             rl.question(chalk.yellow(`  You → ${targetReviewer!.id}: `), resolve)
           })
           if (!question.trim()) break
 
-          const discussPrompt = `Regarding this issue you found:
-[${issue.severity.toUpperCase()}] ${issue.title} at ${issue.file}${issue.line ? ':' + issue.line : ''}
-${issue.description}
+          discussionHappened = true
 
-The human reviewer says: ${question}
-
-Respond concisely. If the human's point is valid, update your assessment. If asked, regenerate the comment text for this issue.`
+          // First message includes issue context; subsequent messages are just the user's words
+          const userContent = conversationHistory.length === 0
+            ? `${issueContext}\n\nHuman reviewer: ${question}`
+            : question
+          conversationHistory.push({ role: 'user', content: userContent })
 
           let response = ''
           if (spinnerRef.spinner) spinnerRef.spinner.stop()
-          const spinner = ora(`${targetReviewer.id} is thinking...`).start()
+          const discussSpinner = ora({ text: `${targetReviewer.id} is thinking...`, discardStdin: false }).start()
 
           for await (const chunk of targetReviewer.provider.chatStream(
-            [{ role: 'user', content: discussPrompt }],
+            conversationHistory,
             targetReviewer.systemPrompt
           )) {
-            if (spinner.isSpinning) { spinner.stop() }
             response += chunk
-            process.stdout.write(chunk)
           }
-          console.log()
+          discussSpinner.stop()
+          // Safety: restore stdin after spinner stop in case discardStdin was active
+          if (process.stdin.isPaused?.()) {
+            process.stderr.write(chalk.dim('[debug] stdin paused after spinner, resuming\n'))
+            process.stdin.resume()
+          }
+          console.log(chalk.cyan(`\n  ${targetReviewer.id}:`))
+          console.log(marked(fixMarkdown(response)))
+
+          conversationHistory.push({ role: 'assistant', content: response })
         }
 
-        // After discussion, decide
-        const postAction = await new Promise<string>(resolve => {
-          rl.question(chalk.yellow('  Post this issue? [p] Post / [e] Edit / [s] Skip: '), resolve)
-        })
-
-        if (postAction.trim().toLowerCase() === 'p') {
-          approved.push({ issue, comment: formatIssueForGitHub(issue) })
-          console.log(chalk.green('  ✓ Will post.'))
-        } else if (postAction.trim().toLowerCase() === 'e') {
-          const edited = await new Promise<string>(resolve => {
-            rl.question(chalk.yellow('  Enter comment text: '), resolve)
+        if (discussionHappened) {
+          // Ask AI to generate the final comment based on the full discussion
+          console.log(chalk.dim('\n  Generating final comment based on discussion...'))
+          conversationHistory.push({
+            role: 'user',
+            content: `Based on our discussion, generate the final GitHub review comment for this issue.\n- If we agreed to drop/withdraw this issue, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format, including updated severity, description, and suggested fix if applicable.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
           })
-          if (edited.trim()) {
-            approved.push({ issue, comment: edited.trim() })
-            console.log(chalk.green('  ✓ Will post (edited).'))
+
+          let finalComment = ''
+          const genSpinner = ora({ text: `${targetReviewer.id} generating comment...`, discardStdin: false }).start()
+          for await (const chunk of targetReviewer.provider.chatStream(
+            conversationHistory,
+            targetReviewer.systemPrompt
+          )) {
+            finalComment += chunk
+          }
+          genSpinner.stop()
+          console.log(chalk.dim('\n  Generated comment:'))
+          console.log(marked(fixMarkdown(finalComment)))
+
+          finalComment = finalComment.trim()
+
+          if (finalComment.toUpperCase() === 'SKIP') {
+            console.log(chalk.dim('  Issue withdrawn after discussion.'))
+          } else if (finalComment) {
+            const postAction = await new Promise<string>(resolve => {
+              rl.question(chalk.yellow('  [p] Post generated / [o] Post original / [e] Edit / [s] Skip: '), resolve)
+            })
+            const act = postAction.trim().toLowerCase()
+            if (act === 'p') {
+              approved.push({ issue, comment: finalComment })
+              console.log(chalk.green('  ✓ Will post (revised).'))
+            } else if (act === 'o') {
+              approved.push({ issue, comment: formatIssueForGitHub(issue) })
+              console.log(chalk.green('  ✓ Will post (original).'))
+            } else if (act === 'e') {
+              const edited = await new Promise<string>(resolve => {
+                rl.question(chalk.yellow('  Enter comment text: '), resolve)
+              })
+              if (edited.trim()) {
+                approved.push({ issue, comment: edited.trim() })
+                console.log(chalk.green('  ✓ Will post (edited).'))
+              }
+            } else {
+              console.log(chalk.dim('  Skipped.'))
+            }
+          } else {
+            // Generation failed, fall back to original
+            const postAction = await new Promise<string>(resolve => {
+              rl.question(chalk.yellow('  [p] Post original / [e] Edit / [s] Skip: '), resolve)
+            })
+            if (postAction.trim().toLowerCase() === 'p') {
+              approved.push({ issue, comment: formatIssueForGitHub(issue) })
+              console.log(chalk.green('  ✓ Will post.'))
+            } else if (postAction.trim().toLowerCase() === 'e') {
+              const edited = await new Promise<string>(resolve => {
+                rl.question(chalk.yellow('  Enter comment text: '), resolve)
+              })
+              if (edited.trim()) {
+                approved.push({ issue, comment: edited.trim() })
+                console.log(chalk.green('  ✓ Will post (edited).'))
+              }
+            } else {
+              console.log(chalk.dim('  Skipped.'))
+            }
           }
         } else {
-          console.log(chalk.dim('  Skipped.'))
+          // No discussion happened (user pressed Enter immediately)
+          const postAction = await new Promise<string>(resolve => {
+            rl.question(chalk.yellow('  [p] Post / [e] Edit / [s] Skip: '), resolve)
+          })
+          if (postAction.trim().toLowerCase() === 'p') {
+            approved.push({ issue, comment: formatIssueForGitHub(issue) })
+            console.log(chalk.green('  ✓ Will post.'))
+          } else if (postAction.trim().toLowerCase() === 'e') {
+            const edited = await new Promise<string>(resolve => {
+              rl.question(chalk.yellow('  Enter comment text: '), resolve)
+            })
+            if (edited.trim()) {
+              approved.push({ issue, comment: edited.trim() })
+              console.log(chalk.green('  ✓ Will post (edited).'))
+            }
+          } else {
+            console.log(chalk.dim('  Skipped.'))
+          }
+        }
+        } catch (err) {
+          console.log(chalk.red(`\n  Discussion error: ${err instanceof Error ? err.message : err}`))
+          console.log(chalk.dim('  Skipping this issue, moving to next...'))
         }
       }
       continue
@@ -422,6 +537,8 @@ Respond concisely. If the human's point is valid, update your assessment. If ask
   } else {
     console.log(chalk.dim('  Cancelled.'))
   }
+
+  process.removeListener('unhandledRejection', rejectHandler)
 }
 
 function formatIssueForGitHub(issue: MergedIssue): string {
@@ -590,10 +707,31 @@ export const reviewCommand = new Command('review')
           }
         }
 
+        // Pre-fetch PR diff and info so all reviewers (including API-only models) get the code
+        let prDiff = ''
+        let prTitle = ''
+        let prBody = ''
+        try {
+          prDiff = execSync(`gh pr diff ${prUrl}`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
+        } catch (e: any) {
+          console.error(chalk.yellow(`Warning: Could not pre-fetch PR diff: ${e.message?.slice(0, 100)}`))
+        }
+        try {
+          const prInfo = JSON.parse(execSync(`gh pr view ${prUrl} --json title,body`, { encoding: 'utf-8', timeout: 30000 }))
+          prTitle = prInfo.title || ''
+          prBody = prInfo.body || ''
+        } catch {
+          // Non-fatal: reviewers can still work with just the diff
+        }
+
+        const prPrompt = prDiff
+          ? `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}\n\nHere is the full PR diff:\n\n\`\`\`diff\n${prDiff}\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above — do NOT attempt to fetch it again.`
+          : `Please review ${prUrl}. Get the PR details and diff using any method available to you, then analyze the changes.`
+
         target = {
           type: 'pr',
           label: `PR #${prNumber}`,
-          prompt: `Please review ${prUrl}. Get the PR details and diff using any method available to you, then analyze the changes.`
+          prompt: prPrompt
         }
       } else {
         spinner.fail('Error')
@@ -637,9 +775,9 @@ export const reviewCommand = new Command('review')
         selectedIds = await selectReviewers(allReviewerIds, rl || undefined)
       }
 
-      if (selectedIds.length < 2) {
+      if (selectedIds.length < 1) {
         spinner.fail('Error')
-        console.error(chalk.red('Need at least 2 reviewers for a debate'))
+        console.error(chalk.red('Need at least 1 reviewer'))
         rl?.close()
         process.exit(1)
       }
@@ -681,9 +819,10 @@ export const reviewCommand = new Command('review')
         })
       }
 
-      const maxRounds = parseInt(options.rounds, 10)
-      // Convergence: default from config, CLI can override with --no-converge
-      const checkConvergence = options.converge !== false && (config.defaults.check_convergence !== false)
+      const isSoloReview = reviewers.length === 1
+      const maxRounds = isSoloReview ? 1 : parseInt(options.rounds, 10)
+      // Convergence: disable for solo review; otherwise default from config, CLI can override with --no-converge
+      const checkConvergence = !isSoloReview && options.converge !== false && (config.defaults.check_convergence !== false)
 
       console.log()
       console.log(chalk.bgBlue.white.bold(` ${target.label} Review `))
@@ -772,7 +911,7 @@ export const reviewCommand = new Command('review')
           }
 
           spinnerRef.parallelStatuses = null  // Reset for new waiting phase
-          spinnerRef.spinner = ora(`${baseLabel}...`).start()
+          spinnerRef.spinner = ora({ text: `${baseLabel}...`, discardStdin: false }).start()
           updateSpinner()
           // Update joke every 15 seconds
           spinnerRef.interval = setInterval(updateSpinner, 15000)
@@ -977,7 +1116,7 @@ export const reviewCommand = new Command('review')
         })
         if (enterPostProcess.trim().toLowerCase() === 'y') {
           const prNum = target.label.match(/\d+/)?.[0] || target.label
-          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef)
+          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result)
         }
       }
 
