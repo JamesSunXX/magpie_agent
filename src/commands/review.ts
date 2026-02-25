@@ -698,31 +698,35 @@ async function interactiveCommentReview(
 
   if (confirm.trim().toLowerCase() === 'y') {
     try {
-      const { postComment, getPRHeadSha } = await import('../github/commenter.js')
+      const { postReview, getPRHeadSha } = await import('../github/commenter.js')
       const headSha = getPRHeadSha(prNumber, target.repo)
-      let posted = 0
-      let failed = 0
 
-      for (const { issue, comment } of approved) {
-        const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
-        const result = postComment(prNumber, {
+      const result = postReview(
+        prNumber,
+        approved.map(({ issue, comment }) => ({
           path: issue.file,
           line: issue.line,
           body: comment,
-          commitSha: headSha,
-          repo: target.repo,
-        })
-        if (result.success) {
-          posted++
-          const mode = result.inline ? 'inline' : 'comment'
-          console.log(chalk.green(`  ✓ ${location} (${mode})`))
+        })),
+        headSha,
+        target.repo,
+      )
+
+      const modeLabels = { inline: 'inline', file: 'file-level', global: 'comment', failed: 'FAILED' } as const
+      for (const d of result.details) {
+        const location = d.line ? `${d.path}:${d.line}` : d.path
+        if (d.success) {
+          console.log(chalk.green(`  ✓ ${location} (${modeLabels[d.mode]})`))
         } else {
-          failed++
-          console.log(chalk.red(`  ✗ ${location}: ${result.error}`))
+          console.log(chalk.red(`  ✗ ${location}`))
         }
       }
 
-      console.log(chalk.green(`\n  Done: ${posted} posted${failed > 0 ? chalk.red(`, ${failed} failed`) : ''}`))
+      const parts = []
+      if (result.inline > 0) parts.push(`${result.inline} inline`)
+      if (result.fileLevel > 0) parts.push(`${result.fileLevel} file-level`)
+      if (result.global > 0) parts.push(`${result.global} global`)
+      console.log(chalk.green(`\n  Done: ${result.posted} posted (${parts.join(', ')})${result.failed > 0 ? chalk.red(`, ${result.failed} failed`) : ''}`))
     } catch (error) {
       console.error(chalk.red(`\n  Failed to post: ${error instanceof Error ? error.message : error}`))
     }
