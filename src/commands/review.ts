@@ -430,81 +430,113 @@ async function interactiveCommentReview(
         }
 
         if (discussionHappened) {
-          // Ask AI to generate the final comment based on the full discussion
-          console.log(chalk.dim('\n  Generating final comment based on discussion...'))
-          conversationHistory.push({
-            role: 'user',
-            content: `Based on our discussion, generate the final GitHub review comment for this issue.\n- If we agreed to drop/withdraw this issue, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format, including updated severity, description, and suggested fix if applicable.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
-          })
+          // Generate (and optionally regenerate) the final comment
+          let generatePrompt = `Based on our discussion, generate the final GitHub review comment for this issue.\n- If we agreed to drop/withdraw this issue, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format, including updated severity, description, and suggested fix if applicable.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+          let commentResolved = false
 
-          let finalComment = ''
-          const genSpinner = ora({ text: `${targetReviewer.id} generating comment...`, discardStdin: false }).start()
-          for await (const chunk of targetReviewer.provider.chatStream(
-            conversationHistory,
-            targetReviewer.systemPrompt
-          )) {
-            finalComment += chunk
-          }
-          genSpinner.stop()
-          console.log(chalk.dim('\n  Generated comment:'))
-          console.log(marked(fixMarkdown(finalComment)))
+          while (!commentResolved) {
+            console.log(chalk.dim('\n  Generating final comment based on discussion...'))
+            conversationHistory.push({ role: 'user', content: generatePrompt })
 
-          finalComment = finalComment.trim()
-
-          if (finalComment.toUpperCase() === 'SKIP') {
-            stats.discussed++
-            console.log(chalk.dim('  Issue withdrawn after discussion.'))
-          } else if (finalComment) {
-            const postAction = await new Promise<string>(resolve => {
-              rl.question(chalk.yellow('  [p] Post generated / [o] Post original / [e] Edit / [s] Skip: '), resolve)
-            })
-            const act = postAction.trim().toLowerCase()
-            if (act === 'p') {
-              approved.push({ issue, comment: finalComment })
-              stats.discussed++
-              console.log(chalk.green('  ✓ Will post (revised).'))
-            } else if (act === 'o') {
-              approved.push({ issue, comment: formatIssueForGitHub(issue) })
-              stats.discussed++
-              console.log(chalk.green('  ✓ Will post (original).'))
-            } else if (act === 'e') {
-              const edited = await new Promise<string>(resolve => {
-                rl.question(chalk.yellow('  Enter comment text: '), resolve)
-              })
-              if (edited.trim()) {
-                approved.push({ issue, comment: edited.trim() })
-                stats.discussed++
-                console.log(chalk.green('  ✓ Will post (edited).'))
-              } else {
-                stats.skipped++
-              }
-            } else {
-              stats.skipped++
-              console.log(chalk.dim('  Skipped.'))
+            let finalComment = ''
+            const genSpinner = ora({ text: `${targetReviewer.id} generating comment...`, discardStdin: false }).start()
+            for await (const chunk of targetReviewer.provider.chatStream(
+              conversationHistory,
+              targetReviewer.systemPrompt
+            )) {
+              finalComment += chunk
             }
-          } else {
-            // Generation failed, fall back to original
-            const postAction = await new Promise<string>(resolve => {
-              rl.question(chalk.yellow('  [p] Post original / [e] Edit / [s] Skip: '), resolve)
-            })
-            if (postAction.trim().toLowerCase() === 'p') {
-              approved.push({ issue, comment: formatIssueForGitHub(issue) })
+            genSpinner.stop()
+            console.log(chalk.dim('\n  Generated comment:'))
+            console.log(marked(fixMarkdown(finalComment)))
+            conversationHistory.push({ role: 'assistant', content: finalComment })
+
+            finalComment = finalComment.trim()
+
+            if (finalComment.toUpperCase() === 'SKIP') {
               stats.discussed++
-              console.log(chalk.green('  ✓ Will post.'))
-            } else if (postAction.trim().toLowerCase() === 'e') {
-              const edited = await new Promise<string>(resolve => {
-                rl.question(chalk.yellow('  Enter comment text: '), resolve)
+              console.log(chalk.dim('  Issue withdrawn after discussion.'))
+              commentResolved = true
+            } else if (finalComment) {
+              const postAction = await new Promise<string>(resolve => {
+                rl.question(chalk.yellow('  [p] Post generated / [o] Post original / [e] Edit / [r] Regenerate / [s] Skip: '), resolve)
               })
-              if (edited.trim()) {
-                approved.push({ issue, comment: edited.trim() })
+              const act = postAction.trim().toLowerCase()
+              if (act === 'p') {
+                approved.push({ issue, comment: finalComment })
                 stats.discussed++
-                console.log(chalk.green('  ✓ Will post (edited).'))
+                console.log(chalk.green('  ✓ Will post (revised).'))
+                commentResolved = true
+              } else if (act === 'o') {
+                approved.push({ issue, comment: formatIssueForGitHub(issue) })
+                stats.discussed++
+                console.log(chalk.green('  ✓ Will post (original).'))
+                commentResolved = true
+              } else if (act === 'e') {
+                const edited = await new Promise<string>(resolve => {
+                  rl.question(chalk.yellow('  Enter comment text: '), resolve)
+                })
+                if (edited.trim()) {
+                  approved.push({ issue, comment: edited.trim() })
+                  stats.discussed++
+                  console.log(chalk.green('  ✓ Will post (edited).'))
+                } else {
+                  stats.skipped++
+                }
+                commentResolved = true
+              } else if (act === 'r') {
+                const regenPrompt = await new Promise<string>(resolve => {
+                  rl.question(chalk.yellow('  Regenerate instructions: '), resolve)
+                })
+                if (regenPrompt.trim()) {
+                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}\n\nRegenerate the GitHub review comment for this issue.\n- If you now believe this issue should be dropped, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                } else {
+                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                }
+                // Loop continues — will regenerate
               } else {
                 stats.skipped++
+                console.log(chalk.dim('  Skipped.'))
+                commentResolved = true
               }
             } else {
-              stats.skipped++
-              console.log(chalk.dim('  Skipped.'))
+              // Generation failed, fall back to original
+              const postAction = await new Promise<string>(resolve => {
+                rl.question(chalk.yellow('  [p] Post original / [e] Edit / [r] Regenerate / [s] Skip: '), resolve)
+              })
+              const act = postAction.trim().toLowerCase()
+              if (act === 'p') {
+                approved.push({ issue, comment: formatIssueForGitHub(issue) })
+                stats.discussed++
+                console.log(chalk.green('  ✓ Will post.'))
+                commentResolved = true
+              } else if (act === 'e') {
+                const edited = await new Promise<string>(resolve => {
+                  rl.question(chalk.yellow('  Enter comment text: '), resolve)
+                })
+                if (edited.trim()) {
+                  approved.push({ issue, comment: edited.trim() })
+                  stats.discussed++
+                  console.log(chalk.green('  ✓ Will post (edited).'))
+                } else {
+                  stats.skipped++
+                }
+                commentResolved = true
+              } else if (act === 'r') {
+                const regenPrompt = await new Promise<string>(resolve => {
+                  rl.question(chalk.yellow('  Regenerate instructions: '), resolve)
+                })
+                if (regenPrompt.trim()) {
+                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}\n\nRegenerate the GitHub review comment for this issue.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                } else {
+                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                }
+                // Loop continues — will regenerate
+              } else {
+                stats.skipped++
+                console.log(chalk.dim('  Skipped.'))
+                commentResolved = true
+              }
             }
           }
         } else {
