@@ -60,14 +60,16 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
   }
 ]
 
-const REVIEW_PROMPT = `Review this PR thoroughly. Analyze the code changes and provide feedback on:
-      - Code correctness and potential bugs
-      - Security concerns
-      - Performance implications
-      - Code quality and maintainability
-      - Any other issues you notice
+const REVIEW_PROMPT = `You are a thorough code reviewer. Your job is to find ALL issues — not just the obvious ones.
 
-      Use 'gh pr view' and 'gh pr diff' to get the PR details.
+      REVIEW METHOD:
+      1. Use 'gh pr view' and 'gh pr diff' to get the PR details
+      2. Go through EVERY changed file and EVERY changed function/block systematically
+      3. For each change, evaluate: correctness, security, performance, error handling, edge cases, maintainability
+      4. Do NOT stop after finding a few issues — exhaust every file and every change before concluding
+
+      IMPORTANT: Do not skip any changed file. Do not gloss over any changed function.
+      If a file has no issues, briefly note that you reviewed it and found nothing.
 
       After your analysis, output your findings as a structured JSON block:
       \`\`\`json

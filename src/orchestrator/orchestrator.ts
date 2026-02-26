@@ -496,14 +496,15 @@ ${this.gatheredContext.summary}
         callChainSection = '\n' + formatCallChainForReviewer(this.gatheredContext.rawReferences) + '\n'
       }
 
-      // First round - independent review, no other reviewers' opinions
+      // First round - independent, exhaustive review
       const prompt = `Task: ${this.taskPrompt}
 ${contextSection}${focusSection}${callChainSection}Here is the analysis:
 
 ${this.analysis}
 
-You are [${currentReviewerId}]. Please review and provide your independent assessment.
-Focus on finding real issues - be thorough and critical.`
+You are [${currentReviewerId}]. Review EVERY changed file and EVERY changed function/block — do not skip any.
+For each change, check: correctness, security, performance, error handling, edge cases, maintainability.
+If you reviewed a file and found no issues, say so briefly. Do not stop early.`
 
       return [{ role: 'user', content: prompt }]
     }
@@ -546,16 +547,18 @@ Focus on finding real issues - be thorough and critical.`
 
       return [{
         role: 'user',
-        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nRespond to their points - agree where valid, challenge where you disagree.`
+        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.`
       }]
     }
 
     // Non-session mode: full context with all previous rounds
     const debateContext = `You are [${currentReviewerId}] in a code review debate with [${otherReviewerIds.join('], [')}].
-Your shared goal: find real issues in the code and reach the best conclusion.
+Your shared goal: find ALL real issues in the code — leave nothing uncovered.
 
 IMPORTANT:
 - You are [${currentReviewerId}], the other reviewer${otherReviewerIds.length > 1 ? 's are' : ' is'} [${otherReviewerIds.join('], [')}]
+- Continue your own exhaustive review — cover any changed files or functions you haven't addressed yet
+- Point out what others MISSED — which files or changes did they skip or gloss over?
 - Challenge weak arguments - don't agree just to be polite
 - Acknowledge good points and build on them
 - If you disagree, explain why with evidence`
