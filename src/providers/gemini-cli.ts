@@ -52,16 +52,18 @@ export class GeminiCliProvider implements AIProvider {
 
   private runGemini(prompt: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args = ['-y', '-o', 'json']
+      const args = ['-y', '-o', 'json', '-p', '-']
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
-      args.push(prompt)
 
       const child = spawn('gemini', args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe']
       })
+
+      child.stdin.write(prompt)
+      child.stdin.end()
 
       let output = ''
       let error = ''
@@ -99,16 +101,18 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
-    const args = ['-y', '-o', 'stream-json']
+    const args = ['-y', '-o', 'stream-json', '-p', '-']
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
     }
-    args.push(prompt)
 
     const child = spawn('gemini', args, {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe']
     })
+
+    child.stdin.write(prompt)
+    child.stdin.end()
 
     const chunks: string[] = []
     let resolveNext: ((value: { chunk: string | null }) => void) | null = null
