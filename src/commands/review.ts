@@ -52,6 +52,7 @@ export const reviewCommand = new Command('review')
   .option('--session <id>', 'Resume specific session by ID')
   .option('--export <file>', 'Export completed review to markdown')
   .option('--skip-context', 'Skip context gathering phase')
+  .option('--no-post', 'Skip post-processing (GitHub comment flow)')
   .action(async (pr: string | undefined, options) => {
     const spinner = ora('Loading configuration...').start()
 
@@ -611,7 +612,7 @@ export const reviewCommand = new Command('review')
       }
 
       // Post-processing: comment flow for PR reviews
-      if (target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
+      if (options.post !== false && target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {
           rl = createInterface({ input: process.stdin, output: process.stdout })
         }
