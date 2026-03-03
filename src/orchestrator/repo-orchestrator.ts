@@ -131,31 +131,124 @@ export class RepoOrchestrator {
     const fileList = step.files.map(f => f.relativePath).join('\n')
     const focusAreas = this.options.focusAreas || ['security', 'performance', 'code-quality']
     const focusText = this.getFocusInstructions(focusAreas)
-    const prompt = `Review the following files in ${step.name}:\n${fileList}\n\n${focusText}\n\nFormat each issue as:\nISSUE: [location] - [description] - [severity: high/medium/low]`
+    const prompt = `Review the following files in ${step.name}:\n${fileList}\n\n${focusText}\n\nAfter your analysis, output your findings as a structured JSON block:\n\`\`\`json\n{\n  "issues": [\n    {\n      "severity": "critical|high|medium|low|nitpick",\n      "file": "path/to/file",\n      "line": 42,\n      "title": "One-line summary",\n      "description": "Detailed explanation",\n      "suggestedFix": "What to do about it"\n    }\n  ],\n  "summary": "Brief overall assessment"\n}\n\`\`\`\nYou may include free-form discussion before the JSON block.`
 
     for (const reviewer of this.reviewers) {
       const messages: Message[] = [{ role: 'user', content: prompt }]
       const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
       this.options.onMessage?.(reviewer.id, response)
 
-      // Parse issues from response
-      this.parseIssues(response)
+      // Parse issues from response (try JSON first, then regex, then AI extraction)
+      const issuesParsed = this.parseIssues(response)
+      if (issuesParsed === 0) {
+        // Fallback: use summarizer to extract issues from free-form text
+        await this.extractIssuesWithAI(response)
+      }
     }
   }
 
-  private parseIssues(response: string): void {
+  /**
+   * Parse issues from reviewer response.
+   * Strategy: JSON block → raw JSON object → legacy regex.
+   * Returns the number of issues parsed.
+   */
+  private parseIssues(response: string): number {
+    // Strategy 1: Parse ```json fenced block
+    const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
+    let jsonStr = jsonMatch?.[1]
+
+    // Strategy 2: Find raw JSON object with "issues" array
+    if (!jsonStr) {
+      const rawMatch = response.match(/\{[\s\S]*"issues"\s*:\s*\[[\s\S]*\][\s\S]*\}/)
+      if (rawMatch) jsonStr = rawMatch[0]
+    }
+
+    if (jsonStr) {
+      try {
+        const parsed = JSON.parse(jsonStr)
+        if (Array.isArray(parsed.issues)) {
+          let count = 0
+          for (const issue of parsed.issues) {
+            if (typeof issue === 'object' && issue.description) {
+              this.issueCounter++
+              count++
+              // Map 5-level severity to 3-level for reporter compatibility
+              const severityMap: Record<string, 'high' | 'medium' | 'low'> = {
+                critical: 'high', high: 'high', medium: 'medium', low: 'low', nitpick: 'low'
+              }
+              const severity = severityMap[issue.severity] || 'medium'
+              const location = issue.file
+                ? (issue.line ? `${issue.file}:${issue.line}` : issue.file)
+                : issue.location || 'unknown'
+              this.allIssues.push({
+                id: this.issueCounter,
+                location,
+                description: issue.title
+                  ? `${issue.title}: ${issue.description}`
+                  : issue.description,
+                severity,
+                consensus: '1/1',
+                suggestedFix: issue.suggestedFix
+              })
+            }
+          }
+          return count
+        }
+      } catch {
+        // JSON parse failed, fall through to regex
+      }
+    }
+
+    // Strategy 3: Legacy regex format (ISSUE: [location] - [description] - [severity: x])
     const issueRegex = /ISSUE:\s*\[([^\]]+)\]\s*-\s*\[([^\]]+)\]\s*-\s*\[severity:\s*(high|medium|low)\]/gi
     let match
+    let count = 0
 
     while ((match = issueRegex.exec(response)) !== null) {
       this.issueCounter++
+      count++
       this.allIssues.push({
         id: this.issueCounter,
         location: match[1],
         description: match[2],
         severity: match[3] as 'high' | 'medium' | 'low',
-        consensus: '1/1' // Will be updated after debate
+        consensus: '1/1'
       })
+    }
+
+    return count
+  }
+
+  /**
+   * AI fallback: use summarizer to extract structured issues from free-form review text.
+   */
+  private async extractIssuesWithAI(reviewText: string): Promise<void> {
+    const extractPrompt = `Extract all code review issues from the following review text. Output ONLY a JSON block:
+
+\`\`\`json
+{
+  "issues": [
+    {
+      "severity": "high|medium|low",
+      "file": "path/to/file",
+      "line": 42,
+      "title": "One-line summary",
+      "description": "Detailed explanation",
+      "suggestedFix": "Suggested fix"
+    }
+  ]
+}
+\`\`\`
+
+Review text:
+${reviewText.slice(0, 15000)}`
+
+    try {
+      const messages: Message[] = [{ role: 'user', content: extractPrompt }]
+      const response = await this.summarizer.provider.chat(messages, undefined)
+      this.parseIssues(response)
+    } catch {
+      // AI extraction failed, no issues captured for this response
     }
   }
 

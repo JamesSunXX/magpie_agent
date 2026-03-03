@@ -70,7 +70,7 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
 const REVIEW_PROMPT = `You are a thorough code reviewer. Your job is to find ALL issues — not just the obvious ones.
 
       REVIEW METHOD:
-      1. Use 'gh pr view' and 'gh pr diff' to get the PR details
+      1. Use locally available sources to gather PR/MR details and diff (local git changes, existing review artifacts, or GitLab merge request pages)
       2. Go through EVERY changed file and EVERY changed function/block systematically
       3. For each change, evaluate: correctness, security, performance, error handling, edge cases, maintainability
       4. Do NOT stop after finding a few issues — exhaust every file and every change before concluding
@@ -166,7 +166,7 @@ analyzer:
     5. **Things to note** - Important details reviewers should pay attention to
     6. **Suggested Review Focus** - List 2-4 key areas reviewers should focus on for THIS specific PR
 
-    Use 'gh pr view' and 'gh pr diff' to get the PR details.
+    Use locally available sources to get PR/MR details and diff (local git changes, existing review artifacts, or GitLab merge request pages).
     Be concise but thorough. Start your response directly with the analysis — do NOT include any preamble, thinking, or meta-commentary like "Here's my analysis" or "Let me look at this".
 
 # Summarizer configuration

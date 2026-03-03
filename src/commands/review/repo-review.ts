@@ -119,7 +119,7 @@ export async function askResume(session: ReviewSession): Promise<boolean> {
   return answer.trim() !== '2'
 }
 
-export async function handleRepoReview(options: { path?: string; ignore?: string[]; reanalyze?: boolean; reviewers?: string; all?: boolean; [key: string]: unknown }, config: MagpieConfig, spinner: ReturnType<typeof ora>): Promise<void> {
+export async function handleRepoReview(options: { path?: string; ignore?: string[]; reanalyze?: boolean; reviewers?: string; all?: boolean;[key: string]: unknown }, config: MagpieConfig, spinner: ReturnType<typeof ora>): Promise<void> {
   const cwd = process.cwd()
   const stateManager = new StateManager(cwd)
   await stateManager.init()
@@ -308,7 +308,30 @@ export async function executeFeatureReview(
   )
 
   if (remainingSteps.length === 0) {
+    // All features done — update status and generate report
+    if (session.status !== 'completed') {
+      session.status = 'completed'
+      session.updatedAt = new Date()
+      await stateManager.saveSession(session)
+    }
     console.log(chalk.green('\nAll features already reviewed!'))
+
+    // Generate report from saved results
+    const reporter = new MarkdownReporter()
+    const allIssues = Object.values(session.progress.featureResults)
+      .flatMap(r => r.issues || [])
+    const result = {
+      repoName: cwd.split('/').pop() || 'repo',
+      timestamp: new Date(),
+      stats,
+      architectureAnalysis: '',
+      issues: allIssues,
+      tokenUsage: { total: 0, cost: 0 },
+      featureResults: session.progress.featureResults
+    }
+    const report = reporter.generate(result)
+    console.log()
+    console.log(report)
     return
   }
 
