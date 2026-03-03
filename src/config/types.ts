@@ -42,6 +42,7 @@ export interface MagpieConfig {
     'claude-code'?: { enabled: boolean }
     'codex-cli'?: { enabled: boolean }
     'qwen-code'?: { enabled: boolean }
+    'kiro'?: { enabled: boolean }
     minimax?: ProviderConfig
   }
   mock?: boolean

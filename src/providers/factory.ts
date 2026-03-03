@@ -8,10 +8,11 @@ import { CodexCliProvider } from './codex-cli.js'
 import { GeminiCliProvider } from './gemini-cli.js'
 import { GeminiProvider } from './gemini.js'
 import { QwenCodeProvider } from './qwen-code.js'
+import { KiroProvider } from './kiro.js'
 import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
 
-export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'minimax' | 'mock' {
+export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
   if (model === 'claude-code') {
     return 'claude-code'
   }
@@ -23,6 +24,9 @@ export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'go
   }
   if (model === 'qwen-code') {
     return 'qwen-code'
+  }
+  if (model === 'kiro') {
+    return 'kiro'
   }
   if (model === 'minimax') {
     return 'minimax'
@@ -68,6 +72,11 @@ export function createProvider(model: string, config: MagpieConfig): AIProvider 
   // Qwen Code CLI doesn't need API key config (uses OAuth)
   if (providerName === 'qwen-code') {
     return new QwenCodeProvider()
+  }
+
+  // Kiro CLI doesn't need API key config (uses AWS subscription)
+  if (providerName === 'kiro') {
+    return new KiroProvider()
   }
 
   // Mock provider for debug mode — no API key needed

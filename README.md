@@ -18,13 +18,14 @@ Multi-AI adversarial PR review tool. Let different AI models review your code li
 | `codex-cli` | CLI | OpenAI Codex CLI (uses your subscription, no API key) |
 | `gemini-cli` | CLI | Gemini CLI (uses Google account login, no API key) |
 | `qwen-code` | CLI | Alibaba Qwen Code CLI (uses OAuth login, no API key) |
+| `kiro` | CLI | Kiro CLI (uses AWS subscription, no API key) |
 | `claude-*` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
 | `gpt-*` | API | OpenAI API (requires OPENAI_API_KEY) |
 | `gemini-*` | API | Google Gemini API (requires GOOGLE_API_KEY) |
 | `minimax` | API | MiniMax API (requires MINIMAX_API_KEY) |
 | `mock` | Debug | Mock provider for testing (no API key, see [Debug Mode](#debug-mode)) |
 
-**Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code) - they're free with your subscriptions and don't require API keys.
+**Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code, kiro) - they're free with your subscriptions and don't require API keys.
 
 ### Custom API Endpoints
 
