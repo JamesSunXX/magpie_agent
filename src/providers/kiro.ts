@@ -55,7 +55,7 @@ export class KiroProvider implements AIProvider {
             // Pass prompt as argument
             args.push(prompt)
 
-            const child = spawn('kiro', args, {
+            const child = spawn('kiro-cli', args, {
                 cwd: this.cwd,
                 stdio: ['pipe', 'pipe', 'pipe']
             })
@@ -73,14 +73,14 @@ export class KiroProvider implements AIProvider {
 
             child.on('close', (code) => {
                 if (code !== 0) {
-                    reject(new Error(`Kiro CLI exited with code ${code}: ${error}`))
+                    reject(new Error(`kiro-cli exited with code ${code}: ${error}`))
                 } else {
                     resolve(this.stripAnsiCodes(output).trim())
                 }
             })
 
             child.on('error', (err) => {
-                reject(new Error(`Failed to run kiro CLI: ${err.message}`))
+                reject(new Error(`Failed to run kiro-cli: ${err.message}`))
             })
         })
     }
@@ -94,7 +94,7 @@ export class KiroProvider implements AIProvider {
         // Pass prompt as argument
         args.push(prompt)
 
-        const child = spawn('kiro', args, {
+        const child = spawn('kiro-cli', args, {
             cwd: this.cwd,
             stdio: ['pipe', 'pipe', 'pipe']
         })
@@ -110,7 +110,7 @@ export class KiroProvider implements AIProvider {
             if (Date.now() - lastActivity > this.timeout) {
                 child.kill('SIGTERM')
                 done = true
-                error = new Error(`Kiro CLI timed out after ${this.timeout / 1000}s of inactivity`)
+                error = new Error(`kiro-cli timed out after ${this.timeout / 1000}s of inactivity`)
                 if (resolveNext) {
                     resolveNext({ chunk: null })
                 }
@@ -138,7 +138,7 @@ export class KiroProvider implements AIProvider {
             if (timeoutChecker) clearInterval(timeoutChecker)
             done = true
             if (code !== 0 && !error) {
-                error = new Error(`Kiro CLI exited with code ${code}`)
+                error = new Error(`kiro-cli exited with code ${code}`)
             }
             if (resolveNext) {
                 resolveNext({ chunk: null })
@@ -148,7 +148,7 @@ export class KiroProvider implements AIProvider {
         child.on('error', (err) => {
             if (timeoutChecker) clearInterval(timeoutChecker)
             done = true
-            error = new Error(`Failed to run kiro CLI: ${err.message}`)
+            error = new Error(`Failed to run kiro-cli: ${err.message}`)
             if (resolveNext) {
                 resolveNext({ chunk: null })
             }

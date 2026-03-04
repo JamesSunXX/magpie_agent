@@ -312,17 +312,21 @@ export const reviewCommand = new Command('review')
         systemPrompt: config.reviewers[id].prompt
       }))
 
+      // When only one reviewer is selected, use its model for analyzer/summarizer/contextGatherer
+      // When multiple reviewers are selected, use the original config models
+      const soloModel = selectedIds.length === 1 ? config.reviewers[selectedIds[0]].model : null
+
       // Create summarizer
       const summarizer: Reviewer = {
         id: 'summarizer',
-        provider: createProvider(config.summarizer.model, config),
+        provider: createProvider(soloModel || config.summarizer.model, config),
         systemPrompt: config.summarizer.prompt
       }
 
       // Create analyzer
       const analyzer: Reviewer = {
         id: 'analyzer',
-        provider: createProvider(config.analyzer.model, config),
+        provider: createProvider(soloModel || config.analyzer.model, config),
         systemPrompt: config.analyzer.prompt
       }
 
@@ -331,7 +335,7 @@ export const reviewCommand = new Command('review')
       const contextEnabled = !options.skipContext && (config.contextGatherer?.enabled !== false)
 
       if (contextEnabled) {
-        const contextModel = config.contextGatherer?.model || config.analyzer.model
+        const contextModel = soloModel || config.contextGatherer?.model || config.analyzer.model
         contextGatherer = new ContextGatherer({
           provider: createProvider(contextModel, config),
           language: config.defaults.language,
