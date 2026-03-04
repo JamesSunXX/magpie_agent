@@ -1,0 +1,7 @@
+export const ERROR_CODES = {
+  CAPABILITY_NOT_FOUND: 'CAPABILITY_NOT_FOUND',
+  INVALID_CONFIG: 'INVALID_CONFIG',
+  QUALITY_EVAL_FAILED: 'QUALITY_EVAL_FAILED',
+} as const
+
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES]

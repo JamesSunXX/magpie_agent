@@ -10,6 +10,18 @@ Multi-AI adversarial PR review tool. Let different AI models review your code li
 - **Fair Debate Model**: All reviewers in the same round see identical information - no unfair advantage from execution order
 - **Parallel Execution**: Same-round reviewers run concurrently for faster reviews
 
+## Architecture (V2)
+
+Magpie now follows a capability-oriented structure:
+
+- `src/cli/`: command registration and CLI entry
+- `src/core/`: shared runtime kernel (capability runner, state, repo/context/reporting abstractions)
+- `src/capabilities/`: domain modules (`review`, `discuss`, `trd`, `quality/unit-test-eval`)
+- `src/platform/`: config/provider/integration adapters
+- `src/shared/`: cross-cutting utilities, common errors, shared types
+
+Legacy modules under `src/commands`, `src/config`, `src/providers`, etc. are retained as compatibility bridges while V2 capability modules become the default extension surface.
+
 ## Supported AI Providers
 
 | Provider | Type | Description |
@@ -81,6 +93,9 @@ magpie discuss "Should we use microservices or monolith?"
 
 # Generate TRD from PRD markdown
 magpie trd /path/to/prd.md
+
+# Evaluate unit-test quality in current repo
+magpie quality unit-test-eval .
 ```
 
 ## Configuration

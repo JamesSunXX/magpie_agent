@@ -14,7 +14,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "check:boundaries": "node scripts/check-boundaries.mjs"
   },
   "keywords": [],
   "author": "",
