@@ -20,6 +20,8 @@ describe('Config Init', () => {
     const content = readFileSync(configPath, 'utf-8')
     expect(content).toContain('providers:')
     expect(content).toContain('reviewers:')
+    expect(content).toContain('trd:')
+    expect(content).toContain('default_reviewers:')
   })
 
   it('should not overwrite existing config', () => {

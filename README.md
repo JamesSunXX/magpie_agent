@@ -78,6 +78,9 @@ magpie review https://github.com/owner/repo/pull/12345
 
 # Start a discussion on any topic
 magpie discuss "Should we use microservices or monolith?"
+
+# Generate TRD from PRD markdown
+magpie trd /path/to/prd.md
 ```
 
 ## Configuration
@@ -156,6 +159,28 @@ contextGatherer:
       - ARCHITECTURE.md
       - DESIGN.md
     maxSize: 50000           # Max total size of doc content
+
+# TRD Generation (PRD markdown -> TRD)
+trd:
+  default_reviewers: [claude-code, codex-cli]
+  max_rounds: 3
+  language: zh
+  include_project_context: true
+  include_traceability: true
+  output:
+    same_dir_as_prd: true
+    trd_suffix: ".trd.md"
+    open_questions_suffix: ".open-questions.md"
+  preprocess:
+    image_reader:
+      enabled: true
+      command: "tesseract {image} stdout -l chi_sim+eng"
+      timeout_ms: 20000
+      retries: 1
+      on_failure: "continue_with_open_question"
+  domain:
+    require_human_confirmation: true
+    overview_required: true
 ```
 
 ## CLI Options
@@ -209,6 +234,27 @@ Options:
   -d, --devil-advocate      Add a Devil's Advocate to challenge consensus
   --list                    List all discuss sessions
   --resume <id>             Resume a discuss session with follow-up question
+```
+
+### TRD Command
+
+```bash
+magpie trd [prd.md] [options]
+
+Options:
+  -c, --config <path>         Path to config file
+  -r, --rounds <number>       Maximum debate rounds
+  -i, --interactive           Interactive domain debate mode
+  -o, --output <file>         Output TRD markdown file
+  --questions-output <file>   Output open questions markdown file
+  --reviewers <ids>           Comma-separated reviewer IDs
+  -a, --all                   Use all configured reviewers
+  --domain-overview-only      Only generate domain overview + draft domains
+  --domains-file <path>       Use confirmed domains yaml
+  --auto-accept-domains       Skip manual confirmation and accept draft domains
+  --no-ocr                    Disable OCR preprocessing for PRD images
+  --list                      List TRD sessions
+  --resume <id>               Resume TRD session with follow-up text
 ```
 
 ### Reviewer Selection

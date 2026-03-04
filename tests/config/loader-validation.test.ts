@@ -104,4 +104,18 @@ describe('loadConfig - validation', () => {
     vi.mocked(existsSync).mockReturnValue(false)
     expect(() => loadConfig('/path/to/missing.yaml')).toThrow('Config file not found')
   })
+
+  it('throws when trd.default_reviewers includes unknown reviewer', () => {
+    const bad = structuredClone(validConfig)
+    bad.trd = { default_reviewers: ['unknown-reviewer'] }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('unknown reviewer')
+  })
+
+  it('throws when trd.max_rounds <= 0', () => {
+    const bad = structuredClone(validConfig)
+    bad.trd = { max_rounds: 0 }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('trd.max_rounds must be > 0')
+  })
 })

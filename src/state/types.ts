@@ -1,6 +1,7 @@
 // src/state/types.ts
 import type { ReviewFocus } from '../orchestrator/repo-orchestrator.js'
 import type { ReviewIssue } from '../reporter/types.js'
+import type { DomainBoundary } from '../trd/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -48,6 +49,40 @@ export interface DiscussSession {
   status: 'active' | 'completed'
   reviewerIds: string[]
   rounds: DiscussRound[]
+}
+
+export type TrdSessionStage =
+  | 'overview_drafted'
+  | 'boundaries_confirmed'
+  | 'domain_trd_generated'
+  | 'integration_generated'
+  | 'completed'
+
+export interface TrdSessionRound {
+  roundNumber: number
+  prompt: string
+  summary: string
+  timestamp: Date
+}
+
+export interface TrdSession {
+  id: string
+  title: string
+  prdPath: string
+  createdAt: Date
+  updatedAt: Date
+  stage: TrdSessionStage
+  reviewerIds: string[]
+  domains: DomainBoundary[]
+  artifacts: {
+    domainOverviewPath: string
+    draftDomainsPath: string
+    confirmedDomainsPath: string
+    trdPath: string
+    openQuestionsPath: string
+    partialDir: string
+  }
+  rounds: TrdSessionRound[]
 }
 
 export interface ReviewSession {

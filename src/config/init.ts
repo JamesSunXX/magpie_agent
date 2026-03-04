@@ -139,6 +139,12 @@ export function generateConfig(selectedReviewerIds: string[]): string {
 
   // Determine analyzer model (prefer first selected reviewer)
   const analyzerModel = selectedReviewers[0]?.model || 'claude-code'
+  const trdDefaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
+  if (trdDefaultReviewers.length === 0) {
+    trdDefaultReviewers.push('claude-code', 'codex-cli')
+  } else if (trdDefaultReviewers.length === 1) {
+    trdDefaultReviewers.push(trdDefaultReviewers[0])
+  }
 
   const config = `# Magpie Configuration
 
@@ -196,6 +202,30 @@ contextGatherer:
       - ARCHITECTURE.md
       - DESIGN.md
     maxSize: 50000
+
+# TRD generation configuration (PRD Markdown -> multi-role TRD)
+trd:
+  default_reviewers: [${trdDefaultReviewers.join(', ')}]
+  max_rounds: 3
+  language: zh
+  include_project_context: true
+  include_traceability: true
+  output:
+    same_dir_as_prd: true
+    trd_suffix: ".trd.md"
+    open_questions_suffix: ".open-questions.md"
+  preprocess:
+    chunk_chars: 6000
+    max_chars: 120000
+    image_reader:
+      enabled: true
+      command: "tesseract {image} stdout -l chi_sim+eng"
+      timeout_ms: 20000
+      retries: 1
+      on_failure: "continue_with_open_question"
+  domain:
+    require_human_confirmation: true
+    overview_required: true
 `
 
   return config

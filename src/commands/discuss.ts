@@ -6,14 +6,14 @@ import { readFileSync, existsSync, writeFileSync } from 'fs'
 import { loadConfig } from '../config/loader.js'
 import type { MagpieConfig } from '../config/types.js'
 import { createProvider } from '../providers/factory.js'
-import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
-import type { Reviewer, DebateResult, ReviewerStatus } from '../orchestrator/types.js'
+import type { Reviewer, DebateResult, ReviewerStatus, OrchestratorOptions } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { StateManager } from '../state/index.js'
 import type { DiscussSession, DiscussRound } from '../state/types.js'
 import { loadProjectContext } from '../utils/context-loader.js'
+import { runDebateSession } from './discussion/runner.js'
 
 marked.setOptions({
   renderer: new TerminalRenderer({
@@ -280,12 +280,12 @@ async function runDiscussion(
     }
   }
 
-  const orchestrator = new DebateOrchestrator(reviewers, summarizer, analyzer, {
+  const orchestrationOptions: OrchestratorOptions = {
     maxRounds,
     interactive: !!options.interactive,
     checkConvergence,
     interruptState,
-    onWaiting: (reviewerId) => {
+    onWaiting: (reviewerId: string) => {
       flushBuffer()
       if (spinnerRef.spinner) spinnerRef.spinner.stop()
       if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
@@ -319,7 +319,7 @@ async function runDiscussion(
       updateSpinner()
       spinnerRef.interval = setInterval(updateSpinner, 8000)
     },
-    onParallelStatus: (round, statuses) => {
+    onParallelStatus: (round: number, statuses: ReviewerStatus[]) => {
       spinnerRef.parallelStatuses = statuses
       if (spinnerRef.spinner) {
         const joke = getRandomJoke()
@@ -327,7 +327,7 @@ async function runDiscussion(
         spinnerRef.spinner.text = `${statusLine} ${chalk.dim(`| ${joke}`)}`
       }
     },
-    onMessage: (reviewerId, chunk) => {
+    onMessage: (reviewerId: string, chunk: string) => {
       if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
       if (spinnerRef.spinner) { spinnerRef.spinner.stop(); spinnerRef.spinner = null }
       if (reviewerId !== currentReviewer) {
@@ -344,7 +344,7 @@ async function runDiscussion(
       }
       messageBuffer += chunk
     },
-    onRoundComplete: (round, converged) => {
+    onRoundComplete: (round: number, converged: boolean) => {
       console.log()
       if (converged) {
         console.log(chalk.yellow(`└─ Verdict: `) + chalk.green.bold(`CONVERGED`))
@@ -359,15 +359,23 @@ async function runDiscussion(
     onInteractive: options.interactive ? async () => {
       // Ensure stdin is flowing (ora spinner may have paused it)
       if (process.stdin.isPaused?.()) process.stdin.resume()
-      return new Promise((resolve) => {
+      return new Promise<string | null>((resolve) => {
         rl!.question(chalk.yellow('\nPress Enter to continue, type to interject, or q to end: '), (answer) => {
           resolve(answer || null)
         })
       })
     } : undefined
-  })
+  }
 
-  const result = await orchestrator.runStreaming('Discussion', prompt)
+  const result = await runDebateSession({
+    reviewers,
+    summarizer,
+    analyzer,
+    options: orchestrationOptions,
+    label: 'Discussion',
+    prompt,
+    streaming: true,
+  })
 
   flushBuffer()
   if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }

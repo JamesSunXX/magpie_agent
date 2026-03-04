@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs'
 import { parse } from 'yaml'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { MagpieConfig, ReviewerConfig } from './types.js'
+import type { MagpieConfig, ReviewerConfig, TrdConfig } from './types.js'
 import { logger } from '../utils/logger.js'
 
 export function expandEnvVars(value: string): string {
@@ -89,5 +89,27 @@ function validateConfig(config: MagpieConfig): void {
     if (prov && 'api_key' in prov && !(prov as { api_key: string }).api_key) {
       logger.warn(`providers.${name}.api_key is empty (ok if using CLI provider)`)
     }
+  }
+
+  if (config.trd) {
+    validateTrdConfig(config.trd, config.reviewers)
+  }
+}
+
+function validateTrdConfig(trd: TrdConfig, reviewers: Record<string, ReviewerConfig>): void {
+  if (trd.default_reviewers && !Array.isArray(trd.default_reviewers)) {
+    throw new Error('Config error: trd.default_reviewers must be an array')
+  }
+
+  if (trd.default_reviewers) {
+    for (const id of trd.default_reviewers) {
+      if (!reviewers[id]) {
+        throw new Error(`Config error: trd.default_reviewers includes unknown reviewer "${id}"`)
+      }
+    }
+  }
+
+  if (trd.max_rounds !== undefined && trd.max_rounds <= 0) {
+    throw new Error('Config error: trd.max_rounds must be > 0')
   }
 }

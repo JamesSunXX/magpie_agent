@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
-import type { ReviewSession, FeatureAnalysis, DiscussSession } from './types.js'
+import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession } from './types.js'
 
 export class StateManager {
   private baseDir: string
@@ -148,6 +148,56 @@ export class StateManager {
         if (file.endsWith('.json')) {
           const id = file.replace('.json', '')
           const session = await this.loadDiscussSession(id)
+          if (session) sessions.push(session)
+        }
+      }
+      sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      return sessions
+    } catch {
+      return []
+    }
+  }
+
+  // TRD session methods — stored in ~/.magpie/trd-sessions/
+  private get trdSessionsDir(): string {
+    return join(homedir(), '.magpie', 'trd-sessions')
+  }
+
+  async initTrdSessions(): Promise<void> {
+    await mkdir(this.trdSessionsDir, { recursive: true })
+  }
+
+  async saveTrdSession(session: TrdSession): Promise<void> {
+    await mkdir(this.trdSessionsDir, { recursive: true })
+    const filePath = join(this.trdSessionsDir, `${session.id}.json`)
+    await writeFile(filePath, JSON.stringify(session, null, 2))
+  }
+
+  async loadTrdSession(id: string): Promise<TrdSession | null> {
+    const filePath = join(this.trdSessionsDir, `${id}.json`)
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const data = JSON.parse(content)
+      data.createdAt = new Date(data.createdAt)
+      data.updatedAt = new Date(data.updatedAt)
+      data.rounds = (data.rounds || []).map((r: Record<string, unknown>) => ({
+        ...r,
+        timestamp: new Date(r.timestamp as string),
+      }))
+      return data as TrdSession
+    } catch {
+      return null
+    }
+  }
+
+  async listTrdSessions(): Promise<TrdSession[]> {
+    try {
+      const files = await readdir(this.trdSessionsDir)
+      const sessions: TrdSession[] = []
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          const id = file.replace('.json', '')
+          const session = await this.loadTrdSession(id)
           if (session) sessions.push(session)
         }
       }
