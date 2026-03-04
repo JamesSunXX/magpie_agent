@@ -52,6 +52,7 @@ describe('ImessageNotificationProvider', () => {
       method: 'private-api',
     })
     expect(firstPayload.text).toContain('Need review')
+    expect(firstPayload.message).toContain('Need review')
     expect(firstPayload.text).toContain('Session: session-1')
   })
 

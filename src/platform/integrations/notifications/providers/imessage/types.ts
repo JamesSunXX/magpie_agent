@@ -13,6 +13,7 @@ export interface ImessageTargetResult {
 export interface BlueBubblesMessageRequest {
   chatGuid: string
   text: string
+  message?: string
   method: 'private-api' | 'apple-script'
 }
 

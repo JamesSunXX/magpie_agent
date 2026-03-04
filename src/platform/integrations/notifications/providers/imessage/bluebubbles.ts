@@ -110,6 +110,7 @@ export async function dispatchBlueBubblesNotification(
       {
         chatGuid,
         text,
+        message: text,
         method,
       },
       ctx.timeoutMs,
