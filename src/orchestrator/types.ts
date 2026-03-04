@@ -1,5 +1,6 @@
 // src/orchestrator/types.ts
 import type { AIProvider } from '../providers/types.js'
+import type { ChatOptions } from '../providers/types.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
 
 export interface Reviewer {
@@ -50,6 +51,11 @@ export interface OrchestratorOptions {
   maxRounds: number
   interactive: boolean
   language?: string  // Output language instruction to inject into prompts
+  chatOptions?: {
+    analyzer?: ChatOptions
+    reviewer?: ChatOptions
+    summarizer?: ChatOptions
+  }
   onMessage?: (reviewerId: string, chunk: string) => void
   onRoundComplete?: (round: number, converged: boolean) => void
   onInteractive?: () => Promise<string | null>

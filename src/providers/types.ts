@@ -6,9 +6,18 @@ export interface Message {
   content: string
 }
 
+export interface ChatImageInput {
+  /** Absolute local path or remote URL */
+  source: string
+  /** Optional human label; useful for debugging and prompt context */
+  label?: string
+}
+
 export interface ChatOptions {
   /** Disable tool use for this call (e.g., for pure text extraction) */
   disableTools?: boolean
+  /** Optional images for multimodal models */
+  images?: ChatImageInput[]
 }
 
 export interface AIProvider {

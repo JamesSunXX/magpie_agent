@@ -12,6 +12,8 @@ export interface ImageReaderOptions {
   command: string
   timeoutMs: number
   retries: number
+  skipExampleImages?: boolean
+  exampleKeywords?: string[]
 }
 
 function isRemoteUrl(source: string): boolean {
@@ -37,6 +39,15 @@ function resolveLocalImage(source: string, prdPath: string): string {
   return join(dirname(prdPath), source)
 }
 
+function shouldSkipImage(image: ParsedImage, options: ImageReaderOptions): boolean {
+  if (!options.skipExampleImages) return false
+  const keywords = (options.exampleKeywords || []).map(k => k.toLowerCase()).filter(Boolean)
+  if (keywords.length === 0) return false
+
+  const haystack = `${image.alt} ${image.source}`.toLowerCase()
+  return keywords.some(keyword => haystack.includes(keyword))
+}
+
 async function runOcr(commandTemplate: string, imagePath: string, timeoutMs: number): Promise<string> {
   const command = commandTemplate.replace('{image}', `"${imagePath}"`)
   const { stdout } = await execAsync(command, {
@@ -55,6 +66,15 @@ export async function enrichImagesWithOcr(
 
   const result: ParsedImage[] = []
   for (const image of images) {
+    if (shouldSkipImage(image, options)) {
+      result.push({
+        ...image,
+        skipped: true,
+        skipReason: 'example-image',
+      })
+      continue
+    }
+
     let tempFile: string | null = null
     try {
       const resolved = isRemoteUrl(image.source)
@@ -97,4 +117,3 @@ export async function enrichImagesWithOcr(
 
   return result
 }
-

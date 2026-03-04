@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { withRetry } from '../utils/retry.js'
+import { loadImageAsBase64, toSupportedImageMimeType } from './image-utils.js'
 
 export class AnthropicProvider implements AIProvider {
   name = 'anthropic'
@@ -12,20 +13,65 @@ export class AnthropicProvider implements AIProvider {
     this.model = options.model
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
+    const imageBlocks: Anthropic.ImageBlockParam[] = []
+
+    if (options?.images && options.images.length > 0) {
+      for (const image of options.images) {
+        try {
+          const loaded = await loadImageAsBase64(image.source)
+          imageBlocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: toSupportedImageMimeType(loaded.mimeType),
+              data: loaded.base64,
+            },
+          })
+        } catch {
+          // Best effort: ignore images that fail to load.
+        }
+      }
+    }
+
+    const lastUserIndex = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') return i
+      }
+      return -1
+    })()
+
+    const anthropicMessages: Anthropic.MessageParam[] = messages.map((m, idx) => {
+      const role: Anthropic.MessageParam['role'] = m.role === 'assistant' ? 'assistant' : 'user'
+      const shouldAttachImages = idx === lastUserIndex && m.role === 'user' && imageBlocks.length > 0
+      if (!shouldAttachImages) {
+        return {
+          role,
+          content: m.content,
+        }
+      }
+      return {
+        role,
+        content: [
+          { type: 'text', text: m.content },
+          ...imageBlocks,
+        ],
+      }
+    })
+
     const response = await withRetry(() =>
       this.client.messages.create({
         model: this.model,
         max_tokens: 4096,
         system: systemPrompt,
-        messages: messages.map(m => ({
-          role: m.role === 'system' ? 'user' : m.role,
-          content: m.content
-        }))
+        stream: false,
+        messages: anthropicMessages,
       })
     )
 
-    const textBlock = response.content.find(block => block.type === 'text')
+    const textBlock = response.content.find(
+      (block): block is Anthropic.TextBlock => block.type === 'text'
+    )
     return textBlock?.type === 'text' ? textBlock.text : ''
   }
 

@@ -2,13 +2,17 @@ import { describe, it, expect, vi } from 'vitest'
 import { OpenAIProvider } from '../../src/providers/openai'
 
 let lastConstructorOptions: Record<string, unknown> = {}
+let lastCreatePayload: Record<string, unknown> = {}
 
 vi.mock('openai', () => ({
   default: class MockOpenAI {
     chat = {
       completions: {
-        create: vi.fn().mockResolvedValue({
-          choices: [{ message: { content: 'Mock response' } }]
+        create: vi.fn().mockImplementation(async (payload: Record<string, unknown>) => {
+          lastCreatePayload = payload
+          return {
+            choices: [{ message: { content: 'Mock response' } }]
+          }
         })
       }
     }
@@ -16,6 +20,10 @@ vi.mock('openai', () => ({
       lastConstructorOptions = options
     }
   }
+}))
+
+vi.mock('../../src/providers/image-utils.js', () => ({
+  loadImageAsDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,ZmFrZS1pbWFnZQ==')
 }))
 
 describe('OpenAIProvider', () => {
@@ -38,5 +46,19 @@ describe('OpenAIProvider', () => {
   it('should not set baseURL when not provided', () => {
     new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o' })
     expect(lastConstructorOptions.baseURL).toBeUndefined()
+  })
+
+  it('should send image parts when images are provided', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o' })
+    await provider.chat(
+      [{ role: 'user', content: '请看图并分析' }],
+      undefined,
+      { images: [{ source: 'https://example.com/image.png' }] }
+    )
+
+    const messages = lastCreatePayload.messages as Array<{ content: unknown }>
+    const content = messages[0].content as Array<{ type: string }>
+    expect(Array.isArray(content)).toBe(true)
+    expect(content.some(part => part.type === 'image_url')).toBe(true)
   })
 })

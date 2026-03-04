@@ -222,6 +222,8 @@ trd:
       command: "tesseract {image} stdout -l chi_sim+eng"
       timeout_ms: 20000
       retries: 1
+      skip_example_images: true
+      example_keywords: ["示例", "样例", "example", "sample", "demo", "mock"]
       on_failure: "continue_with_open_question"
   domain:
     require_human_confirmation: true

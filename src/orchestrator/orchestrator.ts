@@ -1,5 +1,5 @@
 // src/orchestrator/orchestrator.ts
-import type { Message } from '../providers/types.js'
+import type { AIProvider, ChatOptions, Message } from '../providers/types.js'
 import type {
   Reviewer,
   DebateMessage,
@@ -71,6 +71,18 @@ export class DebateOrchestrator {
     existing.input += this.estimateTokens(input)
     existing.output += this.estimateTokens(output)
     this.tokenUsage.set(reviewerId, existing)
+  }
+
+  private async chatWithOptionalOptions(
+    provider: AIProvider,
+    messages: Message[],
+    systemPrompt?: string,
+    options?: ChatOptions
+  ): Promise<string> {
+    if (!options) {
+      return provider.chat(messages, systemPrompt)
+    }
+    return provider.chat(messages, systemPrompt, options)
   }
 
   private getTokenUsage(): TokenUsage[] {
@@ -171,7 +183,12 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
   private async preAnalyze(prompt: string): Promise<string> {
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.analyzer.provider.chat(messages, this.analyzer.systemPrompt)
+    const response = await this.chatWithOptionalOptions(
+      this.analyzer.provider,
+      messages,
+      this.analyzer.systemPrompt,
+      this.options.chatOptions?.analyzer
+    )
     this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), response)
     return response
   }
@@ -208,7 +225,12 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           }
 
           const messages = this.buildMessages(reviewer.id)
-          const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+          const response = await this.chatWithOptionalOptions(
+            reviewer.provider,
+            messages,
+            reviewer.systemPrompt,
+            this.options.chatOptions?.reviewer
+          )
 
           const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
           this.trackTokens(reviewer.id, inputText, response)
@@ -750,7 +772,12 @@ Use reviewer IDs: ${reviewerIds}`
       const messages = this.buildMessages(reviewer.id)
       messages.push({ role: 'user', content: summaryPrompt })
 
-      const summary = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+      const summary = await this.chatWithOptionalOptions(
+        reviewer.provider,
+        messages,
+        reviewer.systemPrompt,
+        this.options.chatOptions?.reviewer
+      )
       const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
       this.trackTokens(reviewer.id, inputText, summary)
 
@@ -776,7 +803,12 @@ Use reviewer IDs: ${reviewerIds}`
 ${summaryText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.summarizer.provider.chat(messages, this.summarizer.systemPrompt)
+    const response = await this.chatWithOptionalOptions(
+      this.summarizer.provider,
+      messages,
+      this.summarizer.systemPrompt,
+      this.options.chatOptions?.summarizer
+    )
     this.trackTokens('summarizer', prompt + (this.summarizer.systemPrompt || ''), response)
     return response
   }

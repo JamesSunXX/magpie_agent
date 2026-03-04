@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 
 export class CodexCliProvider implements AIProvider {
@@ -33,11 +33,12 @@ export class CodexCliProvider implements AIProvider {
     this.session.end()
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
-    const result = await this.runCodex(prompt)
+    const { prompt: finalPrompt, codexImageFiles } = this.preparePromptAndImages(prompt, options)
+    const result = await this.runCodex(finalPrompt, codexImageFiles)
     this.session.markMessageSent()
     return result
   }
@@ -50,14 +51,46 @@ export class CodexCliProvider implements AIProvider {
     this.session.markMessageSent()
   }
 
-  private buildArgs(): string[] {
+  private buildArgs(imageFiles: string[]): string[] {
     const baseArgs = ['--json', '--dangerously-bypass-approvals-and-sandbox']
+    for (const file of imageFiles) {
+      baseArgs.push('--image', file)
+    }
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
       return ['exec', 'resume', this.sessionId, ...baseArgs, '-']
     }
     // New session or no session
     return ['exec', ...baseArgs, '-']
+  }
+
+  private preparePromptAndImages(
+    prompt: string,
+    options?: ChatOptions
+  ): { prompt: string; codexImageFiles: string[] } {
+    if (!options?.images || options.images.length === 0) {
+      return { prompt, codexImageFiles: [] }
+    }
+
+    const codexImageFiles: string[] = []
+    const remoteRefs: string[] = []
+    for (const image of options.images) {
+      if (/^https?:\/\//i.test(image.source)) {
+        remoteRefs.push(image.source)
+      } else {
+        codexImageFiles.push(image.source)
+      }
+    }
+
+    if (remoteRefs.length === 0) {
+      return { prompt, codexImageFiles }
+    }
+
+    const fallback = remoteRefs.map((src, idx) => `- RemoteImage${idx + 1}: ${src}`).join('\n')
+    return {
+      prompt: `${prompt}\n\nAdditional remote image references (analyze if accessible):\n${fallback}`,
+      codexImageFiles,
+    }
   }
 
   // Parse JSONL output: extract thread_id and agent_message text
@@ -80,9 +113,9 @@ export class CodexCliProvider implements AIProvider {
     return text
   }
 
-  private runCodex(prompt: string): Promise<string> {
+  private runCodex(prompt: string, imageFiles: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args = this.buildArgs()
+      const args = this.buildArgs(imageFiles)
       const child = spawn('codex', args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -118,7 +151,7 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private async *runCodexStream(prompt: string): AsyncGenerator<string, void, unknown> {
-    const args = this.buildArgs()
+    const args = this.buildArgs([])
     const child = spawn('codex', args, {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe']

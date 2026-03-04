@@ -5,6 +5,8 @@ export interface ParsedImage {
   resolvedPath?: string
   ocrText?: string
   error?: string
+  skipped?: boolean
+  skipReason?: string
 }
 
 export interface PrdRequirement {
@@ -62,4 +64,3 @@ export interface TrdSynthesisResult {
     decision: string
   }>
 }
-

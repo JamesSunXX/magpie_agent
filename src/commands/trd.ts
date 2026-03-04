@@ -2,13 +2,14 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import { randomBytes } from 'crypto'
-import { basename, join } from 'path'
+import { basename, dirname, isAbsolute, join } from 'path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { createInterface } from 'readline'
 import { stringify as stringifyYaml } from 'yaml'
 import type { MagpieConfig } from '../config/types.js'
 import { loadConfig } from '../config/loader.js'
 import { createProvider } from '../providers/factory.js'
+import type { ChatImageInput } from '../providers/types.js'
 import type { Reviewer } from '../orchestrator/types.js'
 import { StateManager } from '../state/index.js'
 import type { TrdSession } from '../state/types.js'
@@ -112,6 +113,17 @@ function resolveTrdDefaults(config: MagpieConfig) {
       command: trd.preprocess?.image_reader?.command || 'tesseract {image} stdout -l chi_sim+eng',
       timeoutMs: trd.preprocess?.image_reader?.timeout_ms || 20000,
       retries: trd.preprocess?.image_reader?.retries || 1,
+      skipExampleImages: trd.preprocess?.image_reader?.skip_example_images !== false,
+      exampleKeywords: trd.preprocess?.image_reader?.example_keywords || [
+        '示例',
+        '样例',
+        '例子',
+        'example',
+        'sample',
+        'demo',
+        'mock',
+        'placeholder',
+      ],
     },
   }
 }
@@ -239,6 +251,64 @@ function extractOverviewSummaryFromMarkdown(markdown: string): string {
     return trimmed
   }
   return '基于已确认领域重新生成 TRD。'
+}
+
+function isRemoteSource(source: string): boolean {
+  return /^https?:\/\//i.test(source)
+}
+
+function isExampleImage(
+  image: ParsedPrd['images'][number],
+  defaults: ReturnType<typeof resolveTrdDefaults>
+): boolean {
+  if (image.skipped && image.skipReason === 'example-image') return true
+  if (!defaults.imageReader.skipExampleImages) return false
+
+  const keywords = defaults.imageReader.exampleKeywords
+    .map(k => k.toLowerCase().trim())
+    .filter(Boolean)
+  if (keywords.length === 0) return false
+
+  const haystack = `${image.alt} ${image.source}`.toLowerCase()
+  return keywords.some(keyword => haystack.includes(keyword))
+}
+
+function resolveImageInputSource(image: ParsedPrd['images'][number], prdPath: string): string | null {
+  if (isRemoteSource(image.source)) return image.source
+
+  const candidates: string[] = []
+  if (image.resolvedPath) candidates.push(image.resolvedPath)
+  candidates.push(isAbsolute(image.source) ? image.source : join(dirname(prdPath), image.source))
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate
+  }
+
+  return null
+}
+
+function collectChatImages(
+  parsedPrd: ParsedPrd,
+  prdPath: string,
+  defaults: ReturnType<typeof resolveTrdDefaults>
+): ChatImageInput[] {
+  const images: ChatImageInput[] = []
+  const seen = new Set<string>()
+
+  for (const image of parsedPrd.images) {
+    if (isExampleImage(image, defaults)) continue
+
+    const source = resolveImageInputSource(image, prdPath)
+    if (!source || seen.has(source)) continue
+    seen.add(source)
+
+    images.push({
+      source,
+      label: image.alt || `IMG-${String(image.index).padStart(3, '0')}`,
+    })
+  }
+
+  return images
 }
 
 async function confirmDomains(
@@ -414,6 +484,7 @@ async function generateDomainOverview(
   parsedPrd: ParsedPrd,
   config: MagpieConfig,
   defaults: ReturnType<typeof resolveTrdDefaults>,
+  images: ChatImageInput[],
 ): Promise<DomainOverview> {
   const analyzerModel = config.analyzer.model
   const analyzer = createProvider(analyzerModel, config)
@@ -421,7 +492,8 @@ async function generateDomainOverview(
   const prompt = buildDomainOverviewPrompt(digest)
   const response = await analyzer.chat(
     [{ role: 'user', content: prompt }],
-    withProjectContext(TRD_ANALYZER_PROMPT, analyzerModel, config)
+    withProjectContext(TRD_ANALYZER_PROMPT, analyzerModel, config),
+    images.length > 0 ? { images } : undefined
   )
   return parseDomainOverviewOrFallback(response)
 }
@@ -430,6 +502,7 @@ async function generateDomainPartials(
   bundles: DomainRequirementBundle[],
   overview: DomainOverview,
   reviewerIds: string[],
+  images: ChatImageInput[],
   config: MagpieConfig,
   options: TrdOptions,
   defaults: ReturnType<typeof resolveTrdDefaults>,
@@ -472,6 +545,13 @@ async function generateDomainPartials(
           interactive: !!options.interactive,
           language: defaults.language,
           checkConvergence: options.converge !== false,
+          chatOptions: images.length > 0
+            ? {
+              analyzer: { images },
+              reviewer: { images },
+              summarizer: { images },
+            }
+            : undefined,
         },
         streaming: false,
       })
@@ -496,6 +576,7 @@ async function generateDomainPartials(
 function buildInitialOpenQuestions(parsedPrd: ParsedPrd): TrdSynthesisResult['openQuestions'] {
   const questions: TrdSynthesisResult['openQuestions'] = []
   for (const img of parsedPrd.images) {
+    if (img.skipped) continue
     if (!img.error) continue
     questions.push({
       id: `Q-IMG-${String(img.index).padStart(3, '0')}`,
@@ -513,6 +594,7 @@ async function synthesizeTrd(
   overview: DomainOverview,
   bundles: DomainRequirementBundle[],
   partials: Array<{ domainId: string; content: string }>,
+  images: ChatImageInput[],
   config: MagpieConfig,
   defaults: ReturnType<typeof resolveTrdDefaults>,
   followUp?: string
@@ -524,7 +606,8 @@ async function synthesizeTrd(
   const summarizer = createProvider(config.summarizer.model, config)
   const response = await summarizer.chat(
     [{ role: 'user', content: prompt }],
-    withProjectContext(INTEGRATION_SUMMARIZER_PROMPT, config.summarizer.model, config)
+    withProjectContext(INTEGRATION_SUMMARIZER_PROMPT, config.summarizer.model, config),
+    images.length > 0 ? { images } : undefined
   )
 
   const parsed = extractJsonBlock<TrdSynthesisResult>(response)
@@ -578,7 +661,9 @@ async function runNewTrd(
     }
   }
 
-  const overview = await generateDomainOverview(parsedPrd, config, defaults)
+  const chatImages = collectChatImages(parsedPrd, prdPath, defaults)
+
+  const overview = await generateDomainOverview(parsedPrd, config, defaults, chatImages)
   writeFileSync(paths.domainOverviewPath, renderDomainOverviewMarkdown(overview), 'utf-8')
   writeFileSync(paths.draftDomainsPath, renderDomainDraftYaml(overview), 'utf-8')
 
@@ -626,6 +711,7 @@ async function runNewTrd(
     bundles,
     { ...overview, domains: confirmedDomains },
     reviewerIds,
+    chatImages,
     config,
     options,
     defaults,
@@ -641,12 +727,17 @@ async function runNewTrd(
     { ...overview, domains: confirmedDomains },
     bundles,
     partials,
+    chatImages,
     config,
     defaults
   )
 
   writeFileSync(paths.trdPath, synthesis.trdMarkdown, 'utf-8')
   writeFileSync(paths.openQuestionsPath, renderOpenQuestionsMarkdown(synthesis), 'utf-8')
+
+  session.stage = 'integration_generated'
+  session.updatedAt = new Date()
+  await stateManager.saveTrdSession(session)
 
   session.stage = 'completed'
   session.updatedAt = new Date()
@@ -696,6 +787,7 @@ async function handleResume(
       images: await enrichImagesWithOcr(parsedPrd.images, session.prdPath, defaults.imageReader),
     }
   }
+  const chatImages = collectChatImages(parsedPrd, session.prdPath, defaults)
   const overviewMd = readFileSync(session.artifacts.domainOverviewPath, 'utf-8')
   const domainsYaml = readFileSync(session.artifacts.confirmedDomainsPath, 'utf-8')
   const confirmedDomains = parseConfirmedDomainsYaml(domainsYaml)
@@ -715,6 +807,7 @@ async function handleResume(
     bundles,
     overview,
     reviewerIds,
+    chatImages,
     config,
     options,
     defaults,
@@ -731,6 +824,7 @@ async function handleResume(
     overview,
     bundles,
     partials,
+    chatImages,
     config,
     defaults,
     followUp
@@ -738,6 +832,10 @@ async function handleResume(
 
   writeFileSync(session.artifacts.trdPath, synthesis.trdMarkdown, 'utf-8')
   writeFileSync(session.artifacts.openQuestionsPath, renderOpenQuestionsMarkdown(synthesis), 'utf-8')
+
+  session.stage = 'integration_generated'
+  session.updatedAt = new Date()
+  await stateManager.saveTrdSession(session)
 
   session.stage = 'completed'
   session.updatedAt = new Date()

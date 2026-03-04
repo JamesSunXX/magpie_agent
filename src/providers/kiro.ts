@@ -28,11 +28,11 @@ export class KiroProvider implements AIProvider {
         this.session.end()
     }
 
-    async chat(messages: Message[], systemPrompt?: string, _options?: ChatOptions): Promise<string> {
+    async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
         const prompt = this.session.shouldSendFullHistory()
             ? this.session.buildPrompt(messages, systemPrompt)
             : this.session.buildPromptLastOnly(messages)
-        const result = await this.runKiro(prompt)
+        const result = await this.runKiro(this.attachImageRefs(prompt, options))
         this.session.markMessageSent()
         return result
     }
@@ -43,6 +43,19 @@ export class KiroProvider implements AIProvider {
             : this.session.buildPromptLastOnly(messages)
         yield* this.runKiroStream(prompt)
         this.session.markMessageSent()
+    }
+
+    private attachImageRefs(prompt: string, options?: ChatOptions): string {
+        if (!options?.images || options.images.length === 0) return prompt
+
+        const refs = options.images
+            .map(image => `@{${image.source}}`)
+            .join('\n')
+        const list = options.images
+            .map((image, idx) => `- ${image.label || `Image ${idx + 1}`}: ${image.source}`)
+            .join('\n')
+
+        return `${prompt}\n\n请结合以下图片进行分析（图片引用）：\n${refs}\n\n图片路径清单：\n${list}`
     }
 
     private runKiro(prompt: string): Promise<string> {

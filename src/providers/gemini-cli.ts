@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 
 export class GeminiCliProvider implements AIProvider {
@@ -33,11 +33,11 @@ export class GeminiCliProvider implements AIProvider {
     this.session.end()
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
-    const result = await this.runGemini(prompt)
+    const result = await this.runGemini(this.attachImageRefs(prompt, options))
     this.session.markMessageSent()
     return result
   }
@@ -48,6 +48,16 @@ export class GeminiCliProvider implements AIProvider {
       : this.session.buildPrompt(messages, systemPrompt)
     yield* this.runGeminiStream(prompt)
     this.session.markMessageSent()
+  }
+
+  private attachImageRefs(prompt: string, options?: ChatOptions): string {
+    if (!options?.images || options.images.length === 0) return prompt
+
+    const refs = options.images
+      .map(image => `@{${image.source}}`)
+      .join('\n')
+
+    return `${prompt}\n\n请结合以下图片引用进行分析：\n${refs}`
   }
 
   private runGemini(prompt: string): Promise<string> {

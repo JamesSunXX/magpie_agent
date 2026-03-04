@@ -33,7 +33,7 @@ export class ClaudeCodeProvider implements AIProvider {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
-    const result = await this.runClaude(prompt, systemPrompt, options)
+    const result = await this.runClaude(this.attachImagePaths(prompt, options), systemPrompt, options)
     this.session.markMessageSent()
     return result
   }
@@ -44,6 +44,17 @@ export class ClaudeCodeProvider implements AIProvider {
       : this.session.buildPromptLastOnly(messages)
     yield* this.runClaudeStream(prompt, systemPrompt)
     this.session.markMessageSent()
+  }
+
+  private attachImagePaths(prompt: string, options?: ChatOptions): string {
+    if (!options?.images || options.images.length === 0) return prompt
+
+    const lines = options.images.map((image, idx) => {
+      const label = image.label || `Image ${idx + 1}`
+      return `- ${label}: ${image.source}`
+    })
+
+    return `${prompt}\n\n请直接读取并分析以下图片路径/URL：\n${lines.join('\n')}`
   }
 
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {

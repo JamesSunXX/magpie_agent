@@ -39,6 +39,8 @@ export interface TrdImageReaderConfig {
   command?: string
   timeout_ms?: number
   retries?: number
+  skip_example_images?: boolean
+  example_keywords?: string[]
   on_failure?: 'continue_with_open_question' | 'fail'
 }
 

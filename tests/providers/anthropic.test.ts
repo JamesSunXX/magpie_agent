@@ -2,12 +2,16 @@ import { describe, it, expect, vi } from 'vitest'
 import { AnthropicProvider } from '../../src/providers/anthropic.js'
 
 let lastConstructorOptions: Record<string, unknown> = {}
+let lastCreatePayload: Record<string, unknown> = {}
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
     messages = {
-      create: vi.fn().mockResolvedValue({
-        content: [{ type: 'text', text: 'Mock response' }]
+      create: vi.fn().mockImplementation(async (payload: Record<string, unknown>) => {
+        lastCreatePayload = payload
+        return {
+          content: [{ type: 'text', text: 'Mock response' }]
+        }
       }),
       stream: vi.fn().mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -23,6 +27,14 @@ vi.mock('@anthropic-ai/sdk', () => ({
   }
 }))
 
+vi.mock('../../src/providers/image-utils.js', () => ({
+  loadImageAsBase64: vi.fn().mockResolvedValue({
+    mimeType: 'image/png',
+    base64: 'ZmFrZS1pbWFnZQ==',
+  }),
+  toSupportedImageMimeType: vi.fn((mimeType: string) => mimeType === 'image/png' ? 'image/png' : 'image/png')
+}))
+
 describe('AnthropicProvider', () => {
   it('should have correct name', () => {
     const provider = new AnthropicProvider({ apiKey: 'test', model: 'claude-sonnet-4-20250514' })
@@ -33,6 +45,20 @@ describe('AnthropicProvider', () => {
     const provider = new AnthropicProvider({ apiKey: 'test', model: 'claude-sonnet-4-20250514' })
     const result = await provider.chat([{ role: 'user', content: 'Hello' }])
     expect(result).toBe('Mock response')
+  })
+
+  it('should send image blocks when images are provided', async () => {
+    const provider = new AnthropicProvider({ apiKey: 'test', model: 'claude-sonnet-4-20250514' })
+    await provider.chat(
+      [{ role: 'user', content: '请结合图片分析' }],
+      undefined,
+      { images: [{ source: 'https://example.com/image.png' }] }
+    )
+
+    const messages = lastCreatePayload.messages as Array<{ content: unknown }>
+    const first = messages[0].content as Array<{ type: string }>
+    expect(Array.isArray(first)).toBe(true)
+    expect(first.some(part => part.type === 'image')).toBe(true)
   })
 
   it('should stream responses', async () => {
