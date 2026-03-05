@@ -1,691 +1,381 @@
 # Magpie
 
-Multi-AI adversarial PR review tool. Let different AI models review your code like Linus Torvalds, generating more comprehensive reviews through debate.
+Magpie 是一个多模型协同/对抗的工程化 CLI，当前主要覆盖 5 类能力：
 
-## Core Concepts
+- `review`：多 AI 代码评审（PR、本地 diff、分支 diff、文件级、仓库级）
+- `discuss`：多 AI 议题辩论（可加入 Devil's Advocate）
+- `trd`：从 PRD Markdown 生成 TRD（含领域划分与开放问题）
+- `quality unit-test-eval`：单测质量评估
+- `loop`：目标驱动的阶段化执行闭环（含人工确认闸门）
 
-- **Same Perspective, Different Models**: All reviewers use the same prompt (Linus-style), but are powered by different AI models
-- **Natural Adversarial**: Differences between models naturally create disagreements and debates
-- **Anti-Sycophancy**: Explicitly tells AI they're debating with other AIs, preventing mutual agreement bias
-- **Fair Debate Model**: All reviewers in the same round see identical information - no unfair advantage from execution order
-- **Parallel Execution**: Same-round reviewers run concurrently for faster reviews
+## 当前项目总结（基于代码现状）
 
-## Architecture (V2)
+这是一个 **V2 capability 架构 + legacy 命令流并存** 的项目。
 
-Magpie now follows a capability-oriented structure:
+- 已完整走 capability runner：
+  - `loop`
+  - `quality/unit-test-eval`
+- 仍以 legacy command 为主流程：
+  - `review`
+  - `discuss`
+  - `trd`
+- CLI 统一入口：`src/cli.ts` -> `src/cli/program.ts`
+- 配置入口：`~/.magpie/config.yaml`
+- Provider 同时支持 CLI 型与 API 型模型
+- 会话与产物支持持久化，支持中断恢复
 
-- `src/cli/`: command registration and CLI entry
-- `src/core/`: shared runtime kernel (capability runner, state, repo/context/reporting abstractions)
-- `src/capabilities/`: domain modules (`review`, `discuss`, `trd`, `quality/unit-test-eval`)
-- `src/platform/`: config/provider/integration adapters
-- `src/shared/`: cross-cutting utilities, common errors, shared types
+## 工作原理图
 
-Legacy modules under `src/commands`, `src/config`, `src/providers`, etc. are retained as compatibility bridges while V2 capability modules become the default extension surface.
+### 1) 总体架构图（混合架构）
 
-## Process Docs
+```mermaid
+flowchart LR
+  U[User] --> C[magpie CLI]
+  C --> P[Commander Program]
 
-- PRD Review Workflow (zh): `docs/plans/2026-03-05-prd-review-workflow.md`
+  P --> L[Legacy Commands]
+  P --> R[Capability Runner]
 
-## Supported AI Providers
+  L --> L1[review]
+  L --> L2[discuss]
+  L --> L3[trd]
 
-| Provider | Type | Description |
-|----------|------|-------------|
-| `claude-code` | CLI | Claude Code CLI (uses your subscription, no API key) |
-| `codex-cli` | CLI | OpenAI Codex CLI (uses your subscription, no API key) |
-| `gemini-cli` | CLI | Gemini CLI (uses Google account login, no API key) |
-| `qwen-code` | CLI | Alibaba Qwen Code CLI (uses OAuth login, no API key) |
-| `kiro` | CLI | Kiro CLI (uses AWS subscription, no API key) |
-| `claude-*` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
-| `gpt-*` | API | OpenAI API (requires OPENAI_API_KEY) |
-| `gemini-*` | API | Google Gemini API (requires GOOGLE_API_KEY) |
-| `minimax` | API | MiniMax API (requires MINIMAX_API_KEY) |
-| `mock` | Debug | Mock provider for testing (no API key, see [Debug Mode](#debug-mode)) |
+  R --> K1[loop capability]
+  R --> K2[quality/unit-test-eval capability]
 
-**Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code, kiro) - they're free with your subscriptions and don't require API keys.
+  L1 --> O[Debate Orchestrator]
+  L2 --> O
+  L3 --> T[TRD Domain Pipeline]
 
-### Custom API Endpoints
+  O --> M[Providers]
+  T --> M
+  K1 --> M
 
-All API providers support custom `base_url` for connecting to compatible third-party services (Azure OpenAI, Ollama, vLLM, one-api, etc.):
+  K1 --> S[State Manager]
+  K1 --> N[Notification Router]
+  K2 --> Q[Test/Coverage Analyzer]
+
+  S --> FS1[(~/.magpie/*)]
+  L1 --> FS2[(./.magpie/*)]
+```
+
+### 2) `review` 辩论流程图
+
+```mermaid
+flowchart TD
+  A[输入评审目标: PR/local/branch/files/repo] --> B[加载配置与选择 reviewer]
+  B --> C{是否 repo 模式}
+
+  C -- 是 --> R1[仓库扫描 + feature 分析 + 会话持久化]
+  R1 --> R2[按 feature 执行 review]
+  R2 --> R3[汇总与导出]
+
+  C -- 否 --> D[构造目标 prompt 和 diff]
+  D --> E{是否开启 context gatherer}
+  E -- 是 --> F[采集系统上下文]
+  E -- 否 --> G[Analyzer 预分析]
+  F --> G
+
+  G --> H[多 reviewer 并行辩论]
+  H --> I{收敛检查}
+  I -- 未收敛 --> H
+  I -- 收敛或到达轮次上限 --> J[每个 reviewer 输出 summary]
+  J --> K[Summarizer 给出最终结论]
+  K --> L[结构化 issue 提取]
+  L --> M{PR 且允许 post?}
+  M -- 是 --> N[交互式逐条评论发布到 GitHub]
+  M -- 否 --> O[输出结果]
+```
+
+### 3) `loop` 阶段闭环与人工确认闸门
+
+```mermaid
+flowchart TD
+  A[loop run/resume] --> B[加载 loop 配置]
+  B --> C[生成或加载阶段计划]
+  C --> D[按 stage 执行]
+
+  D --> E[执行器模型产出阶段报告]
+  E --> F{是否测试阶段}
+  F -- unit_mock_test --> F1[运行 unit/mock 测试命令]
+  F -- integration_test --> F2[运行 integration 测试命令]
+  F -- 其他 --> G[评估阶段质量]
+  F1 --> G
+  F2 --> G
+
+  G --> H{是否需要人工确认}
+  H -- 否 --> I[写入 stage result]
+  H -- 是 --> J[写入 human_confirmation.md + 发通知]
+  J --> K{decision}
+  K -- approved --> I
+  K -- rejected/revise --> L[planner 生成重试指导 + executor 重试]
+  L --> G
+  K -- pending且不等待 --> P[session paused]
+
+  I --> M{是否最后阶段}
+  M -- 否 --> D
+  M -- 是 --> N[session completed]
+```
+
+## 目录结构
+
+```text
+src/
+  cli/                 # CLI 入口与命令注册
+  commands/            # legacy 命令实现（review/discuss/trd 等）
+  capabilities/        # capability 模块（review/discuss/trd/quality/loop）
+  core/                # capability runtime、context、reporting、repo 等基础设施
+  platform/            # config v2、provider 适配、通知集成
+  providers/           # 模型 provider 实现（CLI + API + mock）
+  orchestrator/        # 多 reviewer 辩论编排
+  context-gatherer/    # 评审前上下文采集
+  state/               # 会话状态持久化
+  reporter/            # markdown 报告
+
+tests/                 # Vitest 测试（按模块镜像）
+docs/plans/            # 设计与演进文档
+dist/                  # tsc 构建产物（不要手改）
+```
+
+## 命令现状一览
+
+| 命令 | 作用 | 实现路径 |
+|---|---|---|
+| `magpie init` | 初始化配置 | legacy command |
+| `magpie review` | 代码评审（PR/local/repo） | legacy command + orchestrator |
+| `magpie discuss` | 多模型议题辩论 | legacy command + orchestrator |
+| `magpie trd` | PRD -> TRD | legacy command |
+| `magpie quality unit-test-eval` | 单测质量评估 | capability runner |
+| `magpie loop` | 目标闭环执行 | capability runner |
+| `magpie stats` | 统计占位命令（简版） | legacy command |
+
+## 安装与构建
+
+```bash
+git clone https://github.com/liliu-z/magpie.git
+cd magpie
+npm install
+npm run build
+npm link   # 可选，注册全局 magpie
+```
+
+## 快速开始
+
+```bash
+# 1) 生成配置（交互式）
+magpie init
+# 或默认配置
+magpie init -y
+
+# 2) PR 评审
+magpie review 12345
+# 或完整 URL
+magpie review https://github.com/owner/repo/pull/12345
+
+# 3) 讨论
+magpie discuss "Should we use microservices or monolith?"
+
+# 4) PRD -> TRD
+magpie trd ./docs/prd.md
+
+# 5) 单测质量评估
+magpie quality unit-test-eval . --run-tests
+
+# 6) 目标执行闭环
+magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
+```
+
+## 常用参数速查
+
+### `review`
+
+```bash
+magpie review [pr] [options]
+
+# 常用：
+--local
+--branch [base]
+--files <files...>
+--repo
+--reviewers <ids>
+--all
+--skip-context
+--no-post
+--list-sessions
+--session <id>
+--export <file>
+```
+
+### `discuss`
+
+```bash
+magpie discuss [topic] [options]
+
+# 常用：
+--reviewers <ids>
+--all
+--devil-advocate
+--list
+--resume <id>
+```
+
+### `trd`
+
+```bash
+magpie trd [prd.md] [options]
+
+# 常用：
+--domain-overview-only
+--domains-file <path>
+--auto-accept-domains
+--no-ocr
+--list
+--resume <id>
+```
+
+### `quality`
+
+```bash
+magpie quality unit-test-eval [path] [options]
+
+# 常用：
+--max-files <number>
+--min-coverage <number>
+--run-tests
+--test-command "npm run test:run"
+--format markdown|json
+```
+
+### `loop`
+
+```bash
+magpie loop run <goal> --prd <path> [options]
+magpie loop resume <sessionId> [options]
+magpie loop list
+
+# 常用：
+--wait-human / --no-wait-human
+--dry-run
+--max-iterations <number>
+```
+
+## 配置说明
+
+默认路径：`~/.magpie/config.yaml`
+
+最小可用示例：
 
 ```yaml
 providers:
   openai:
     api_key: ${OPENAI_API_KEY}
-    base_url: https://my-ollama-server:11434/v1
-  anthropic:
-    api_key: ${ANTHROPIC_API_KEY}
-    base_url: https://my-proxy.example.com
-```
+    # base_url: https://your-compatible-endpoint/v1
 
-## Installation
-
-```bash
-# Clone the repo
-git clone https://github.com/liliu-z/magpie.git
-cd magpie
-
-# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Global install (optional)
-npm link
-```
-
-## Quick Start
-
-```bash
-# Initialize config file (interactive)
-magpie init
-
-# Or with defaults
-magpie init -y
-
-# Navigate to the repo you want to review
-cd your-repo
-
-# Start review (PR number)
-magpie review 12345
-
-# Or with full URL
-magpie review https://github.com/owner/repo/pull/12345
-
-# Start a discussion on any topic
-magpie discuss "Should we use microservices or monolith?"
-
-# Generate TRD from PRD markdown
-magpie trd /path/to/prd.md
-
-# Run end-to-end goal loop (with human gate)
-magpie loop run "Deliver checkout v2 from PRD to integration tests" --prd /path/to/prd.md
-
-# Evaluate unit-test quality in current repo
-magpie quality unit-test-eval .
-```
-
-## Configuration
-
-Config file is located at `~/.magpie/config.yaml`:
-
-```yaml
-# AI Providers
-providers:
-  minimax:
-    api_key: your-minimax-api-key   # or set MINIMAX_API_KEY env var
-    base_url: https://custom-endpoint.example.com/v1  # optional: custom API endpoint
-
-# Default settings
 defaults:
-  max_rounds: 5           # Maximum debate rounds
+  max_rounds: 5
   output_format: markdown
-  check_convergence: true  # Stop early when consensus reached
-  language: en             # Output language (e.g., 'zh', 'en', 'ja')
+  check_convergence: true
+  language: zh
 
-# Reviewers - same perspective, different models
 reviewers:
   claude:
     model: claude-code
     prompt: |
-      You are a senior engineer reviewing this PR. Be direct and concise like Linus Torvalds,
-      but constructive rather than harsh.
+      You are a senior code reviewer. Focus on correctness, security, architecture, and simplicity.
 
-      Focus on:
-      1. **Correctness** - Will this code work? Edge cases?
-      2. **Security** - Any vulnerabilities? Input validation?
-      3. **Architecture** - Does this fit the overall design? Any coupling issues?
-      4. **Simplicity** - Is this the simplest solution? Over-engineering?
-
-  gemini:
-    model: gemini-cli
-    prompt: |
-      # Same as above...
-
-# Analyzer - PR analysis (before debate)
-analyzer:
-  model: claude-code
-  prompt: |
-    You are a senior engineer providing PR context analysis.
-    Analyze this PR and provide:
-    1. What this PR does
-    2. Architecture/design decisions
-    3. Purpose
-    4. Trade-offs
-    5. Things to note
-
-# Summarizer - final conclusion
 summarizer:
   model: claude-code
   prompt: |
-    You are a neutral technical reviewer. Based on the anonymous reviewer summaries, provide:
-    1. Points of consensus
-    2. Points of disagreement
-    3. Recommended action items
-    4. Overall assessment
+    Summarize consensus, disagreements and action items.
 
-# Context Gatherer - system context before review (optional)
+analyzer:
+  model: claude-code
+  prompt: |
+    Analyze PR context before debate.
+
 contextGatherer:
-  enabled: true              # Enable/disable context gathering
-  model: claude-code         # Optional: defaults to analyzer model
-  callChain:
-    maxDepth: 2              # How deep to trace call chains
-    maxFilesToAnalyze: 20    # Max files to analyze for call chains
-  history:
-    maxDays: 30              # Look back period for related PRs
-    maxPRs: 10               # Max related PRs to include
-  docs:
-    patterns:                # Doc files to include for context
-      - docs
-      - README.md
-      - ARCHITECTURE.md
-      - DESIGN.md
-    maxSize: 50000           # Max total size of doc content
+  enabled: true
 
-# TRD Generation (PRD markdown -> TRD)
 trd:
-  default_reviewers: [claude-code, codex-cli]
+  default_reviewers: [claude]
   max_rounds: 3
   language: zh
-  include_project_context: true
-  include_traceability: true
-  output:
-    same_dir_as_prd: true
-    trd_suffix: ".trd.md"
-    open_questions_suffix: ".open-questions.md"
-  preprocess:
-    image_reader:
-      enabled: true
-      command: "tesseract {image} stdout -l chi_sim+eng"
-      timeout_ms: 20000
-      retries: 1
-      skip_example_images: true
-      example_keywords: ["示例", "样例", "example", "sample", "demo", "mock"]
-      on_failure: "continue_with_open_question"
-  domain:
-    require_human_confirmation: true
-    overview_required: true
 
-# Goal Loop (goal -> planning -> execution -> tests)
 capabilities:
   loop:
     enabled: true
     planner_model: claude-code
     executor_model: codex-cli
-    stages: [prd_review, domain_partition, trd_generation, code_development, unit_mock_test, integration_test]
-    confidence_threshold: 0.78
-    retries_per_stage: 2
-    max_iterations: 30
-    auto_commit: true
-    auto_branch_prefix: "sch/"
-    human_confirmation:
-      file: "human_confirmation.md"
-      gate_policy: "exception_or_low_confidence"
-      poll_interval_sec: 8
-    commands:
-      unit_test: "npm run test:run"
-      mock_test: "npm run test:run -- tests/mock"
-      integration_test: "npm run test:run -- tests/integration"
+  quality:
+    unitTestEval:
+      enabled: true
+      min_coverage: 0.7
 
-# Notification integrations (pluggable providers + routing)
 integrations:
   notifications:
-    enabled: true
-    default_timeout_ms: 5000
-    routes:
-      human_confirmation_required: [macos_local, feishu_team]
-      loop_failed: [feishu_team]
-      loop_completed: [feishu_team]
-    providers:
-      macos_local:
-        type: "macos"
-        click_target: "vscode"
-        terminal_notifier_bin: "terminal-notifier"
-        fallback_osascript: true
-      feishu_team:
-        type: "feishu-webhook"
-        webhook_url: ${FEISHU_WEBHOOK_URL}
-        secret: ${FEISHU_WEBHOOK_SECRET}
-        msg_type: "post"
+    enabled: false
 ```
 
-## CLI Options
+## Provider 支持
+
+`model` 字段按下面规则映射：
+
+- CLI 型：`claude-code`、`codex-cli`、`gemini-cli`、`qwen-code`、`kiro`
+- API 型：
+  - `claude*` -> Anthropic
+  - `gpt*` -> OpenAI
+  - `gemini*` -> Google
+  - `minimax` -> MiniMax
+- 调试：`mock`（或 `mock*`）
+
+## 产物与会话存储
+
+- repo review 会话：`<repo>/.magpie/sessions/`
+- repo feature 缓存：`<repo>/.magpie/cache/`
+- discuss 会话：`~/.magpie/discussions/`
+- trd 会话：`~/.magpie/trd-sessions/`
+- loop 会话与事件：`~/.magpie/loop-sessions/`
+- 人工确认文件（loop）：默认 `<repo>/human_confirmation.md`
+- 示例模板：`human_confirmation.example.md`
+
+## 依赖与前置条件
+
+- Node.js 18+
+- Git
+- 评审 PR 与评论发布建议安装并登录 `gh` CLI
+- 若启用 TRD 图片 OCR，需安装 `tesseract`
+- 使用 CLI 型 provider 时，需确保对应 CLI 已安装并已登录
+
+## 开发与测试
 
 ```bash
-magpie review [pr-number|url] [options]
-
-Options:
-  -c, --config <path>       Path to config file
-  -r, --rounds <number>     Maximum debate rounds (default: 5)
-  -i, --interactive         Interactive mode (pause between turns, Q&A)
-  -o, --output <file>       Output to file
-  -f, --format <format>     Output format (markdown|json)
-  --no-converge             Disable convergence detection (enabled by default)
-  -l, --local               Review local uncommitted changes
-  -b, --branch [base]       Review current branch vs base (default: main)
-  --files <files...>        Review specific files
-  --reviewers <ids>         Comma-separated reviewer IDs (e.g., claude-code,gemini-cli)
-  -a, --all                 Use all configured reviewers (skip selection)
-  --git-remote <remote>     Git remote for PR URL detection (default: origin)
-  --skip-context            Skip context gathering phase
-  --no-post                 Skip post-processing (GitHub comment flow)
-  --plan-only               Generate review plan without executing
-  --reanalyze               Force re-analyze features (ignore cache)
-
-  # Repository Review Options
-  --repo                    Review entire repository
-  --path <path>             Subdirectory to review (with --repo)
-  --ignore <patterns...>    Patterns to ignore (with --repo)
-  --quick                   Quick mode: only architecture overview
-  --deep                    Deep mode: full analysis without prompts
-  --list-sessions           List all review sessions
-  --session <id>            Resume specific session by ID
-  --export <file>           Export completed review to markdown
-```
-
-### Discuss Command
-
-```bash
-magpie discuss [topic] [options]
-
-Options:
-  -c, --config <path>       Path to config file
-  -r, --rounds <number>     Maximum debate rounds (default: 5)
-  -i, --interactive         Interactive mode (follow-up Q&A after conclusion)
-  -o, --output <file>       Output to file
-  -f, --format <format>     Output format (markdown|json)
-  --no-converge             Disable convergence detection
-  --reviewers <ids>         Comma-separated reviewer IDs
-  -a, --all                 Use all configured reviewers
-  -d, --devil-advocate      Add a Devil's Advocate to challenge consensus
-  --list                    List all discuss sessions
-  --resume <id>             Resume a discuss session with follow-up question
-```
-
-### TRD Command
-
-```bash
-magpie trd [prd.md] [options]
-
-Options:
-  -c, --config <path>         Path to config file
-  -r, --rounds <number>       Maximum debate rounds
-  -i, --interactive           Interactive domain debate mode
-  -o, --output <file>         Output TRD markdown file
-  --questions-output <file>   Output open questions markdown file
-  --reviewers <ids>           Comma-separated reviewer IDs
-  -a, --all                   Use all configured reviewers
-  --domain-overview-only      Only generate domain overview + draft domains
-  --domains-file <path>       Use confirmed domains yaml
-  --auto-accept-domains       Skip manual confirmation and accept draft domains
-  --no-ocr                    Disable OCR preprocessing for PRD images
-  --list                      List TRD sessions
-  --resume <id>               Resume TRD session with follow-up text
-```
-
-### Loop Command
-
-```bash
-magpie loop <subcommand> [options]
-
-Subcommands:
-  run <goal>                  Run goal loop from scratch
-  resume <sessionId>          Resume paused loop session
-  list                        List loop sessions
-
-magpie loop run <goal> --prd <path> [options]
-
-Options:
-  -c, --config <path>         Path to config file
-  --prd <path>                PRD markdown path (required)
-  --wait-human                Wait for human confirmation (default)
-  --no-wait-human             Pause and exit when human gate is reached
-  --dry-run                   Execute planning/evaluation without mutating stage actions
-  --max-iterations <number>   Max polling iterations while waiting for human decision
-```
-
-`loop` session artifacts are saved under `~/.magpie/loop-sessions/<sessionId>/`.
-Human gate items are written to `human_confirmation.md` (repo root by default).
-
-### Reviewer Selection
-
-By default, Magpie prompts you to select reviewers interactively:
-
-```bash
-# Interactive selection (default)
-magpie review 12345
-
-# Select reviewers from config:
-#   1. claude-code
-#   2. codex-cli
-#   3. gemini-cli
-# Enter numbers separated by commas (e.g., 1,2): 1,3
-```
-
-You can also specify reviewers directly:
-
-```bash
-# Use all configured reviewers
-magpie review 12345 --all
-magpie review 12345 -a
-
-# Specify reviewers by ID
-magpie review 12345 --reviewers claude-code,gemini-cli
-```
-
-### Review Modes
-
-```bash
-# Review a GitHub PR (number or URL)
-magpie review 12345
-magpie review https://github.com/owner/repo/pull/12345
-
-# Review local uncommitted changes (staged + unstaged)
-magpie review --local
-
-# Review current branch vs main
-magpie review --branch
-
-# Review current branch vs specific base
-magpie review --branch develop
-
-# Review specific files
-magpie review --files src/foo.ts src/bar.ts
-```
-
-### Repository Review
-
-Review an entire repository with feature-based analysis:
-
-```bash
-# Full repository review (interactive)
-magpie review --repo
-
-# Quick stats only
-magpie review --repo --quick
-
-# Deep analysis (no prompts)
-magpie review --repo --deep
-
-# Review specific subdirectory
-magpie review --repo --path src/api
-
-# List/resume sessions
-magpie review --list-sessions
-magpie review --session abc123
-
-# Export completed review
-magpie review --export review-report.md
-```
-
-Repository review includes:
-- AI-powered feature detection (identifies logical modules)
-- Session persistence (pause/resume reviews)
-- Focus area selection (security, performance, architecture, etc.)
-- Progress saving between runs
-
-### Topic Discussion
-
-Discuss any technical topic with multiple AI reviewers through adversarial debate:
-
-```bash
-# Basic discussion
-magpie discuss "Should we use microservices or monolith for our new project?"
-
-# From a file (supports markdown)
-magpie discuss /path/to/architecture-proposal.md
-
-# With Devil's Advocate to challenge consensus
-magpie discuss "Is Kubernetes overkill for our scale?" -d
-
-# Interactive mode for follow-up Q&A
-magpie discuss "How should we handle database migrations?" -i
-
-# List all discuss sessions
-magpie discuss --list
-
-# Resume a previous discussion with follow-up
-magpie discuss --resume abc123 "What about rollback strategies?"
-```
-
-Discussion features:
-- **Multi-perspective analysis**: Different AI models debate the topic from their unique viewpoints
-- **Devil's Advocate mode** (`-d`): Adds a dedicated contrarian to stress-test ideas
-- **Session persistence**: Save/resume discussions for multi-session deep dives
-- **Language matching**: Automatically responds in the same language as your topic (Chinese/English)
-- **Interactive follow-up**: Continue the discussion with additional questions
-- **Project context**: Optionally loads project-specific context for relevant discussions
-
-### Human Confirmation Template
-
-An example template is available at:
-`human_confirmation.example.md`
-
-The loop parser reads fenced YAML blocks between:
-- `<!-- MAGPIE_HUMAN_CONFIRMATION_START -->`
-- `<!-- MAGPIE_HUMAN_CONFIRMATION_END -->`
-
-Human operator should only edit:
-- `decision`: `pending | approved | rejected | revise`
-- `rationale`: free text
-
-## Workflow
-
-```
-1. Context Gathering (if enabled)
-   │  Collects: affected modules, related PRs, call chains
-   ↓
-2. Analyzer analyzes PR
-   ↓
-3. [Interactive] Post-analysis Q&A (ask specific reviewers)
-   ↓
-4. Multi-round debate
-   ├─ Round 1: All reviewers give INDEPENDENT opinions (parallel)
-   │           No reviewer sees others' responses yet
-   │           ↓
-   ├─ Convergence check: Did reviewers reach consensus?
-   │           ↓
-   ├─ Round 2+: Reviewers see ALL previous rounds (parallel)
-   │            Each reviewer responds to others' points
-   │            Same-round reviewers see identical information
-   │            ↓
-   └─ ... (repeat until max rounds or convergence)
-   ↓
-5. Each Reviewer summarizes their points
-   ↓
-6. Summarizer produces final conclusion
-```
-
-### Fair Debate Model
-
-Magpie uses a fair debate model where:
-
-- **Round 1**: Each reviewer gives their independent opinion without seeing others
-- **Round 2+**: Each reviewer sees ALL previous rounds' messages
-- **Same-round fairness**: All reviewers in the same round see identical information
-- **Parallel execution**: Same-round reviewers run concurrently (faster reviews)
-
-This ensures no reviewer has an unfair advantage from execution order.
-
-## Features
-
-### Context Gathering
-
-Before the review begins, Magpie automatically gathers system-level context to help reviewers understand the broader impact of changes:
-
-- **Affected Modules**: Identifies which parts of the system are impacted (core, moderate, low)
-- **Related PRs**: Finds relevant past PRs from project history
-- **Call Chain Analysis**: Traces how changed code connects to the rest of the system
-
-```
-┌─ System Context ─────────────────────────────────────────┐
-│ Affected Modules:                                        │
-│   • [core] src/orchestrator - Main review orchestration  │
-│   • [moderate] src/config - Configuration handling       │
-│                                                          │
-│ Related PRs:                                             │
-│   • #42 - Added streaming support                        │
-│   • #38 - Refactored provider interface                  │
-└──────────────────────────────────────────────────────────┘
-```
-
-Use `--skip-context` to disable, or configure in `contextGatherer` section of config.
-
-### Session Persistence
-
-Reviewers that support sessions maintain context across debate rounds, reducing token usage.
-
-| Provider | Session Support | Notes |
-|----------|-----------------|-------|
-| `claude-code` | Yes | Full session with explicit ID |
-| `codex-cli` | Yes | Full session with explicit ID |
-| `qwen-code` | Yes | Full session with explicit ID |
-| `minimax` | Yes | Conversation history maintained |
-| `gemini-cli` | No | Uses full context each round |
-| Other API providers | No | Uses full context each round |
-
-### Parallel Execution
-
-All reviewers in the same round execute concurrently. Results are collected and displayed after all reviewers complete:
-
-```
-⠋ Round 1: All reviewers thinking (parallel)...
-   ↓ (all reviewers running simultaneously)
-[claude-code]: First review...
-[gemini-cli]: First review...
-   ↓
-⠋ Checking convergence...
-   ↓
-⠋ Round 2: All reviewers thinking (parallel)...
-```
-
-### Post-Analysis Q&A (Interactive Mode)
-
-In interactive mode (`-i`), after analysis you can ask specific reviewers questions before the debate begins:
-
-```bash
-magpie review 12345 -i
-
-# After analysis...
-💡 You can ask specific reviewers questions before the debate begins.
-   Format: @reviewer_id question (e.g., @claude What about security?)
-   Available: @claude
-   Available: @gemini
-❓ Ask a question or press Enter to start debate: @claude What about the error handling?
-```
-
-### Convergence Detection
-
-Enabled by default. Automatically ends debate when reviewers reach consensus on key points, saving tokens.
-
-```bash
-# Convergence detection enabled by default
-magpie review 12345
-
-# Disable convergence detection
-magpie review 12345 --no-converge
-```
-
-Set `defaults.check_convergence: false` in config to disable by default.
-
-### Markdown Rendering
-
-All outputs (analysis, reviewer comments, final conclusion) are rendered with proper markdown formatting in terminal - headers, bold, tables, code blocks all display correctly.
-
-### Token Usage Tracking
-
-Displays token usage and estimated cost after each review:
-
-```
-── Token Usage (Estimated) ──
-  analyzer       88 in     438 out
-  claude      4,776 in   1,423 out
-  gemini      6,069 in     664 out
-  summarizer    505 in     322 out
-──────────────────────────────────
-  Total      11,438 in   2,847 out  ~$0.1429
-```
-
-### Cold Jokes
-
-While waiting for AI reviewers, enjoy programmer jokes:
-
-```
-⠋ claude is thinking... | Why do programmers confuse Halloween and Christmas? Because Oct 31 = Dec 25
-```
-
-### Post-Review Discussion Phase (Interactive Mode)
-
-In interactive mode (`-i`), after the debate concludes, you can enter a **discussion phase** to chat with any role (reviewers, analyzer, or summarizer) before the comment posting step:
-
-- Pick any role by number to start a conversation
-- Each role maintains a persistent session with full PR context and its original review analysis
-- Use `/skip` to exit the entire discussion phase
-- Useful for clarifying issues, asking follow-up questions, or getting deeper insights before deciding which comments to post
-
-```
-  Available roles:
-    [1] claude-code
-    [2] gemini-cli
-    [3] analyzer
-    [4] summarizer
-
-  Pick a role by number (or Enter to exit discussion):
-```
-
-### Post-Processing (PR Review)
-
-After the debate concludes, Magpie extracts structured issues and lets you review them one by one:
-
-- **Comment style prompt**: Before the issue loop, you can provide style instructions (e.g., "be concise", "use Chinese") that apply to all generated comments
-- **Progress tracking**: Shows running tally of posted/edited/discussed/skipped issues
-- **Per-issue actions**:
-  - **Post** (`p`) — Posts as an inline comment on the exact PR line
-  - **Edit** (`e`) — Edit the comment before posting
-  - **Discuss** (`d`) — Start a multi-turn discussion with any role (reviewer/analyzer/summarizer)
-  - **Skip** (`s`) — Skip this issue
-  - **Quit** (`q`) — Stop processing remaining issues
-- **`/skip` and `/drop`**: During discussion, type `/skip` or `/drop` to abandon the current issue
-- **Inline comments**: Each issue is posted as an individual inline comment on the specific line in the PR diff. Falls back to a regular PR comment if the line is not in the diff.
-- **Auto-explain**: When you choose to discuss, the reviewer automatically explains the issue in detail first (where the problem is, why it's a problem, how to fix it) before you start asking questions.
-- **Comment regeneration**: After discussion, the reviewer generates a revised comment. You can post it, post the original, edit, regenerate with new instructions, or skip.
-- **`--no-post`**: Use this flag to skip the entire post-processing flow and just see the review output.
-
-### Debug Mode
-
-Use the mock provider to test Magpie workflows without real AI calls:
-
-```bash
-# Enable mock mode globally (all models become mock)
-# In config: mock: true
-
-# Or use mock as a model name
-# reviewers:
-#   test-reviewer:
-#     model: mock
-#     prompt: "test prompt"
-
-# Environment variables
-MAGPIE_MOCK_RESPONSE="fixed response text"   # Return fixed text
-MAGPIE_MOCK_FILE=/path/to/response.txt       # Return content from file
-MAGPIE_MOCK_DELAY=100                         # Delay between words in ms (default: 50)
-
-# Example: test the discussion flow quickly
-MAGPIE_MOCK_DELAY=50 magpie review 123 --reviewers test-reviewer
-```
-
-## Development
-
-```bash
-# Run in dev mode
+# 从源码运行
 npm run dev -- review 12345
 
-# Run tests
+# 单元测试（watch）
 npm test
 
-# Build
+# 单次测试（CI 推荐）
+npm run test:run
+
+# 类型构建
 npm run build
+
+# 架构边界检查
+npm run check:boundaries
 ```
+
+## 相关文档
+
+- `docs/plans/2026-03-04-capability-architecture-v2.md`
+- `docs/plans/2026-03-05-prd-review-workflow.md`
+- `docs/plans/2026-01-26-magpie-design.md`
+
+## 已知现状说明
+
+- `review` / `discuss` / `trd` 在 capability 层目前仍以兼容桥接为主，主执行逻辑在 legacy command。
+- `stats` 命令当前为轻量占位实现。
+- 项目包含较多 V1/V2 并存模块，重构仍在进行中。
 
 ## License
 
