@@ -22,6 +22,10 @@ Magpie now follows a capability-oriented structure:
 
 Legacy modules under `src/commands`, `src/config`, `src/providers`, etc. are retained as compatibility bridges while V2 capability modules become the default extension surface.
 
+## Process Docs
+
+- PRD Review Workflow (zh): `docs/plans/2026-03-05-prd-review-workflow.md`
+
 ## Supported AI Providers
 
 | Provider | Type | Description |
