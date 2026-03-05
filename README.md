@@ -191,14 +191,8 @@ trd:
     trd_suffix: ".trd.md"
     open_questions_suffix: ".open-questions.md"
   preprocess:
-    image_reader:
-      enabled: true
-      command: "tesseract {image} stdout -l chi_sim+eng"
-      timeout_ms: 20000
-      retries: 1
-      skip_example_images: true
-      example_keywords: ["示例", "样例", "example", "sample", "demo", "mock"]
-      on_failure: "continue_with_open_question"
+    chunk_chars: 6000
+    max_chars: 120000
   domain:
     require_human_confirmation: true
     overview_required: true
@@ -273,10 +267,14 @@ Options:
   --domain-overview-only      Only generate domain overview + draft domains
   --domains-file <path>       Use confirmed domains yaml
   --auto-accept-domains       Skip manual confirmation and accept draft domains
-  --no-ocr                    Disable OCR preprocessing for PRD images
   --list                      List TRD sessions
   --resume <id>               Resume TRD session with follow-up text
 ```
+
+TRD image handling:
+- Images from PRD are passed directly as multimodal inputs. No OCR preprocessing is performed.
+- Remote image URLs are best-effort. If a link cannot be used, Magpie logs a warning and continues.
+- Local image paths are included only when files exist. Missing files are warned and skipped.
 
 ### Reviewer Selection
 

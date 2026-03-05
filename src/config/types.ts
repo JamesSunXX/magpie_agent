@@ -34,16 +34,6 @@ export interface ContextGathererConfigOptions {
   model?: string  // Model to use for context analysis
 }
 
-export interface TrdImageReaderConfig {
-  enabled?: boolean
-  command?: string
-  timeout_ms?: number
-  retries?: number
-  skip_example_images?: boolean
-  example_keywords?: string[]
-  on_failure?: 'continue_with_open_question' | 'fail'
-}
-
 export interface TrdConfig {
   default_reviewers?: string[]
   max_rounds?: number
@@ -58,7 +48,6 @@ export interface TrdConfig {
   preprocess?: {
     chunk_chars?: number
     max_chars?: number
-    image_reader?: TrdImageReaderConfig
   }
   domain?: {
     require_human_confirmation?: boolean

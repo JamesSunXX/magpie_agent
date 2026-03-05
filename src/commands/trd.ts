@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import { randomBytes } from 'crypto'
-import { basename, dirname, isAbsolute, join } from 'path'
+import { basename, join } from 'path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { createInterface } from 'readline'
 import { stringify as stringifyYaml } from 'yaml'
@@ -16,7 +16,7 @@ import type { TrdSession } from '../state/types.js'
 import { loadProjectContext } from '../utils/context-loader.js'
 import { runDebateSession } from './discussion/runner.js'
 import { parsePrdMarkdown } from '../trd/prd-parser.js'
-import { enrichImagesWithOcr } from '../trd/image-reader.js'
+import { collectChatImages } from '../trd/image-inputs.js'
 import { buildPrdDigestText, mapRequirementsToDomains } from '../trd/digest.js'
 import {
   TRD_ANALYZER_PROMPT,
@@ -56,7 +56,6 @@ interface TrdOptions {
   domainOverviewOnly?: boolean
   domainsFile?: string
   autoAcceptDomains?: boolean
-  ocr?: boolean
 }
 
 interface OutputPaths {
@@ -108,23 +107,6 @@ function resolveTrdDefaults(config: MagpieConfig) {
     trdSuffix: trd.output?.trd_suffix || '.trd.md',
     openQuestionsSuffix: trd.output?.open_questions_suffix || '.open-questions.md',
     requireHumanConfirmation: trd.domain?.require_human_confirmation !== false,
-    imageReader: {
-      enabled: trd.preprocess?.image_reader?.enabled !== false,
-      command: trd.preprocess?.image_reader?.command || 'tesseract {image} stdout -l chi_sim+eng',
-      timeoutMs: trd.preprocess?.image_reader?.timeout_ms || 20000,
-      retries: trd.preprocess?.image_reader?.retries || 1,
-      skipExampleImages: trd.preprocess?.image_reader?.skip_example_images !== false,
-      exampleKeywords: trd.preprocess?.image_reader?.example_keywords || [
-        '示例',
-        '样例',
-        '例子',
-        'example',
-        'sample',
-        'demo',
-        'mock',
-        'placeholder',
-      ],
-    },
   }
 }
 
@@ -253,62 +235,12 @@ function extractOverviewSummaryFromMarkdown(markdown: string): string {
   return '基于已确认领域重新生成 TRD。'
 }
 
-function isRemoteSource(source: string): boolean {
-  return /^https?:\/\//i.test(source)
-}
-
-function isExampleImage(
-  image: ParsedPrd['images'][number],
-  defaults: ReturnType<typeof resolveTrdDefaults>
-): boolean {
-  if (image.skipped && image.skipReason === 'example-image') return true
-  if (!defaults.imageReader.skipExampleImages) return false
-
-  const keywords = defaults.imageReader.exampleKeywords
-    .map(k => k.toLowerCase().trim())
-    .filter(Boolean)
-  if (keywords.length === 0) return false
-
-  const haystack = `${image.alt} ${image.source}`.toLowerCase()
-  return keywords.some(keyword => haystack.includes(keyword))
-}
-
-function resolveImageInputSource(image: ParsedPrd['images'][number], prdPath: string): string | null {
-  if (isRemoteSource(image.source)) return image.source
-
-  const candidates: string[] = []
-  if (image.resolvedPath) candidates.push(image.resolvedPath)
-  candidates.push(isAbsolute(image.source) ? image.source : join(dirname(prdPath), image.source))
-
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate
+function printImageWarnings(warnings: string[]): void {
+  if (warnings.length === 0) return
+  console.log(chalk.yellow('\n图片输入告警:'))
+  for (const warning of warnings) {
+    console.log(chalk.yellow(`- ${warning}`))
   }
-
-  return null
-}
-
-function collectChatImages(
-  parsedPrd: ParsedPrd,
-  prdPath: string,
-  defaults: ReturnType<typeof resolveTrdDefaults>
-): ChatImageInput[] {
-  const images: ChatImageInput[] = []
-  const seen = new Set<string>()
-
-  for (const image of parsedPrd.images) {
-    if (isExampleImage(image, defaults)) continue
-
-    const source = resolveImageInputSource(image, prdPath)
-    if (!source || seen.has(source)) continue
-    seen.add(source)
-
-    images.push({
-      source,
-      label: image.alt || `IMG-${String(image.index).padStart(3, '0')}`,
-    })
-  }
-
-  return images
 }
 
 async function confirmDomains(
@@ -573,24 +505,11 @@ async function generateDomainPartials(
   return partials
 }
 
-function buildInitialOpenQuestions(parsedPrd: ParsedPrd): TrdSynthesisResult['openQuestions'] {
-  const questions: TrdSynthesisResult['openQuestions'] = []
-  for (const img of parsedPrd.images) {
-    if (img.skipped) continue
-    if (!img.error) continue
-    questions.push({
-      id: `Q-IMG-${String(img.index).padStart(3, '0')}`,
-      question: `图片 ${img.source} 解析失败：${img.error}，请补充图中关键信息`,
-      priority: 'medium',
-      domain: 'cross-domain',
-      blocker: false,
-    })
-  }
-  return questions
+function buildInitialOpenQuestions(): TrdSynthesisResult['openQuestions'] {
+  return []
 }
 
 async function synthesizeTrd(
-  parsedPrd: ParsedPrd,
   overview: DomainOverview,
   bundles: DomainRequirementBundle[],
   partials: Array<{ domainId: string; content: string }>,
@@ -626,7 +545,7 @@ async function synthesizeTrd(
       defaults.includeTraceability,
       bundles
     ),
-    openQuestions: buildInitialOpenQuestions(parsedPrd),
+    openQuestions: buildInitialOpenQuestions(),
     traceability: bundles.flatMap(bundle =>
       bundle.requirements.map(req => ({
         requirementId: req.id,
@@ -653,15 +572,9 @@ async function runNewTrd(
   const paths = getOutputPaths(prdPath, sessionId, options, config)
   ensureDir(paths.partialDir)
 
-  let parsedPrd = parsePrdMarkdown(prdPath)
-  if (options.ocr !== false) {
-    parsedPrd = {
-      ...parsedPrd,
-      images: await enrichImagesWithOcr(parsedPrd.images, prdPath, defaults.imageReader),
-    }
-  }
-
-  const chatImages = collectChatImages(parsedPrd, prdPath, defaults)
+  const parsedPrd = parsePrdMarkdown(prdPath)
+  const { images: chatImages, warnings } = collectChatImages(parsedPrd.images, prdPath)
+  printImageWarnings(warnings)
 
   const overview = await generateDomainOverview(parsedPrd, config, defaults, chatImages)
   writeFileSync(paths.domainOverviewPath, renderDomainOverviewMarkdown(overview), 'utf-8')
@@ -723,7 +636,6 @@ async function runNewTrd(
   await stateManager.saveTrdSession(session)
 
   const synthesis = await synthesizeTrd(
-    parsedPrd,
     { ...overview, domains: confirmedDomains },
     bundles,
     partials,
@@ -780,14 +692,9 @@ async function handleResume(
   }
 
   const defaults = resolveTrdDefaults(config)
-  let parsedPrd = parsePrdMarkdown(session.prdPath)
-  if (options.ocr !== false) {
-    parsedPrd = {
-      ...parsedPrd,
-      images: await enrichImagesWithOcr(parsedPrd.images, session.prdPath, defaults.imageReader),
-    }
-  }
-  const chatImages = collectChatImages(parsedPrd, session.prdPath, defaults)
+  const parsedPrd = parsePrdMarkdown(session.prdPath)
+  const { images: chatImages, warnings } = collectChatImages(parsedPrd.images, session.prdPath)
+  printImageWarnings(warnings)
   const overviewMd = readFileSync(session.artifacts.domainOverviewPath, 'utf-8')
   const domainsYaml = readFileSync(session.artifacts.confirmedDomainsPath, 'utf-8')
   const confirmedDomains = parseConfirmedDomainsYaml(domainsYaml)
@@ -820,7 +727,6 @@ async function handleResume(
   await stateManager.saveTrdSession(session)
 
   const synthesis = await synthesizeTrd(
-    parsedPrd,
     overview,
     bundles,
     partials,
@@ -883,7 +789,6 @@ export const trdCommand = new Command('trd')
   .option('--domain-overview-only', 'Only generate domain overview and draft domain boundaries')
   .option('--domains-file <path>', 'Use confirmed domains YAML and skip interactive confirmation')
   .option('--auto-accept-domains', 'Auto-accept draft domains without manual confirmation')
-  .option('--no-ocr', 'Disable OCR preprocessing for images in PRD')
   .option('--list', 'List TRD sessions')
   .option('--resume <id>', 'Resume TRD session with follow-up revision')
   .action(async (prdArg: string | undefined, options: TrdOptions) => {

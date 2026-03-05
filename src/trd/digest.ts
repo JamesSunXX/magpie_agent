@@ -16,9 +16,7 @@ export function buildPrdDigestText(parsed: ParsedPrd, maxChars = 120000): string
   lines.push('')
   lines.push('## 图片信息')
   for (const img of parsed.images) {
-    const detail = img.error
-      ? `OCR失败: ${img.error}`
-      : (img.ocrText ? `OCR: ${img.ocrText}` : '无OCR文本')
+    const detail = /^https?:\/\//i.test(img.source) ? '来源: 远程链接' : '来源: 本地路径'
     lines.push(`- IMG-${String(img.index).padStart(3, '0')} ${img.source} ${detail}`)
   }
 
@@ -77,4 +75,3 @@ export function mapRequirementsToDomains(
 
   return bundles
 }
-
