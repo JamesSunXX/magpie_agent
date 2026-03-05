@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
-import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession } from './types.js'
+import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession, LoopSession } from './types.js'
 
 export class StateManager {
   private baseDir: string
@@ -198,6 +198,61 @@ export class StateManager {
         if (file.endsWith('.json')) {
           const id = file.replace('.json', '')
           const session = await this.loadTrdSession(id)
+          if (session) sessions.push(session)
+        }
+      }
+      sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      return sessions
+    } catch {
+      return []
+    }
+  }
+
+  // Loop session methods — stored in ~/.magpie/loop-sessions/
+  private get loopSessionsDir(): string {
+    return join(homedir(), '.magpie', 'loop-sessions')
+  }
+
+  async initLoopSessions(): Promise<void> {
+    await mkdir(this.loopSessionsDir, { recursive: true })
+  }
+
+  async saveLoopSession(session: LoopSession): Promise<void> {
+    await mkdir(this.loopSessionsDir, { recursive: true })
+    const filePath = join(this.loopSessionsDir, `${session.id}.json`)
+    await writeFile(filePath, JSON.stringify(session, null, 2))
+  }
+
+  async loadLoopSession(id: string): Promise<LoopSession | null> {
+    const filePath = join(this.loopSessionsDir, `${id}.json`)
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const data = JSON.parse(content)
+      data.createdAt = new Date(data.createdAt)
+      data.updatedAt = new Date(data.updatedAt)
+      data.stageResults = (data.stageResults || []).map((s: Record<string, unknown>) => ({
+        ...s,
+        timestamp: new Date(s.timestamp as string),
+      }))
+      data.humanConfirmations = (data.humanConfirmations || []).map((item: Record<string, unknown>) => ({
+        ...item,
+        createdAt: new Date(item.createdAt as string),
+        updatedAt: new Date(item.updatedAt as string),
+      }))
+      return data as LoopSession
+    } catch {
+      return null
+    }
+  }
+
+  async listLoopSessions(): Promise<LoopSession[]> {
+    try {
+      const files = await readdir(this.loopSessionsDir)
+      const sessions: LoopSession[] = []
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          const id = file.replace('.json', '')
+          const session = await this.loadLoopSession(id)
           if (session) sessions.push(session)
         }
       }

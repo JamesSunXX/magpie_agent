@@ -66,6 +66,86 @@ export interface TrdConfig {
   }
 }
 
+export type LoopStageName =
+  | 'prd_review'
+  | 'domain_partition'
+  | 'trd_generation'
+  | 'code_development'
+  | 'unit_mock_test'
+  | 'integration_test'
+
+export interface LoopCommandsConfig {
+  unit_test?: string
+  mock_test?: string
+  integration_test?: string
+}
+
+export interface LoopHumanConfirmationConfig {
+  file?: string
+  gate_policy?: 'exception_or_low_confidence' | 'always' | 'manual_only'
+  poll_interval_sec?: number
+}
+
+export interface LoopConfig {
+  enabled?: boolean
+  planner_model?: string
+  executor_model?: string
+  stages?: LoopStageName[]
+  confidence_threshold?: number
+  retries_per_stage?: number
+  max_iterations?: number
+  auto_commit?: boolean
+  auto_branch_prefix?: string
+  human_confirmation?: LoopHumanConfirmationConfig
+  commands?: LoopCommandsConfig
+}
+
+export type NotificationEventType =
+  | 'human_confirmation_required'
+  | 'loop_paused'
+  | 'loop_resumed'
+  | 'loop_failed'
+  | 'loop_completed'
+
+export interface MacosNotificationProviderConfig {
+  type: 'macos'
+  enabled?: boolean
+  click_target?: 'vscode' | 'file'
+  terminal_notifier_bin?: string
+  fallback_osascript?: boolean
+}
+
+export interface FeishuWebhookNotificationProviderConfig {
+  type: 'feishu-webhook'
+  enabled?: boolean
+  webhook_url: string
+  secret?: string
+  msg_type?: 'text' | 'post'
+}
+
+export type NotificationProviderConfig =
+  | MacosNotificationProviderConfig
+  | FeishuWebhookNotificationProviderConfig
+
+export interface NotificationsIntegrationConfig {
+  enabled?: boolean
+  default_timeout_ms?: number
+  routes?: Partial<Record<NotificationEventType, string[]>>
+  providers?: Record<string, NotificationProviderConfig>
+}
+
+export interface IntegrationsConfig {
+  notifications?: NotificationsIntegrationConfig
+}
+
+export interface LegacyCapabilitiesConfig {
+  review?: unknown
+  discuss?: unknown
+  trd?: TrdConfig
+  quality?: unknown
+  loop?: LoopConfig
+}
+
 export interface MagpieConfig {
   providers: {
     anthropic?: ProviderConfig
@@ -84,4 +164,6 @@ export interface MagpieConfig {
   analyzer: ReviewerConfig
   contextGatherer?: ContextGathererConfigOptions
   trd?: TrdConfig
+  capabilities?: LegacyCapabilitiesConfig
+  integrations?: IntegrationsConfig
 }

@@ -28,6 +28,51 @@ function buildDefaultCapabilities(config: LegacyMagpieConfig): MagpieConfigV2['c
         output_format: config.defaults.output_format,
       },
     },
+    loop: {
+      enabled: true,
+      planner_model: config.analyzer?.model || 'claude-code',
+      executor_model: 'codex-cli',
+      stages: [
+        'prd_review',
+        'domain_partition',
+        'trd_generation',
+        'code_development',
+        'unit_mock_test',
+        'integration_test',
+      ],
+      confidence_threshold: 0.78,
+      retries_per_stage: 2,
+      max_iterations: 30,
+      auto_commit: true,
+      auto_branch_prefix: 'sch/',
+      human_confirmation: {
+        file: 'human_confirmation.md',
+        gate_policy: 'exception_or_low_confidence',
+        poll_interval_sec: 8,
+      },
+      commands: {
+        unit_test: 'npm run test:run',
+        mock_test: 'npm run test:run -- tests/mock',
+        integration_test: 'npm run test:run -- tests/integration',
+      },
+    },
+  }
+}
+
+function buildDefaultIntegrations(config: LegacyMagpieConfig): MagpieConfigV2['integrations'] {
+  return {
+    ...config.integrations,
+    notifications: {
+      enabled: false,
+      default_timeout_ms: 5000,
+      routes: {
+        human_confirmation_required: [],
+        loop_failed: [],
+        loop_completed: [],
+      },
+      providers: {},
+      ...(config.integrations?.notifications || {}),
+    },
   }
 }
 
@@ -48,6 +93,10 @@ export function migrateConfigToV2(input: LegacyMagpieConfig | MagpieConfigV2): M
         ...buildDefaultCapabilities(maybeV2 as LegacyMagpieConfig),
         ...maybeV2.capabilities,
       },
+      integrations: {
+        ...buildDefaultIntegrations(maybeV2 as LegacyMagpieConfig),
+        ...maybeV2.integrations,
+      },
     }
   }
 
@@ -66,5 +115,6 @@ export function migrateConfigToV2(input: LegacyMagpieConfig | MagpieConfigV2): M
     contextGatherer: input.contextGatherer,
     trd: input.trd,
     capabilities: buildDefaultCapabilities(input),
+    integrations: buildDefaultIntegrations(input),
   }
 }

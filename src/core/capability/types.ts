@@ -5,6 +5,7 @@ export type CapabilityName =
   | 'discuss'
   | 'trd'
   | 'quality/unit-test-eval'
+  | 'loop'
 
 export interface CapabilityModule<TInput, TPrepared, TResult, TOutput> {
   name: CapabilityName

@@ -1,7 +1,9 @@
 import type {
   ContextGathererConfigOptions,
   DefaultsConfig,
+  IntegrationsConfig,
   MagpieConfig as LegacyMagpieConfig,
+  LoopConfig,
   ProviderConfig,
   ReviewerConfig,
   TrdConfig,
@@ -41,6 +43,7 @@ export interface CapabilitiesConfig {
   discuss?: DiscussConfig
   trd?: TrdConfig
   quality?: QualityConfig
+  loop?: LoopConfig
 }
 
 export interface MagpieConfigV2 {
@@ -53,11 +56,14 @@ export interface MagpieConfigV2 {
   contextGatherer?: ContextGathererConfigOptions
   trd?: TrdConfig
   capabilities: CapabilitiesConfig
+  integrations: IntegrationsConfig
 }
 
 export type {
   LegacyMagpieConfig,
   DefaultsConfig,
+  IntegrationsConfig,
+  LoopConfig,
   ProviderConfig,
   ReviewerConfig,
   TrdConfig,

@@ -2,6 +2,7 @@
 import type { ReviewFocus } from '../orchestrator/repo-orchestrator.js'
 import type { ReviewIssue } from '../reporter/types.js'
 import type { DomainBoundary } from '../trd/types.js'
+import type { LoopStageName } from '../config/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -106,5 +107,61 @@ export interface ReviewSession {
     currentFeatureIndex: number
     completedFeatures: string[]
     featureResults: Record<string, FeatureReviewResult>
+  }
+}
+
+export interface LoopTask {
+  id: string
+  stage: LoopStageName
+  title: string
+  description: string
+  dependencies: string[]
+  successCriteria: string[]
+}
+
+export interface LoopStageResult {
+  stage: LoopStageName
+  success: boolean
+  confidence: number
+  summary: string
+  risks: string[]
+  retryCount: number
+  artifacts: string[]
+  timestamp: Date
+}
+
+export interface HumanConfirmationItem {
+  id: string
+  sessionId: string
+  stage: LoopStageName
+  status: 'pending' | 'approved' | 'rejected' | 'revise'
+  decision: 'pending' | 'approved' | 'rejected' | 'revise'
+  rationale?: string
+  reason: string
+  artifacts: string[]
+  nextAction: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface LoopSession {
+  id: string
+  title: string
+  goal: string
+  prdPath: string
+  createdAt: Date
+  updatedAt: Date
+  status: 'running' | 'paused_for_human' | 'completed' | 'failed'
+  currentStageIndex: number
+  stages: LoopStageName[]
+  plan: LoopTask[]
+  stageResults: LoopStageResult[]
+  humanConfirmations: HumanConfirmationItem[]
+  branchName?: string
+  artifacts: {
+    sessionDir: string
+    eventsPath: string
+    planPath: string
+    humanConfirmationPath: string
   }
 }

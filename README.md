@@ -98,6 +98,9 @@ magpie discuss "Should we use microservices or monolith?"
 # Generate TRD from PRD markdown
 magpie trd /path/to/prd.md
 
+# Run end-to-end goal loop (with human gate)
+magpie loop run "Deliver checkout v2 from PRD to integration tests" --prd /path/to/prd.md
+
 # Evaluate unit-test quality in current repo
 magpie quality unit-test-eval .
 ```
@@ -202,6 +205,48 @@ trd:
   domain:
     require_human_confirmation: true
     overview_required: true
+
+# Goal Loop (goal -> planning -> execution -> tests)
+capabilities:
+  loop:
+    enabled: true
+    planner_model: claude-code
+    executor_model: codex-cli
+    stages: [prd_review, domain_partition, trd_generation, code_development, unit_mock_test, integration_test]
+    confidence_threshold: 0.78
+    retries_per_stage: 2
+    max_iterations: 30
+    auto_commit: true
+    auto_branch_prefix: "sch/"
+    human_confirmation:
+      file: "human_confirmation.md"
+      gate_policy: "exception_or_low_confidence"
+      poll_interval_sec: 8
+    commands:
+      unit_test: "npm run test:run"
+      mock_test: "npm run test:run -- tests/mock"
+      integration_test: "npm run test:run -- tests/integration"
+
+# Notification integrations (pluggable providers + routing)
+integrations:
+  notifications:
+    enabled: true
+    default_timeout_ms: 5000
+    routes:
+      human_confirmation_required: [macos_local, feishu_team]
+      loop_failed: [feishu_team]
+      loop_completed: [feishu_team]
+    providers:
+      macos_local:
+        type: "macos"
+        click_target: "vscode"
+        terminal_notifier_bin: "terminal-notifier"
+        fallback_osascript: true
+      feishu_team:
+        type: "feishu-webhook"
+        webhook_url: ${FEISHU_WEBHOOK_URL}
+        secret: ${FEISHU_WEBHOOK_SECRET}
+        msg_type: "post"
 ```
 
 ## CLI Options
@@ -277,6 +322,30 @@ Options:
   --list                      List TRD sessions
   --resume <id>               Resume TRD session with follow-up text
 ```
+
+### Loop Command
+
+```bash
+magpie loop <subcommand> [options]
+
+Subcommands:
+  run <goal>                  Run goal loop from scratch
+  resume <sessionId>          Resume paused loop session
+  list                        List loop sessions
+
+magpie loop run <goal> --prd <path> [options]
+
+Options:
+  -c, --config <path>         Path to config file
+  --prd <path>                PRD markdown path (required)
+  --wait-human                Wait for human confirmation (default)
+  --no-wait-human             Pause and exit when human gate is reached
+  --dry-run                   Execute planning/evaluation without mutating stage actions
+  --max-iterations <number>   Max polling iterations while waiting for human decision
+```
+
+`loop` session artifacts are saved under `~/.magpie/loop-sessions/<sessionId>/`.
+Human gate items are written to `human_confirmation.md` (repo root by default).
 
 ### Reviewer Selection
 
@@ -386,6 +455,19 @@ Discussion features:
 - **Language matching**: Automatically responds in the same language as your topic (Chinese/English)
 - **Interactive follow-up**: Continue the discussion with additional questions
 - **Project context**: Optionally loads project-specific context for relevant discussions
+
+### Human Confirmation Template
+
+An example template is available at:
+`human_confirmation.example.md`
+
+The loop parser reads fenced YAML blocks between:
+- `<!-- MAGPIE_HUMAN_CONFIRMATION_START -->`
+- `<!-- MAGPIE_HUMAN_CONFIRMATION_END -->`
+
+Human operator should only edit:
+- `decision`: `pending | approved | rejected | revise`
+- `rationale`: free text
 
 ## Workflow
 

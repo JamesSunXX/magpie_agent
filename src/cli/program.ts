@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { discussCommand } from './commands/discuss.js'
 import { initCommand } from './commands/init.js'
+import { loopCommand } from './commands/loop.js'
 import { qualityCommand } from './commands/quality.js'
 import { reviewCommand } from './commands/review.js'
 import { statsCommand } from './commands/stats.js'
@@ -19,6 +20,7 @@ export function createProgram(): Command {
   program.addCommand(discussCommand)
   program.addCommand(trdCommand)
   program.addCommand(qualityCommand)
+  program.addCommand(loopCommand)
   program.addCommand(statsCommand)
 
   return program

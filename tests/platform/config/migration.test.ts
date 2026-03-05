@@ -36,6 +36,8 @@ describe('config migration', () => {
     expect(migrated.capabilities.review?.enabled).toBe(true)
     expect(migrated.capabilities.discuss?.enabled).toBe(true)
     expect(migrated.capabilities.quality?.unitTestEval?.enabled).toBe(true)
+    expect(migrated.capabilities.loop?.enabled).toBe(true)
+    expect(migrated.integrations.notifications?.enabled).toBe(false)
   })
 
   it('keeps provided capabilities', () => {
@@ -48,5 +50,6 @@ describe('config migration', () => {
     } as ReturnType<typeof migrateConfigToV2>)
 
     expect(migrated.capabilities.review?.enabled).toBe(false)
+    expect(migrated.integrations.notifications).toBeDefined()
   })
 })
