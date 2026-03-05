@@ -75,6 +75,21 @@ export class KiroProvider implements AIProvider {
 
             let output = ''
             let error = ''
+            let settled = false
+            const timeoutHandle = this.timeout > 0
+                ? setTimeout(() => {
+                    if (settled) return
+                    child.kill('SIGTERM')
+                    settled = true
+                    reject(new Error(`kiro-cli timed out after ${this.timeout / 1000}s of inactivity`))
+                }, this.timeout)
+                : null
+
+            const clearTimeoutIfNeeded = () => {
+                if (timeoutHandle) {
+                    clearTimeout(timeoutHandle)
+                }
+            }
 
             child.stdout.on('data', (data) => {
                 output += data.toString()
@@ -85,6 +100,9 @@ export class KiroProvider implements AIProvider {
             })
 
             child.on('close', (code) => {
+                if (settled) return
+                clearTimeoutIfNeeded()
+                settled = true
                 if (code !== 0) {
                     reject(new Error(`kiro-cli exited with code ${code}: ${error}`))
                 } else {
@@ -93,6 +111,9 @@ export class KiroProvider implements AIProvider {
             })
 
             child.on('error', (err) => {
+                if (settled) return
+                clearTimeoutIfNeeded()
+                settled = true
                 reject(new Error(`Failed to run kiro-cli: ${err.message}`))
             })
         })

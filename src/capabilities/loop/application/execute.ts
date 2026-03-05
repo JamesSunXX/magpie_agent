@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto'
 import { appendFile, mkdir, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
-import { execSync } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import type { CapabilityContext } from '../../../core/capability/context.js'
@@ -232,20 +232,27 @@ async function appendEvent(path: string, payload: Record<string, unknown>): Prom
 
 function ensureBranch(prefix: string): string | null {
   try {
-    execSync('git rev-parse --is-inside-work-tree', { stdio: 'pipe' })
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' })
   } catch {
     return null
   }
 
   const normalizedPrefix = prefix.startsWith('sch/') ? prefix : `sch/${prefix.replace(/^\/+/, '')}`
-  const branchName = `${normalizedPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
+  const sanitizedPrefix = normalizedPrefix
+    .replace(/[^a-zA-Z0-9/_\-.]/g, '-')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^-+/, '')
+    .replace(/\/-+/g, '/')
+  const safePrefix = sanitizedPrefix.length > 0 ? sanitizedPrefix : 'sch'
+  const finalPrefix = safePrefix.endsWith('/') ? safePrefix : `${safePrefix}/`
+  const branchName = `${finalPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
 
   try {
-    execSync(`git checkout -b ${branchName}`, { stdio: 'pipe' })
+    execFileSync('git', ['checkout', '-b', branchName], { stdio: 'pipe' })
     return branchName
   } catch {
     try {
-      execSync(`git checkout ${branchName}`, { stdio: 'pipe' })
+      execFileSync('git', ['checkout', branchName], { stdio: 'pipe' })
       return branchName
     } catch {
       return null
@@ -255,11 +262,11 @@ function ensureBranch(prefix: string): string | null {
 
 function commitIfChanged(stage: LoopStageName): boolean {
   try {
-    const status = execSync('git status --porcelain', { encoding: 'utf-8' }).trim()
+    const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8' }).trim()
     if (!status) return false
 
-    execSync('git add -A', { stdio: 'pipe' })
-    execSync(`git commit -m "feat(loop): 完成${stage}"`, { stdio: 'pipe' })
+    execFileSync('git', ['add', '-A'], { stdio: 'pipe' })
+    execFileSync('git', ['commit', '-m', `feat(loop): 完成${stage}`], { stdio: 'pipe' })
     return true
   } catch {
     return false
@@ -662,7 +669,9 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const tasks = await generateLoopPlan(planner, prepared.goal, prepared.prdPath, loopRuntime.stages)
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
 
-  const branchName = loopRuntime.autoCommit ? ensureBranch(loopRuntime.autoBranchPrefix) || undefined : undefined
+  const branchName = (loopRuntime.autoCommit && prepared.dryRun !== true)
+    ? ensureBranch(loopRuntime.autoBranchPrefix) || undefined
+    : undefined
 
   const session: LoopSession = {
     id: sessionId,
