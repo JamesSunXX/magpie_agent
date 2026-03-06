@@ -13,7 +13,13 @@ export class KiroProvider implements AIProvider {
     constructor(_options?: ProviderOptions) {
         // No API key needed for Kiro CLI (uses AWS subscription)
         this.cwd = process.cwd()
-        this.timeout = 15 * 60 * 1000  // 15 minutes default
+        const envTimeout = process.env.MAGPIE_KIRO_TIMEOUT_MS
+        const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
+        if (Number.isFinite(parsedTimeout) && parsedTimeout >= 0) {
+            this.timeout = Math.floor(parsedTimeout)
+        } else {
+            this.timeout = 15 * 60 * 1000  // 15 minutes default
+        }
     }
 
     setCwd(cwd: string) {
@@ -58,6 +64,12 @@ export class KiroProvider implements AIProvider {
         return `${prompt}\n\n请结合以下图片进行分析（图片引用）：\n${refs}\n\n图片路径清单：\n${list}`
     }
 
+    private getTimeoutCheckInterval(): number {
+        if (this.timeout <= 0) return 0
+        // Keep timeout checks responsive while avoiding tight polling loops.
+        return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
+    }
+
     private runKiro(prompt: string): Promise<string> {
         return new Promise((resolve, reject) => {
             // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
@@ -75,16 +87,32 @@ export class KiroProvider implements AIProvider {
 
             let output = ''
             let error = ''
+            let settled = false
+            let lastActivity = Date.now()
+            const checkInterval = this.getTimeoutCheckInterval()
+            const timeoutChecker = this.timeout > 0 ? setInterval(() => {
+                if (Date.now() - lastActivity > this.timeout && !settled) {
+                    if (timeoutChecker) clearInterval(timeoutChecker)
+                    child.kill('SIGTERM')
+                    settled = true
+                    reject(new Error(`kiro-cli timed out after ${this.timeout / 1000}s of inactivity`))
+                }
+            }, checkInterval) : null
 
             child.stdout.on('data', (data) => {
+                lastActivity = Date.now()
                 output += data.toString()
             })
 
             child.stderr.on('data', (data) => {
+                lastActivity = Date.now()
                 error += data.toString()
             })
 
             child.on('close', (code) => {
+                if (timeoutChecker) clearInterval(timeoutChecker)
+                if (settled) return
+                settled = true
                 if (code !== 0) {
                     reject(new Error(`kiro-cli exited with code ${code}: ${error}`))
                 } else {
@@ -93,6 +121,9 @@ export class KiroProvider implements AIProvider {
             })
 
             child.on('error', (err) => {
+                if (timeoutChecker) clearInterval(timeoutChecker)
+                if (settled) return
+                settled = true
                 reject(new Error(`Failed to run kiro-cli: ${err.message}`))
             })
         })
@@ -117,10 +148,12 @@ export class KiroProvider implements AIProvider {
         let done = false
         let error: Error | null = null
         let lastActivity = Date.now()
+        const checkInterval = this.getTimeoutCheckInterval()
 
         // Timeout checker - kill if no activity for too long
         const timeoutChecker = this.timeout > 0 ? setInterval(() => {
             if (Date.now() - lastActivity > this.timeout) {
+                if (timeoutChecker) clearInterval(timeoutChecker)
                 child.kill('SIGTERM')
                 done = true
                 error = new Error(`kiro-cli timed out after ${this.timeout / 1000}s of inactivity`)
@@ -128,7 +161,7 @@ export class KiroProvider implements AIProvider {
                     resolveNext({ chunk: null })
                 }
             }
-        }, 10000) : null  // Check every 10s
+        }, checkInterval) : null
 
         child.stdout.on('data', (data) => {
             lastActivity = Date.now()
