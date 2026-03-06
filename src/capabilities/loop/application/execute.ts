@@ -674,7 +674,7 @@ async function continueSession(
     }
 
     session.currentStageIndex = i + 1
-    if (runtime.autoCommit && stageRun.stageResult.success && prepared.dryRun !== true) {
+    if (runtime.autoCommit && session.branchName && stageRun.stageResult.success && prepared.dryRun !== true) {
       const committed = commitIfChanged(stage, runCwd)
       await appendEvent(session.artifacts.eventsPath, {
         event: 'auto_commit',
@@ -767,6 +767,13 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await stateManager.saveLoopSession(session)
   await appendEvent(eventsPath, { event: 'loop_started', goal: prepared.goal })
+  if (loopRuntime.autoCommit && prepared.dryRun !== true && !branchName) {
+    ctx.logger.warn('[loop] Auto-commit disabled because branch creation failed; changes will remain on the current branch.')
+    await appendEvent(eventsPath, {
+      event: 'auto_commit_disabled',
+      reason: 'branch_creation_failed',
+    })
+  }
 
   return continueSession(
     session,
