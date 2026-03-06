@@ -270,6 +270,20 @@ integrations:
         webhook_url: "\${FEISHU_WEBHOOK_URL}"
         secret: "\${FEISHU_WEBHOOK_SECRET}"
         msg_type: "post"
+      imessage_local:
+        type: "imessage"
+        transport: "messages-applescript"
+        service: "iMessage"
+        targets:
+          - "handle:+8613800138000"
+      imessage_remote:
+        type: "imessage"
+        transport: "bluebubbles"
+        server_url: "\${BLUEBUBBLES_SERVER_URL}"
+        password: "\${BLUEBUBBLES_PASSWORD}"
+        targets:
+          - "chat_guid:\${BLUEBUBBLES_CHAT_GUID}"
+        method: "private-api"
 `
 
   return config

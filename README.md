@@ -350,6 +350,24 @@ integrations:
 - 直接手机号/邮箱句柄当前不做自动建会话，避免把不稳定逻辑放进通知层。
 - 详细接入说明见 `docs/channels/imessage.md`。
 
+启用本机 Messages/AppleScript 示例：
+
+```yaml
+integrations:
+  notifications:
+    enabled: true
+    routes:
+      human_confirmation_required: [imessage_local]
+      loop_failed: [imessage_local]
+    providers:
+      imessage_local:
+        type: imessage
+        transport: messages-applescript
+        service: iMessage
+        targets:
+          - handle:+8613800138000
+```
+
 ## Provider 支持
 
 `model` 字段按下面规则映射：
@@ -397,6 +415,9 @@ npm run build
 
 # 架构边界检查
 npm run check:boundaries
+
+# 真实通知通道 smoke test（BlueBubbles + Feishu）
+npm run smoke:notifications -- human_confirmation_required
 ```
 
 ## 相关文档

@@ -6,12 +6,15 @@ import type {
 } from './types.js'
 
 const CHAT_GUID_PREFIX = 'chat_guid:'
+type BlueBubblesConfig = Extract<ImessageNotificationProviderConfig, {
+  transport?: 'bluebubbles'
+}>
 
 function normalizeBaseUrl(serverUrl: string): string {
   return serverUrl.trim().replace(/\/+$/g, '')
 }
 
-function buildMessageText(event: NotificationEvent): string {
+export function buildMessageText(event: NotificationEvent): string {
   const lines = [`[${event.severity.toUpperCase()}] ${event.title}`, event.message]
   if (event.actionUrl) {
     lines.push(`Open: ${event.actionUrl}`)
@@ -83,7 +86,7 @@ async function sendBlueBubblesText(
 export async function dispatchBlueBubblesNotification(
   event: NotificationEvent,
   ctx: NotificationContext,
-  config: ImessageNotificationProviderConfig,
+  config: BlueBubblesConfig,
 ): Promise<{
   delivered: number
   attempted: number

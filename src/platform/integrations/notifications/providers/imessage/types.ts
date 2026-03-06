@@ -15,3 +15,9 @@ export interface BlueBubblesMessageRequest {
   text: string
   method: 'private-api' | 'apple-script'
 }
+
+export interface AppleScriptMessageRequest {
+  handle: string
+  text: string
+  service: 'iMessage' | 'SMS'
+}

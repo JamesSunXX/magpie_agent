@@ -123,7 +123,7 @@ export interface FeishuWebhookNotificationProviderConfig {
   msg_type?: 'text' | 'post'
 }
 
-export interface ImessageNotificationProviderConfig {
+export interface ImessageBlueBubblesNotificationProviderConfig {
   type: 'imessage'
   enabled?: boolean
   transport?: 'bluebubbles'
@@ -132,6 +132,18 @@ export interface ImessageNotificationProviderConfig {
   targets: string[]
   method?: 'private-api' | 'apple-script'
 }
+
+export interface ImessageAppleScriptNotificationProviderConfig {
+  type: 'imessage'
+  enabled?: boolean
+  transport: 'messages-applescript'
+  targets: string[]
+  service?: 'iMessage' | 'SMS'
+}
+
+export type ImessageNotificationProviderConfig =
+  | ImessageBlueBubblesNotificationProviderConfig
+  | ImessageAppleScriptNotificationProviderConfig
 
 export type NotificationProviderConfig =
   | MacosNotificationProviderConfig

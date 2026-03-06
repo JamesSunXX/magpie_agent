@@ -15,7 +15,8 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest",
     "test:run": "vitest run",
-    "check:boundaries": "node scripts/check-boundaries.mjs"
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "smoke:notifications": "tsx scripts/smoke-notifications.ts"
   },
   "keywords": [],
   "author": "",
