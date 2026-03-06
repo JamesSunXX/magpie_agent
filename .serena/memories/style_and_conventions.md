@@ -1,0 +1,1 @@
+Project uses TypeScript with module=NodeNext and strict mode. Style conventions: 2-space indentation, single quotes, no semicolons, kebab-case filenames, ESM-compatible imports, and prefer import type for type-only imports. Dist is generated output and should not be edited. Tests mirror source structure and use *.test.ts naming.

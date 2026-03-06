@@ -1,0 +1,1 @@
+Before considering work complete, run at least npm run test:run and npm run build unless the task scope makes one impossible. Preserve project conventions, keep changes out of dist/, and provide testing evidence in PRs. Use focused Vitest tests during development and mock providers when real model calls are unnecessary.

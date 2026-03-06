@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto'
 import { appendFile, mkdir, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
-import { execFileSync, execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import type { CapabilityContext } from '../../../core/capability/context.js'
@@ -96,9 +96,76 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolveFn => setTimeout(resolveFn, ms))
 }
 
+function parseCommandArgs(command: string): string[] {
+  const trimmed = command.trim()
+  if (!trimmed) {
+    throw new Error('Command must not be empty')
+  }
+  if (/[|&;<>`$]/.test(trimmed)) {
+    throw new Error('Unsupported shell metacharacters in command')
+  }
+
+  const args: string[] = []
+  let current = ''
+  let quote: '"' | '\'' | null = null
+  let escaped = false
+
+  for (const ch of trimmed) {
+    if (escaped) {
+      current += ch
+      escaped = false
+      continue
+    }
+
+    if (ch === '\\' && quote !== '\'') {
+      escaped = true
+      continue
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null
+      } else {
+        current += ch
+      }
+      continue
+    }
+
+    if (ch === '"' || ch === '\'') {
+      quote = ch
+      continue
+    }
+
+    if (/\s/.test(ch)) {
+      if (current) {
+        args.push(current)
+        current = ''
+      }
+      continue
+    }
+
+    current += ch
+  }
+
+  if (escaped || quote) {
+    throw new Error('Unterminated command quoting')
+  }
+
+  if (current) {
+    args.push(current)
+  }
+
+  if (args.length === 0) {
+    throw new Error('Command must not be empty')
+  }
+
+  return args
+}
+
 function runCommand(cwd: string, command: string): { passed: boolean; output: string } {
   try {
-    const output = execSync(command, {
+    const [file, ...args] = parseCommandArgs(command)
+    const output = execFileSync(file, args, {
       cwd,
       stdio: 'pipe',
       encoding: 'utf-8',
@@ -238,7 +305,17 @@ function ensureBranch(prefix: string, cwd: string): string | null {
   }
 
   const normalizedPrefix = prefix.startsWith('sch/') ? prefix : `sch/${prefix.replace(/^\/+/, '')}`
-  const branchName = `${normalizedPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
+  const sanitizedPrefix = normalizedPrefix
+    .replace(/[^a-zA-Z0-9/_\-.]/g, '-')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^-+/, '')
+    .replace(/\/-+/g, '/')
+  const safePrefix = sanitizedPrefix.length > 0 ? sanitizedPrefix : 'sch'
+  const finalPrefix = safePrefix.endsWith('/') ? safePrefix : `${safePrefix}/`
+  const branchName = `${finalPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
+  if (!/^[a-zA-Z0-9/_\-.]{1,100}$/.test(branchName)) {
+    return null
+  }
 
   try {
     execFileSync('git', ['checkout', '-b', branchName], { stdio: 'pipe', cwd })

@@ -1,0 +1,1 @@
+Core commands: npm install; npm run dev -- review 12345 (run CLI from source); npm test (Vitest watch); npm run test:run (single test run); npm run build (TypeScript compile); npm run check:boundaries (architecture boundaries); npm link (optional global binary). Common system utilities on Darwin/macOS: git, ls, cd, rg, find, sed.
