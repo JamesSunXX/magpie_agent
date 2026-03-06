@@ -1,5 +1,6 @@
 import type { NotificationsIntegrationConfig } from '../../../config/types.js'
 import { FeishuWebhookNotificationProvider } from './providers/feishu-webhook.js'
+import { ImessageNotificationProvider } from './providers/imessage/index.js'
 import { MacosNotificationProvider } from './providers/macos.js'
 import { NotificationRouter } from './router.js'
 import type { NotificationProvider } from './types.js'
@@ -20,6 +21,11 @@ function createProviders(config: NotificationsIntegrationConfig | undefined): Re
 
     if (providerConfig.type === 'feishu-webhook') {
       output[id] = new FeishuWebhookNotificationProvider(id, providerConfig)
+      continue
+    }
+
+    if (providerConfig.type === 'imessage') {
+      output[id] = new ImessageNotificationProvider(id, providerConfig)
       continue
     }
   }

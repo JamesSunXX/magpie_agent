@@ -313,7 +313,13 @@ function ensureBranch(prefix: string, cwd: string): string | null {
   const safePrefix = sanitizedPrefix.length > 0 ? sanitizedPrefix : 'sch'
   const finalPrefix = safePrefix.endsWith('/') ? safePrefix : `${safePrefix}/`
   const branchName = `${finalPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
-  if (!/^[a-zA-Z0-9/_\-.]{1,100}$/.test(branchName)) {
+  if (!/^[a-zA-Z0-9/_\-.]+$/.test(branchName) || branchName.length > 100) {
+    return null
+  }
+
+  try {
+    execFileSync('git', ['check-ref-format', '--branch', branchName], { stdio: 'pipe', cwd })
+  } catch {
     return null
   }
 
@@ -321,25 +327,47 @@ function ensureBranch(prefix: string, cwd: string): string | null {
     execFileSync('git', ['checkout', '-b', branchName], { stdio: 'pipe', cwd })
     return branchName
   } catch {
-    try {
-      execFileSync('git', ['checkout', branchName], { stdio: 'pipe', cwd })
-      return branchName
-    } catch {
-      return null
-    }
+    return null
   }
 }
 
-function commitIfChanged(stage: LoopStageName, cwd: string): boolean {
+function commitIfChanged(
+  stage: LoopStageName,
+  cwd: string,
+  expectedBranch?: string,
+): { committed: boolean; reason?: string } {
   try {
+    if (expectedBranch) {
+      const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        encoding: 'utf-8',
+        cwd,
+      }).trim()
+      if (currentBranch !== expectedBranch) {
+        return {
+          committed: false,
+          reason: `branch_mismatch:${currentBranch}`,
+        }
+      }
+    }
+
     const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd }).trim()
-    if (!status) return false
+    if (!status) {
+      return {
+        committed: false,
+        reason: 'no_changes',
+      }
+    }
 
     execFileSync('git', ['add', '-A'], { stdio: 'pipe', cwd })
     execFileSync('git', ['commit', '-m', `feat(loop): 完成${stage}`], { stdio: 'pipe', cwd })
-    return true
-  } catch {
-    return false
+    return {
+      committed: true,
+    }
+  } catch (error) {
+    return {
+      committed: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }
   }
 }
 
@@ -675,11 +703,12 @@ async function continueSession(
 
     session.currentStageIndex = i + 1
     if (runtime.autoCommit && session.branchName && stageRun.stageResult.success && prepared.dryRun !== true) {
-      const committed = commitIfChanged(stage, runCwd)
+      const commitResult = commitIfChanged(stage, runCwd, session.branchName)
       await appendEvent(session.artifacts.eventsPath, {
         event: 'auto_commit',
         stage,
-        committed,
+        committed: commitResult.committed,
+        ...(commitResult.reason ? { reason: commitResult.reason } : {}),
       })
     }
 

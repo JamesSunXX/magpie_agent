@@ -316,6 +316,40 @@ integrations:
     enabled: false
 ```
 
+启用 iMessage 通知（BlueBubbles）示例：
+
+```yaml
+integrations:
+  notifications:
+    enabled: true
+    default_timeout_ms: 5000
+    routes:
+      human_confirmation_required: [macos_local, imessage_ops]
+      loop_failed: [imessage_ops]
+      loop_completed: [imessage_ops]
+    providers:
+      macos_local:
+        type: macos
+        click_target: vscode
+        terminal_notifier_bin: terminal-notifier
+        fallback_osascript: true
+      imessage_ops:
+        type: imessage
+        transport: bluebubbles
+        server_url: ${BLUEBUBBLES_SERVER_URL}
+        password: ${BLUEBUBBLES_PASSWORD}
+        targets:
+          - chat_guid:iMessage;-;+8613800138000
+        method: private-api
+```
+
+说明：
+
+- `imessage` provider 当前首版使用 BlueBubbles REST API。
+- `targets` 建议使用 `chat_guid:<guid>`；也兼容直接填原始 BlueBubbles chat guid。
+- 直接手机号/邮箱句柄当前不做自动建会话，避免把不稳定逻辑放进通知层。
+- 详细接入说明见 `docs/channels/imessage.md`。
+
 ## Provider 支持
 
 `model` 字段按下面规则映射：
@@ -370,6 +404,7 @@ npm run check:boundaries
 - `docs/plans/2026-03-04-capability-architecture-v2.md`
 - `docs/plans/2026-03-05-prd-review-workflow.md`
 - `docs/plans/2026-01-26-magpie-design.md`
+- `docs/channels/imessage.md`
 
 ## 已知现状说明
 

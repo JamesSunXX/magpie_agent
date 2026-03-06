@@ -107,7 +107,7 @@ describe('loop capability', () => {
     expect(currentBranch).toBe(result.result.session?.branchName)
   })
 
-  it('does not auto-commit onto the current branch when branch creation fails', async () => {
+  it('does not auto-commit onto the current branch when the configured prefix is not a valid git ref', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-no-branch-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
@@ -123,8 +123,7 @@ describe('loop capability', () => {
     writeFileSync(join(dir, 'pending-change.txt'), 'should stay uncommitted\n', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    const longPrefix = `sch/${'x'.repeat(120)}`
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "${longPrefix}"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/invalid..ref"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const beforeCommit = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
     const beforeBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
