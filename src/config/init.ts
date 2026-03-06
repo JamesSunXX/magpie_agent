@@ -1,5 +1,5 @@
 // src/config/init.ts
-import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import { writeFileSync, mkdirSync, existsSync, renameSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -10,6 +10,24 @@ export interface ReviewerOption {
   description: string
   needsApiKey: boolean
   provider?: 'anthropic' | 'openai' | 'google'
+}
+
+export interface InitNotificationsOptions {
+  feishuWebhookUrl?: string
+  feishuWebhookSecret?: string
+  imessageAppleScriptTargets?: string[]
+  imessageBluebubblesServerUrl?: string
+  imessageBluebubblesPassword?: string
+  imessageBluebubblesChatGuid?: string
+}
+
+export interface InitConfigOptions {
+  notifications?: InitNotificationsOptions
+}
+
+export interface InitConfigResult {
+  configPath: string
+  backupPath?: string
 }
 
 export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
@@ -98,7 +116,50 @@ const REVIEW_PROMPT = `You are a thorough code reviewer. Your job is to find ALL
       \`\`\`
       You may include free-form discussion before the JSON block.`
 
-export function generateConfig(selectedReviewerIds: string[]): string {
+function yamlDoubleQuoted(value: string): string {
+  return `"${value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')}"`
+}
+
+function normalizeBluebubblesTarget(target: string): string {
+  return target.startsWith('chat_guid:') ? target : `chat_guid:${target}`
+}
+
+function resolveNotificationsOptions(options?: InitConfigOptions): {
+  feishuWebhookUrl: string
+  feishuWebhookSecret: string
+  imessageAppleScriptTargets: string[]
+  imessageBluebubblesServerUrl: string
+  imessageBluebubblesPassword: string
+  imessageBluebubblesTarget: string
+} {
+  const notifications = options?.notifications
+  const feishuWebhookUrl = notifications?.feishuWebhookUrl?.trim() || '${FEISHU_WEBHOOK_URL}'
+  const feishuWebhookSecret = notifications?.feishuWebhookSecret?.trim() || '${FEISHU_WEBHOOK_SECRET}'
+  const imessageBluebubblesServerUrl = notifications?.imessageBluebubblesServerUrl?.trim() || '${BLUEBUBBLES_SERVER_URL}'
+  const imessageBluebubblesPassword = notifications?.imessageBluebubblesPassword?.trim() || '${BLUEBUBBLES_PASSWORD}'
+  const imessageBluebubblesTarget = normalizeBluebubblesTarget(
+    notifications?.imessageBluebubblesChatGuid?.trim() || '${BLUEBUBBLES_CHAT_GUID}'
+  )
+
+  const imessageAppleScriptTargets = notifications?.imessageAppleScriptTargets
+    ?.map(target => target.trim())
+    .filter(target => target.length > 0)
+
+  return {
+    feishuWebhookUrl,
+    feishuWebhookSecret,
+    imessageAppleScriptTargets: imessageAppleScriptTargets?.length
+      ? imessageAppleScriptTargets
+      : ['handle:+8613800138000'],
+    imessageBluebubblesServerUrl,
+    imessageBluebubblesPassword,
+    imessageBluebubblesTarget
+  }
+}
+
+export function generateConfig(selectedReviewerIds: string[], options?: InitConfigOptions): string {
   const selectedReviewers = AVAILABLE_REVIEWERS.filter(r => selectedReviewerIds.includes(r.id))
 
   // Determine which providers need API keys
@@ -145,6 +206,11 @@ export function generateConfig(selectedReviewerIds: string[]): string {
   } else if (trdDefaultReviewers.length === 1) {
     trdDefaultReviewers.push(trdDefaultReviewers[0])
   }
+
+  const notifications = resolveNotificationsOptions(options)
+  const appleScriptTargetsYaml = notifications.imessageAppleScriptTargets
+    .map(target => `          - ${yamlDoubleQuoted(target)}`)
+    .join('\n')
 
   const config = `# Magpie Configuration
 
@@ -267,22 +333,22 @@ integrations:
         fallback_osascript: true
       feishu_team:
         type: "feishu-webhook"
-        webhook_url: "\${FEISHU_WEBHOOK_URL}"
-        secret: "\${FEISHU_WEBHOOK_SECRET}"
+        webhook_url: ${yamlDoubleQuoted(notifications.feishuWebhookUrl)}
+        secret: ${yamlDoubleQuoted(notifications.feishuWebhookSecret)}
         msg_type: "post"
       imessage_local:
         type: "imessage"
         transport: "messages-applescript"
         service: "iMessage"
         targets:
-          - "handle:+8613800138000"
+${appleScriptTargetsYaml}
       imessage_remote:
         type: "imessage"
         transport: "bluebubbles"
-        server_url: "\${BLUEBUBBLES_SERVER_URL}"
-        password: "\${BLUEBUBBLES_PASSWORD}"
+        server_url: ${yamlDoubleQuoted(notifications.imessageBluebubblesServerUrl)}
+        password: ${yamlDoubleQuoted(notifications.imessageBluebubblesPassword)}
         targets:
-          - "chat_guid:\${BLUEBUBBLES_CHAT_GUID}"
+          - ${yamlDoubleQuoted(notifications.imessageBluebubblesTarget)}
         method: "private-api"
 `
 
@@ -292,21 +358,53 @@ integrations:
 // Legacy default config for backwards compatibility
 export const DEFAULT_CONFIG = generateConfig(['claude-code', 'codex-cli'])
 
-export function initConfig(baseDir?: string, selectedReviewers?: string[]): string {
+function buildBackupPath(configPath: string): string {
+  const timestamp = Date.now()
+  let backupPath = `${configPath}.bak-${timestamp}`
+  let suffix = 1
+
+  while (existsSync(backupPath)) {
+    backupPath = `${configPath}.bak-${timestamp}-${suffix}`
+    suffix += 1
+  }
+
+  return backupPath
+}
+
+export function initConfigWithResult(
+  baseDir?: string,
+  selectedReviewers?: string[],
+  options?: InitConfigOptions
+): InitConfigResult {
   const base = baseDir || homedir()
   const magpieDir = join(base, '.magpie')
   const configPath = join(magpieDir, 'config.yaml')
-
-  if (existsSync(configPath)) {
-    throw new Error(`Config already exists: ${configPath}`)
-  }
-
-  const config = selectedReviewers
-    ? generateConfig(selectedReviewers)
-    : DEFAULT_CONFIG
+  let backupPath: string | undefined
 
   mkdirSync(magpieDir, { recursive: true })
+
+  if (existsSync(configPath)) {
+    backupPath = buildBackupPath(configPath)
+    renameSync(configPath, backupPath)
+  }
+
+  const reviewerIds = selectedReviewers?.length
+    ? selectedReviewers
+    : ['claude-code', 'codex-cli']
+
+  const config = generateConfig(reviewerIds, options)
   writeFileSync(configPath, config, 'utf-8')
 
-  return configPath
+  return {
+    configPath,
+    backupPath
+  }
+}
+
+export function initConfig(
+  baseDir?: string,
+  selectedReviewers?: string[],
+  options?: InitConfigOptions
+): string {
+  return initConfigWithResult(baseDir, selectedReviewers, options).configPath
 }
