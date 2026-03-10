@@ -145,6 +145,7 @@ dist/                  # tsc 构建产物（不要手改）
 | `magpie review` | 代码评审（PR/local/repo） | legacy command + orchestrator |
 | `magpie discuss` | 多模型议题辩论 | legacy command + orchestrator |
 | `magpie trd` | PRD -> TRD | legacy command |
+| `magpie reviewers list` | 列出已配置 reviewer（可按 model 过滤） | legacy command |
 | `magpie quality unit-test-eval` | 单测质量评估 | capability runner |
 | `magpie loop` | 目标闭环执行 | capability runner |
 | `magpie stats` | 统计占位命令（简版） | legacy command |
@@ -183,6 +184,9 @@ magpie quality unit-test-eval . --run-tests
 
 # 6) 目标执行闭环
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
+
+# 7) 查看已配置 reviewer（示例：仅 kiro）
+magpie reviewers list --model kiro
 ```
 
 ## 常用参数速查
@@ -257,6 +261,17 @@ magpie loop list
 --wait-human / --no-wait-human
 --dry-run
 --max-iterations <number>
+```
+
+### `reviewers`
+
+```bash
+magpie reviewers list [options]
+
+# 常用：
+--model <name>   # 例如 kiro / codex-cli / claude-code
+--json
+--config <path>
 ```
 
 ## 配置说明
