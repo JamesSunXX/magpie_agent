@@ -3,7 +3,7 @@ import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.
 import { CliSessionHelper } from './session-helper.js'
 
 export class CodexCliProvider implements AIProvider {
-  name = 'codex-cli'
+  name = 'codex'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private session = new CliSessionHelper()

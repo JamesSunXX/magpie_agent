@@ -14,7 +14,7 @@ sequenceDiagram
     participant Orch as DebateOrchestrator
     participant Analyzer as Analyzer Provider
     participant R1 as Reviewer A<br/>(e.g. claude-code)
-    participant R2 as Reviewer B<br/>(e.g. codex-cli)
+    participant R2 as Reviewer B<br/>(e.g. codex)
     participant Sum as Summarizer Provider
 
     User->>CLI: magpie review 12345
@@ -289,9 +289,9 @@ sequenceDiagram
         Note right of Factory: 无需 API Key
     end
 
-    Caller->>Factory: createProvider("codex-cli", config)
-    Factory->>GPM: getProviderForModel("codex-cli")
-    GPM-->>Factory: "codex-cli"
+    Caller->>Factory: createProvider("codex", config)
+    Factory->>GPM: getProviderForModel("codex")
+    GPM-->>Factory: "codex"
     Factory-->>Caller: new CodexCliProvider()
 
     Caller->>Factory: createProvider("kiro", config)

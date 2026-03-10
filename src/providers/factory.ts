@@ -4,7 +4,7 @@ import type { MagpieConfig } from '../config/types.js'
 import { AnthropicProvider } from './anthropic.js'
 import { OpenAIProvider } from './openai.js'
 import { ClaudeCodeProvider } from './claude-code.js'
-import { CodexCliProvider } from './codex-cli.js'
+import { CodexCliProvider } from './codex.js'
 import { GeminiCliProvider } from './gemini-cli.js'
 import { GeminiProvider } from './gemini.js'
 import { QwenCodeProvider } from './qwen-code.js'
@@ -12,12 +12,12 @@ import { KiroProvider } from './kiro.js'
 import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
 
-export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
+export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
   if (model === 'claude-code') {
     return 'claude-code'
   }
-  if (model === 'codex-cli') {
-    return 'codex-cli'
+  if (model === 'codex') {
+    return 'codex'
   }
   if (model === 'gemini-cli') {
     return 'gemini-cli'
@@ -60,7 +60,7 @@ export function createProvider(model: string, config: MagpieConfig): AIProvider 
   }
 
   // Codex CLI doesn't need API key config
-  if (providerName === 'codex-cli') {
+  if (providerName === 'codex') {
     return new CodexCliProvider()
   }
 

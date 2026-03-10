@@ -58,7 +58,7 @@ describe('Config Init', () => {
 
   it('should render interactive notification values when provided', () => {
     const content = generateConfig(
-      ['claude-code', 'codex-cli'],
+      ['claude-code', 'codex'],
       {
         notifications: {
           feishuWebhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/demo',

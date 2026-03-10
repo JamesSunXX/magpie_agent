@@ -6,7 +6,7 @@ function buildConfig(reviewers: MagpieConfig['reviewers']): MagpieConfig {
   return {
     providers: {
       'claude-code': { enabled: true },
-      'codex-cli': { enabled: true },
+      'codex': { enabled: true },
       'kiro': { enabled: true },
     },
     defaults: {
@@ -24,14 +24,14 @@ describe('reviewers command helpers', () => {
   it('lists all configured reviewers', () => {
     const config = buildConfig({
       backend: { model: 'kiro', prompt: 'backend review' },
-      frontend: { model: 'codex-cli', prompt: 'frontend review' },
+      frontend: { model: 'codex', prompt: 'frontend review' },
     })
 
     const result = listConfiguredReviewers(config)
 
     expect(result).toEqual([
       { id: 'backend', model: 'kiro' },
-      { id: 'frontend', model: 'codex-cli' },
+      { id: 'frontend', model: 'codex' },
     ])
   })
 
@@ -39,7 +39,7 @@ describe('reviewers command helpers', () => {
     const config = buildConfig({
       security: { model: 'kiro', prompt: 'security review' },
       perf: { model: 'KiRo', prompt: 'performance review' },
-      quality: { model: 'codex-cli', prompt: 'quality review' },
+      quality: { model: 'codex', prompt: 'quality review' },
     })
 
     const result = listConfiguredReviewers(config, 'kiro')

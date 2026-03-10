@@ -74,7 +74,7 @@ function generateId(): string {
 function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
   return {
     plannerModel: config?.planner_model || 'claude-code',
-    executorModel: config?.executor_model || 'codex-cli',
+    executorModel: config?.executor_model || 'codex',
     stages: config?.stages && config.stages.length > 0 ? config.stages : DEFAULT_STAGES,
     confidenceThreshold: config?.confidence_threshold ?? 0.78,
     retriesPerStage: config?.retries_per_stage ?? 2,

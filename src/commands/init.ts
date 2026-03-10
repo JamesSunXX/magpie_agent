@@ -119,7 +119,7 @@ async function selectNotificationOptions(): Promise<InitNotificationsOptions | u
 
 export const initCommand = new Command('init')
   .description('Initialize Magpie configuration')
-  .option('-y, --yes', 'Use default reviewers (claude-code + codex-cli)')
+  .option('-y, --yes', 'Use default reviewers (claude-code + codex)')
   .action(async (options) => {
     try {
       let selectedReviewers: string[] | undefined
@@ -130,7 +130,7 @@ export const initCommand = new Command('init')
 
         if (selectedReviewers.length === 0) {
           console.log(chalk.yellow('\nNo reviewers selected. Using defaults (Claude Code + Codex CLI)'))
-          selectedReviewers = ['claude-code', 'codex-cli']
+          selectedReviewers = ['claude-code', 'codex']
         } else if (selectedReviewers.length === 1) {
           console.log(chalk.yellow('\nOnly 1 reviewer selected. Debate works best with 2+ reviewers.'))
         }

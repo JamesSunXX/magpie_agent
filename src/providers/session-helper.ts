@@ -4,7 +4,7 @@ import type { Message } from './types.js'
 
 /**
  * Shared session management for CLI-based providers.
- * Eliminates duplicated session/prompt logic across claude-code, qwen-code, codex-cli, gemini-cli.
+ * Eliminates duplicated session/prompt logic across claude-code, qwen-code, codex, gemini-cli.
  */
 export class CliSessionHelper {
   sessionId?: string

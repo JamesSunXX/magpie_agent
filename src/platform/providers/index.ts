@@ -7,7 +7,7 @@ export * from './api/gemini.js'
 export * from './api/minimax.js'
 
 export * from './cli/claude-code.js'
-export * from './cli/codex-cli.js'
+export * from './cli/codex.js'
 export * from './cli/gemini-cli.js'
 export * from './cli/qwen-code.js'
 export * from './cli/kiro.js'

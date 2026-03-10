@@ -9,7 +9,7 @@ describe('Provider Factory', () => {
       anthropic: { api_key: 'ant-key' },
       openai: { api_key: 'oai-key' },
       'claude-code': { enabled: true },
-      'codex-cli': { enabled: true }
+      'codex': { enabled: true }
     },
     defaults: { max_rounds: 3, output_format: 'markdown' },
     reviewers: {},
@@ -36,8 +36,8 @@ describe('Provider Factory', () => {
       expect(getProviderForModel('claude-code')).toBe('claude-code')
     })
 
-    it('should return codex-cli for codex-cli model', () => {
-      expect(getProviderForModel('codex-cli')).toBe('codex-cli')
+    it('should return codex for codex model', () => {
+      expect(getProviderForModel('codex')).toBe('codex')
     })
   })
 
@@ -71,9 +71,9 @@ describe('Provider Factory', () => {
       expect(provider.name).toBe('gemini')
     })
 
-    it('should create codex-cli provider', () => {
-      const provider = createProvider('codex-cli', mockConfig)
-      expect(provider.name).toBe('codex-cli')
+    it('should create codex provider', () => {
+      const provider = createProvider('codex', mockConfig)
+      expect(provider.name).toBe('codex')
     })
 
     it('should pass base_url through to API providers', () => {

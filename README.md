@@ -269,7 +269,7 @@ magpie loop list
 magpie reviewers list [options]
 
 # 常用：
---model <name>   # 例如 kiro / codex-cli / claude-code
+--model <name>   # 例如 kiro / codex / claude-code
 --json
 --config <path>
 ```
@@ -320,7 +320,7 @@ capabilities:
   loop:
     enabled: true
     planner_model: claude-code
-    executor_model: codex-cli
+    executor_model: codex
   quality:
     unitTestEval:
       enabled: true
@@ -387,7 +387,7 @@ integrations:
 
 `model` 字段按下面规则映射：
 
-- CLI 型：`claude-code`、`codex-cli`、`gemini-cli`、`qwen-code`、`kiro`
+- CLI 型：`claude-code`、`codex`、`gemini-cli`、`qwen-code`、`kiro`
 - API 型：
   - `claude*` -> Anthropic
   - `gpt*` -> OpenAI

@@ -39,9 +39,9 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
     needsApiKey: false
   },
   {
-    id: 'codex-cli',
+    id: 'codex',
     name: 'Codex CLI',
-    model: 'codex-cli',
+    model: 'codex',
     description: 'Uses your OpenAI Codex CLI subscription (no API key needed)',
     needsApiKey: false
   },
@@ -202,7 +202,7 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const analyzerModel = selectedReviewers[0]?.model || 'claude-code'
   const trdDefaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
   if (trdDefaultReviewers.length === 0) {
-    trdDefaultReviewers.push('claude-code', 'codex-cli')
+    trdDefaultReviewers.push('claude-code', 'codex')
   } else if (trdDefaultReviewers.length === 1) {
     trdDefaultReviewers.push(trdDefaultReviewers[0])
   }
@@ -300,7 +300,7 @@ capabilities:
   loop:
     enabled: true
     planner_model: ${analyzerModel}
-    executor_model: codex-cli
+    executor_model: codex
     stages: [prd_review, domain_partition, trd_generation, code_development, unit_mock_test, integration_test]
     confidence_threshold: 0.78
     retries_per_stage: 2
@@ -356,7 +356,7 @@ ${appleScriptTargetsYaml}
 }
 
 // Legacy default config for backwards compatibility
-export const DEFAULT_CONFIG = generateConfig(['claude-code', 'codex-cli'])
+export const DEFAULT_CONFIG = generateConfig(['claude-code', 'codex'])
 
 function buildBackupPath(configPath: string): string {
   const timestamp = Date.now()
@@ -390,7 +390,7 @@ export function initConfigWithResult(
 
   const reviewerIds = selectedReviewers?.length
     ? selectedReviewers
-    : ['claude-code', 'codex-cli']
+    : ['claude-code', 'codex']
 
   const config = generateConfig(reviewerIds, options)
   writeFileSync(configPath, config, 'utf-8')

@@ -31,7 +31,7 @@ function buildDefaultCapabilities(config: LegacyMagpieConfig): MagpieConfigV2['c
     loop: {
       enabled: true,
       planner_model: config.analyzer?.model || 'claude-code',
-      executor_model: 'codex-cli',
+      executor_model: 'codex',
       stages: [
         'prd_review',
         'domain_partition',

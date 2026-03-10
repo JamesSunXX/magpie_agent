@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClaudeCodeProvider } from '../../src/providers/claude-code.js'
-import { CodexCliProvider } from '../../src/providers/codex-cli.js'
+import { CodexCliProvider } from '../../src/providers/codex.js'
 import { GeminiCliProvider } from '../../src/providers/gemini-cli.js'
 import { KiroProvider } from '../../src/providers/kiro.js'
 

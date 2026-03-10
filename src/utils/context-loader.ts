@@ -6,7 +6,7 @@ import { homedir } from 'os'
 const PROVIDER_CONTEXT_MAP: Record<string, string[]> = {
   'claude-code': ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'],
   'gemini-cli': ['GEMINI.md', 'AGENTS.md', 'CLAUDE.md'],
-  'codex-cli': ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'],
+  'codex': ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'],
   'kiro': ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'],
 }
 const DEFAULT_CONTEXT_FILES = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']
@@ -35,7 +35,7 @@ function findContextFile(startDir: string, filename: string): string {
  * Load project context for a specific provider/reviewer model.
  * - claude-code: prefers CLAUDE.md, falls back to AGENTS.md then GEMINI.md
  * - gemini-cli:  prefers GEMINI.md, falls back to AGENTS.md then CLAUDE.md
- * - codex-cli:   prefers AGENTS.md, falls back to CLAUDE.md then GEMINI.md
+ * - codex:   prefers AGENTS.md, falls back to CLAUDE.md then GEMINI.md
  * - others:      tries CLAUDE.md then AGENTS.md then GEMINI.md
  *
  * Also loads user-level ~/.claude/CLAUDE.md if it exists.
