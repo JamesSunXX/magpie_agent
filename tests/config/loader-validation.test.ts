@@ -118,4 +118,20 @@ describe('loadConfig - validation', () => {
     vi.mocked(parse).mockReturnValue(bad)
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('trd.max_rounds must be > 0')
   })
+
+  it('ignores legacy trd.preprocess.image_reader config', () => {
+    const legacy = structuredClone(validConfig) as Record<string, any>
+    legacy.trd = {
+      preprocess: {
+        chunk_chars: 6000,
+        max_chars: 120000,
+        image_reader: {
+          enabled: true,
+          command: 'tesseract {image} stdout',
+        },
+      },
+    }
+    vi.mocked(parse).mockReturnValue(legacy as MagpieConfig)
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
 })

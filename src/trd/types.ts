@@ -2,11 +2,6 @@ export interface ParsedImage {
   index: number
   alt: string
   source: string
-  resolvedPath?: string
-  ocrText?: string
-  error?: string
-  skipped?: boolean
-  skipReason?: string
 }
 
 export interface PrdRequirement {

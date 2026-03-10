@@ -232,10 +232,14 @@ magpie trd [prd.md] [options]
 --domain-overview-only
 --domains-file <path>
 --auto-accept-domains
---no-ocr
 --list
 --resume <id>
 ```
+
+图片处理说明：
+- PRD 图片会直接作为多模态输入传给模型，不做 OCR 预处理。
+- 远程图片链接按 best-effort 处理，访问失败时会告警并跳过。
+- 本地图片仅在文件存在时加入输入，不存在则告警并跳过。
 
 ### `quality`
 
@@ -315,6 +319,18 @@ trd:
   default_reviewers: [claude]
   max_rounds: 3
   language: zh
+  include_project_context: true
+  include_traceability: true
+  output:
+    same_dir_as_prd: true
+    trd_suffix: ".trd.md"
+    open_questions_suffix: ".open-questions.md"
+  preprocess:
+    chunk_chars: 6000
+    max_chars: 120000
+  domain:
+    require_human_confirmation: true
+    overview_required: true
 
 capabilities:
   loop:
@@ -410,7 +426,6 @@ integrations:
 - Node.js 18+
 - Git
 - 评审 PR 与评论发布建议安装并登录 `gh` CLI
-- 若启用 TRD 图片 OCR，需安装 `tesseract`
 - 使用 CLI 型 provider 时，需确保对应 CLI 已安装并已登录
 
 ## 开发与测试

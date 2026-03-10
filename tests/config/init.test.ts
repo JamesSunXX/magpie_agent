@@ -22,6 +22,7 @@ describe('Config Init', () => {
     expect(content).toContain('reviewers:')
     expect(content).toContain('trd:')
     expect(content).toContain('default_reviewers:')
+    expect(content).not.toContain('image_reader:')
   })
 
   it('should include notification templates for feishu and iMessage transports', () => {
