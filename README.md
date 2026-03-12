@@ -1,226 +1,188 @@
 # Magpie
 
-Magpie 是一个多模型协同/对抗的工程化 CLI，当前主要覆盖 5 类能力：
+Magpie 是一个面向工程场景的多模型 CLI，当前同时包含两套运行方式：
 
-- `review`：多 AI 代码评审（PR、本地 diff、分支 diff、文件级、仓库级）
-- `discuss`：多 AI 议题辩论（可加入 Devil's Advocate）
-- `trd`：从 PRD Markdown 生成 TRD（含领域划分与开放问题）
-- `quality unit-test-eval`：单测质量评估
-- `loop`：目标驱动的阶段化执行闭环（含人工确认闸门）
+- legacy 命令流：`review`、`discuss`、`trd`、`init`、`reviewers`、`stats`
+- capability runner：`loop`、`quality unit-test-eval`、`workflow *`
 
-## 当前项目总结（基于代码现状）
+它的核心目标不是单次问答，而是把多模型协作、评审、TRD 生成、阶段执行、通知和会话持久化整合到一个本地开发工作流里。
 
-这是一个 **V2 capability 架构 + legacy 命令流并存** 的项目。
+## 当前能力
 
-- 已完整走 capability runner：
-  - `loop`
-  - `quality/unit-test-eval`
-- 仍以 legacy command 为主流程：
-  - `review`
-  - `discuss`
-  - `trd`
+### 代码与工程协作
+
+- `review`：多 AI 代码评审，支持 PR、PR URL、本地 diff、分支 diff、文件集和仓库级扫描
+- `discuss`：多模型议题讨论，可选 `Devil's Advocate`
+- `reviewers list`：查看当前配置里的 reviewer
+- `stats`：仓库评审统计占位命令
+
+### 需求与设计
+
+- `trd`：从 PRD Markdown 生成 TRD、领域划分草稿和开放问题清单
+- `loop`：围绕 PRD 的阶段化执行闭环，支持人工确认闸门和恢复执行
+
+### 工程工作流
+
+- `workflow issue-fix`：问题修复工作流，产出 plan / execution / verification 结果
+- `workflow docs-sync`：对照当前代码审查文档并生成更新简报，可选直接应用文档修改
+- `workflow post-merge-regression`：执行回归命令并沉淀结果报告
+- `quality unit-test-eval`：评估单测质量，可选运行测试命令
+
+## 架构现状
+
+当前仓库是一个混合架构：
+
 - CLI 统一入口：`src/cli.ts` -> `src/cli/program.ts`
-- 配置入口：`~/.magpie/config.yaml`
-- Provider 同时支持 CLI 型与 API 型模型
-- 会话与产物支持持久化，支持中断恢复
+- `review` / `discuss` / `trd` 仍主要走 legacy command 实现
+- `loop`、`quality unit-test-eval`、`workflow *` 已完整走 capability runtime
+- capability 注册表中已经包含 `review` / `discuss` / `trd`，但 CLI 主路径还没有完全切换过去
+- 配置文件仍以 `~/.magpie/config.yaml` 为入口，capability 侧会把 legacy 配置自动迁移成 `capabilities.*` 结构在内存中使用
 
-## 工作原理图
-
-### 1) 总体架构图（混合架构）
-
-```mermaid
-flowchart LR
-  U[User] --> C[magpie CLI]
-  C --> P[Commander Program]
-
-  P --> L[Legacy Commands]
-  P --> R[Capability Runner]
-
-  L --> L1[review]
-  L --> L2[discuss]
-  L --> L3[trd]
-
-  R --> K1[loop capability]
-  R --> K2[quality/unit-test-eval capability]
-
-  L1 --> O[Debate Orchestrator]
-  L2 --> O
-  L3 --> T[TRD Domain Pipeline]
-
-  O --> M[Providers]
-  T --> M
-  K1 --> M
-
-  K1 --> S[State Manager]
-  K1 --> N[Notification Router]
-  K2 --> Q[Test/Coverage Analyzer]
-
-  S --> FS1[(~/.magpie/*)]
-  L1 --> FS2[(./.magpie/*)]
-```
-
-### 2) `review` 辩论流程图
-
-```mermaid
-flowchart TD
-  A[输入评审目标: PR/local/branch/files/repo] --> B[加载配置与选择 reviewer]
-  B --> C{是否 repo 模式}
-
-  C -- 是 --> R1[仓库扫描 + feature 分析 + 会话持久化]
-  R1 --> R2[按 feature 执行 review]
-  R2 --> R3[汇总与导出]
-
-  C -- 否 --> D[构造目标 prompt 和 diff]
-  D --> E{是否开启 context gatherer}
-  E -- 是 --> F[采集系统上下文]
-  E -- 否 --> G[Analyzer 预分析]
-  F --> G
-
-  G --> H[多 reviewer 并行辩论]
-  H --> I{收敛检查}
-  I -- 未收敛 --> H
-  I -- 收敛或到达轮次上限 --> J[每个 reviewer 输出 summary]
-  J --> K[Summarizer 给出最终结论]
-  K --> L[结构化 issue 提取]
-  L --> M{PR 且允许 post?}
-  M -- 是 --> N[交互式逐条评论发布到 GitHub]
-  M -- 否 --> O[输出结果]
-```
-
-### 3) `loop` 阶段闭环与人工确认闸门
-
-```mermaid
-flowchart TD
-  A[loop run/resume] --> B[加载 loop 配置]
-  B --> C[生成或加载阶段计划]
-  C --> D[按 stage 执行]
-
-  D --> E[执行器模型产出阶段报告]
-  E --> F{是否测试阶段}
-  F -- unit_mock_test --> F1[运行 unit/mock 测试命令]
-  F -- integration_test --> F2[运行 integration 测试命令]
-  F -- 其他 --> G[评估阶段质量]
-  F1 --> G
-  F2 --> G
-
-  G --> H{是否需要人工确认}
-  H -- 否 --> I[写入 stage result]
-  H -- 是 --> J[写入 human_confirmation.md + 发通知]
-  J --> K{decision}
-  K -- approved --> I
-  K -- rejected/revise --> L[planner 生成重试指导 + executor 重试]
-  L --> G
-  K -- pending且不等待 --> P[session paused]
-
-  I --> M{是否最后阶段}
-  M -- 否 --> D
-  M -- 是 --> N[session completed]
-```
-
-## 目录结构
+### 目录结构
 
 ```text
 src/
-  cli/                 # CLI 入口与命令注册
-  commands/            # legacy 命令实现（review/discuss/trd 等）
-  capabilities/        # capability 模块（review/discuss/trd/quality/loop）
-  core/                # capability runtime、context、reporting、repo 等基础设施
-  platform/            # config v2、provider 适配、通知集成
-  providers/           # 模型 provider 实现（CLI + API + mock）
-  orchestrator/        # 多 reviewer 辩论编排
-  context-gatherer/    # 评审前上下文采集
-  state/               # 会话状态持久化
-  reporter/            # markdown 报告
+  cli/                   # Commander 命令注册
+  commands/              # legacy 命令实现
+  capabilities/          # capability 模块与 workflow
+  core/                  # capability runtime / reporting / context / repo
+  platform/              # v2 config、provider 和 integrations 适配
+  providers/             # CLI / API provider 实现
+  orchestrator/          # 多 reviewer 辩论编排
+  context-gatherer/      # review 前上下文采集
+  planner/               # feature / stage 规划
+  feature-analyzer/      # repo feature 分析
+  state/                 # 会话状态持久化
+  reporter/              # markdown 报告输出
 
-tests/                 # Vitest 测试（按模块镜像）
-docs/plans/            # 设计与演进文档
-dist/                  # tsc 构建产物（不要手改）
+tests/                   # Vitest 测试
+docs/plans/              # 设计与演进文档
+dist/                    # tsc 构建产物，不手改
 ```
 
-## 命令现状一览
-
-| 命令 | 作用 | 实现路径 |
-|---|---|---|
-| `magpie init` | 初始化配置 | legacy command |
-| `magpie review` | 代码评审（PR/local/repo） | legacy command + orchestrator |
-| `magpie discuss` | 多模型议题辩论 | legacy command + orchestrator |
-| `magpie trd` | PRD -> TRD | legacy command |
-| `magpie reviewers list` | 列出已配置 reviewer（可按 model 过滤） | legacy command |
-| `magpie quality unit-test-eval` | 单测质量评估 | capability runner |
-| `magpie loop` | 目标闭环执行 | capability runner |
-| `magpie stats` | 统计占位命令（简版） | legacy command |
-
-## 安装与构建
+## 安装
 
 ```bash
 git clone https://github.com/liliu-z/magpie.git
 cd magpie
 npm install
 npm run build
-npm link   # 可选，注册全局 magpie
+npm link
 ```
+
+前置依赖：
+
+- Node.js 18+
+- Git
+- 如果要评审 GitHub PR 或发布评论，建议安装并登录 `gh`
+- 如果使用 CLI 型 provider，需要本机已经安装并完成登录
 
 ## 快速开始
 
 ```bash
-# 1) 生成配置（交互式）
+# 1) 生成配置
 magpie init
-# 或默认配置
+# 或直接使用默认 reviewer
 magpie init -y
 
-# 2) PR 评审
+# 2) 评审一个 PR
 magpie review 12345
-# 或完整 URL
 magpie review https://github.com/owner/repo/pull/12345
 
-# 3) 讨论
-magpie discuss "Should we use microservices or monolith?"
+# 3) 评审本地改动 / 分支 / 文件
+magpie review --local
+magpie review --branch main
+magpie review --files src/index.ts tests/cli/program.test.ts
 
-# 4) PRD -> TRD
+# 4) 多模型讨论
+magpie discuss "Should this repo fully migrate review to capability runtime?"
+
+# 5) 生成 TRD
 magpie trd ./docs/prd.md
 
-# 5) 单测质量评估
+# 6) 运行单测质量评估
 magpie quality unit-test-eval . --run-tests
 
-# 6) 目标执行闭环
+# 7) 目标闭环执行
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
 
-# 7) 查看已配置 reviewer（示例：仅 kiro）
-magpie reviewers list --model kiro
+# 8) 工程 workflow
+magpie workflow issue-fix "loop resume fails after human rejection"
+magpie workflow docs-sync
+magpie workflow post-merge-regression
 ```
 
-## 常用参数速查
+## 命令一览
+
+| 命令 | 作用 | 当前实现 |
+| --- | --- | --- |
+| `magpie init` | 初始化 `~/.magpie/config.yaml` | legacy |
+| `magpie review` | 多 AI 代码评审 | legacy + orchestrator |
+| `magpie discuss` | 多模型讨论/辩论 | legacy + orchestrator |
+| `magpie trd` | PRD -> TRD | legacy |
+| `magpie reviewers list` | 查看 reviewer 配置 | legacy |
+| `magpie stats` | 查看评审统计（当前为占位） | legacy |
+| `magpie quality unit-test-eval` | 单测质量评估 | capability |
+| `magpie loop run/resume/list` | 目标驱动的阶段执行闭环 | capability |
+| `magpie workflow issue-fix` | 问题修复工作流 | capability |
+| `magpie workflow docs-sync` | 文档与代码同步检查/更新 | capability |
+| `magpie workflow post-merge-regression` | 合并后回归检查 | capability |
+
+## 常用参数
 
 ### `review`
 
 ```bash
 magpie review [pr] [options]
 
-# 常用：
---local
---branch [base]
+-c, --config <path>
+-r, --rounds <number>
+-i, --interactive
+-o, --output <file>
+-f, --format <format>
+--no-converge
+-l, --local
+-b, --branch [base]
 --files <files...>
---repo
+--git-remote <name>
 --reviewers <ids>
---all
---skip-context
---no-post
+-a, --all
+--repo
+--path <path>
+--ignore <patterns...>
+--quick
+--deep
+--plan-only
+--reanalyze
 --list-sessions
 --session <id>
 --export <file>
+--skip-context
+--no-post
 ```
+
+说明：
+
+- `--local` 会优先评审未提交改动；如果没有未提交改动，会回退到最近一次 commit diff
+- PR 模式会尽量通过 `gh pr view` / `gh pr diff` 预取标题、描述和 diff
+- `--repo` 走仓库级 feature 分析和会话持久化逻辑
 
 ### `discuss`
 
 ```bash
 magpie discuss [topic] [options]
 
-# 常用：
+-c, --config <path>
+-r, --rounds <number>
+-i, --interactive
+-o, --output <file>
+-f, --format <format>
+--no-converge
 --reviewers <ids>
---all
---devil-advocate
+-a, --all
 --list
 --resume <id>
+--devil-advocate
 ```
 
 ### `trd`
@@ -228,30 +190,38 @@ magpie discuss [topic] [options]
 ```bash
 magpie trd [prd.md] [options]
 
-# 常用：
+-c, --config <path>
+-r, --rounds <number>
+-i, --interactive
+-o, --output <file>
+--questions-output <file>
+--no-converge
+--reviewers <ids>
+-a, --all
+--list
+--resume <id>
 --domain-overview-only
 --domains-file <path>
 --auto-accept-domains
---list
---resume <id>
 ```
 
-图片处理说明：
-- PRD 图片会直接作为多模态输入传给模型，不做 OCR 预处理。
-- 远程图片链接按 best-effort 处理，访问失败时会告警并跳过。
-- 本地图片仅在文件存在时加入输入，不存在则告警并跳过。
+图片输入行为：
+
+- 远程图片链接会作为多模态输入直接传给模型
+- 本地图片路径存在时会加入输入，不存在时给出 warning 并跳过
+- 当前没有 OCR 开关，README 不再保留旧的 `--no-ocr` 说法
 
 ### `quality`
 
 ```bash
 magpie quality unit-test-eval [path] [options]
 
-# 常用：
+-c, --config <path>
 --max-files <number>
 --min-coverage <number>
+-f, --format markdown|json
 --run-tests
 --test-command "npm run test:run"
---format markdown|json
 ```
 
 ### `loop`
@@ -261,10 +231,31 @@ magpie loop run <goal> --prd <path> [options]
 magpie loop resume <sessionId> [options]
 magpie loop list
 
-# 常用：
+-c, --config <path>
 --wait-human / --no-wait-human
 --dry-run
 --max-iterations <number>
+```
+
+### `workflow`
+
+```bash
+magpie workflow issue-fix <issue> [options]
+magpie workflow docs-sync [options]
+magpie workflow post-merge-regression [options]
+
+# issue-fix
+-c, --config <path>
+--apply
+--verify-command <command>
+
+# docs-sync
+-c, --config <path>
+--apply
+
+# post-merge-regression
+-c, --config <path>
+--command <command...>
 ```
 
 ### `reviewers`
@@ -272,13 +263,12 @@ magpie loop list
 ```bash
 magpie reviewers list [options]
 
-# 常用：
---model <name>   # 例如 kiro / codex / claude-code
+-c, --config <path>
+-m, --model <model>
 --json
---config <path>
 ```
 
-## 配置说明
+## 配置
 
 默认路径：`~/.magpie/config.yaml`
 
@@ -288,13 +278,15 @@ magpie reviewers list [options]
 providers:
   openai:
     api_key: ${OPENAI_API_KEY}
-    # base_url: https://your-compatible-endpoint/v1
 
 defaults:
   max_rounds: 5
   output_format: markdown
   check_convergence: true
   language: zh
+  diff_exclude:
+    - "*.pb.go"
+    - "*generated*"
 
 reviewers:
   claude:
@@ -341,67 +333,27 @@ capabilities:
     unitTestEval:
       enabled: true
       min_coverage: 0.7
+  issue_fix:
+    enabled: true
+  docs_sync:
+    enabled: true
+  post_merge_regression:
+    enabled: true
 
 integrations:
   notifications:
     enabled: false
 ```
 
-启用 iMessage 通知（BlueBubbles）示例：
-
-```yaml
-integrations:
-  notifications:
-    enabled: true
-    default_timeout_ms: 5000
-    routes:
-      human_confirmation_required: [macos_local, imessage_ops]
-      loop_failed: [imessage_ops]
-      loop_completed: [imessage_ops]
-    providers:
-      macos_local:
-        type: macos
-        click_target: vscode
-        terminal_notifier_bin: terminal-notifier
-        fallback_osascript: true
-      imessage_ops:
-        type: imessage
-        transport: bluebubbles
-        server_url: ${BLUEBUBBLES_SERVER_URL}
-        password: ${BLUEBUBBLES_PASSWORD}
-        targets:
-          - chat_guid:iMessage;-;+8613800138000
-        method: private-api
-```
-
 说明：
 
-- `imessage` provider 当前首版使用 BlueBubbles REST API。
-- `targets` 建议使用 `chat_guid:<guid>`；也兼容直接填原始 BlueBubbles chat guid。
-- 直接手机号/邮箱句柄当前不做自动建会话，避免把不稳定逻辑放进通知层。
-- 详细接入说明见 `docs/channels/imessage.md`。
+- legacy 命令主要读取顶层字段，例如 `reviewers`、`summarizer`、`analyzer`、`trd`
+- capability 命令会在内存中把 legacy 配置补全成 `capabilities.*` 结构
+- `magpie init` 会生成更完整的模板，包含 `loop` 和通知集成示例
 
-启用本机 Messages/AppleScript 示例：
+### Provider 映射
 
-```yaml
-integrations:
-  notifications:
-    enabled: true
-    routes:
-      human_confirmation_required: [imessage_local]
-      loop_failed: [imessage_local]
-    providers:
-      imessage_local:
-        type: imessage
-        transport: messages-applescript
-        service: iMessage
-        targets:
-          - handle:+8613800138000
-```
-
-## Provider 支持
-
-`model` 字段按下面规则映射：
+`model` 字段按以下规则解析：
 
 - CLI 型：`claude-code`、`codex`、`gemini-cli`、`qwen-code`、`kiro`
 - API 型：
@@ -409,59 +361,63 @@ integrations:
   - `gpt*` -> OpenAI
   - `gemini*` -> Google
   - `minimax` -> MiniMax
-- 调试：`mock`（或 `mock*`）
+- 调试：`mock` / `mock*`
 
-## 产物与会话存储
+### 通知集成
+
+当前内置通知 provider：
+
+- `macos`
+- `feishu-webhook`
+- `imessage` via `bluebubbles`
+- `imessage` via `messages-applescript`
+
+详细接入说明见 [docs/channels/imessage.md](/Users/sunchenhui/Documents/AI/magpie/docs/channels/imessage.md)。
+
+## 会话与产物存储
 
 - repo review 会话：`<repo>/.magpie/sessions/`
 - repo feature 缓存：`<repo>/.magpie/cache/`
 - discuss 会话：`~/.magpie/discussions/`
 - trd 会话：`~/.magpie/trd-sessions/`
-- loop 会话与事件：`~/.magpie/loop-sessions/`
-- 人工确认文件（loop）：默认 `<repo>/human_confirmation.md`
-- 示例模板：`human_confirmation.example.md`
+- loop 会话：`~/.magpie/loop-sessions/`
+- workflow 会话：`~/.magpie/workflow-sessions/<capability>/<session-id>/`
+- loop 人工确认文件：默认 `<repo>/human_confirmation.md`
 
-## 依赖与前置条件
-
-- Node.js 18+
-- Git
-- 评审 PR 与评论发布建议安装并登录 `gh` CLI
-- 使用 CLI 型 provider 时，需确保对应 CLI 已安装并已登录
-
-## 开发与测试
+## 开发
 
 ```bash
-# 从源码运行
+# 从源码运行 CLI
 npm run dev -- review 12345
 
-# 单元测试（watch）
+# watch 模式测试
 npm test
 
-# 单次测试（CI 推荐）
+# 单次测试
 npm run test:run
 
-# 类型构建
+# TypeScript 构建
 npm run build
 
 # 架构边界检查
 npm run check:boundaries
 
-# 真实通知通道 smoke test（BlueBubbles + Feishu）
+# 通知 smoke test
 npm run smoke:notifications -- human_confirmation_required
 ```
 
 ## 相关文档
 
-- `docs/plans/2026-03-04-capability-architecture-v2.md`
-- `docs/plans/2026-03-05-prd-review-workflow.md`
-- `docs/plans/2026-01-26-magpie-design.md`
-- `docs/channels/imessage.md`
+- [2026-03-04-capability-architecture-v2.md](/Users/sunchenhui/Documents/AI/magpie/docs/plans/2026-03-04-capability-architecture-v2.md)
+- [2026-03-05-prd-review-workflow.md](/Users/sunchenhui/Documents/AI/magpie/docs/plans/2026-03-05-prd-review-workflow.md)
+- [2026-01-26-magpie-design.md](/Users/sunchenhui/Documents/AI/magpie/docs/plans/2026-01-26-magpie-design.md)
+- [2026-01-26-magpie-implementation.md](/Users/sunchenhui/Documents/AI/magpie/docs/plans/2026-01-26-magpie-implementation.md)
 
-## 已知现状说明
+## 当前已知状态
 
-- `review` / `discuss` / `trd` 在 capability 层目前仍以兼容桥接为主，主执行逻辑在 legacy command。
-- `stats` 命令当前为轻量占位实现。
-- 项目包含较多 V1/V2 并存模块，重构仍在进行中。
+- `review` / `discuss` / `trd` 的 capability 版本已注册，但 CLI 主链路仍以 legacy 实现为主
+- `stats` 仍是轻量占位命令
+- 仓库中保留了较多 V1/V2 并存模块，重构还在继续
 
 ## License
 
