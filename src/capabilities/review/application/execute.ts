@@ -1,17 +1,16 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { serializeCliOptions } from '../../../core/capability/cli-options.js'
-import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
+import { runReviewFlow } from '../../../commands/review.js'
 import type { ReviewExecutionResult, ReviewPreparedInput } from '../types.js'
 
 export async function executeReview(
   prepared: ReviewPreparedInput,
   ctx: CapabilityContext
 ): Promise<ReviewExecutionResult> {
-  const args = [
-    ...(prepared.target ? [prepared.target] : []),
-    ...serializeCliOptions(prepared.options),
-  ]
-  const payload = await runCapabilitySubprocess('review', args, ctx)
+  const payload = await runReviewFlow({
+    target: prepared.target,
+    options: (prepared.options || {}) as never,
+    cwd: ctx.cwd,
+  })
 
   return {
     status: payload.exitCode === 0 ? 'completed' : 'failed',

@@ -1,17 +1,16 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { serializeCliOptions } from '../../../core/capability/cli-options.js'
-import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
+import { runTrdFlow } from '../../../commands/trd.js'
 import type { TrdExecutionResult, TrdPreparedInput } from '../types.js'
 
 export async function executeTrd(
   prepared: TrdPreparedInput,
   ctx: CapabilityContext
 ): Promise<TrdExecutionResult> {
-  const payload = await runCapabilitySubprocess(
-    'trd',
-    [prepared.prdPath, ...serializeCliOptions(prepared.options)],
-    ctx
-  )
+  const payload = await runTrdFlow({
+    prdPath: prepared.prdPath,
+    options: (prepared.options || {}) as never,
+    cwd: ctx.cwd,
+  })
 
   return {
     status: payload.exitCode === 0 ? 'completed' : 'failed',

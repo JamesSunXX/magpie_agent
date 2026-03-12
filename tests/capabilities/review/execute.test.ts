@@ -1,18 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { executeReview } from '../../../src/capabilities/review/application/execute.js'
-import { runCapabilitySubprocess } from '../../../src/core/capability/subprocess.js'
+import { runReviewFlow } from '../../../src/commands/review.js'
 
-vi.mock('../../../src/core/capability/subprocess.js', () => ({
-  runCapabilitySubprocess: vi.fn(),
+vi.mock('../../../src/commands/review.js', () => ({
+  runReviewFlow: vi.fn(),
 }))
 
 describe('review capability execute', () => {
-  it('runs review through the capability subprocess bridge', async () => {
-    vi.mocked(runCapabilitySubprocess).mockResolvedValue({
+  it('runs review through the in-process review flow', async () => {
+    vi.mocked(runReviewFlow).mockResolvedValue({
       exitCode: 0,
-      stdout: 'review complete',
-      stderr: '',
+      summary: 'review complete',
     })
 
     const result = await executeReview({
@@ -22,13 +21,27 @@ describe('review capability execute', () => {
         reviewers: 'claude',
       },
       preparedAt: new Date(),
+      config: {
+        providers: {},
+        defaults: {},
+        reviewers: {},
+        summarizer: {},
+        analyzer: {},
+        capabilities: {},
+        integrations: {},
+      } as never,
     }, createCapabilityContext())
 
     expect(result.status).toBe('completed')
-    expect(vi.mocked(runCapabilitySubprocess)).toHaveBeenCalledWith(
-      'review',
-      expect.arrayContaining(['123', '--format', 'markdown', '--reviewers', 'claude']),
-      expect.any(Object)
+    expect(vi.mocked(runReviewFlow)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: process.cwd(),
+        target: '123',
+        options: expect.objectContaining({
+          format: 'markdown',
+          reviewers: 'claude',
+        }),
+      })
     )
   })
 })

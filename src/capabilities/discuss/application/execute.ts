@@ -1,17 +1,16 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { serializeCliOptions } from '../../../core/capability/cli-options.js'
-import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
+import { runDiscussFlow } from '../../../commands/discuss.js'
 import type { DiscussExecutionResult, DiscussPreparedInput } from '../types.js'
 
 export async function executeDiscuss(
   prepared: DiscussPreparedInput,
   ctx: CapabilityContext
 ): Promise<DiscussExecutionResult> {
-  const payload = await runCapabilitySubprocess(
-    'discuss',
-    [prepared.topic, ...serializeCliOptions(prepared.options)],
-    ctx
-  )
+  const payload = await runDiscussFlow({
+    topic: prepared.topic,
+    options: (prepared.options || {}) as never,
+    cwd: ctx.cwd,
+  })
 
   return {
     status: payload.exitCode === 0 ? 'completed' : 'failed',

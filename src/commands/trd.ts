@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { createInterface } from 'readline'
 import { stringify as stringifyYaml } from 'yaml'
 import type { MagpieConfig } from '../config/types.js'
-import { loadConfig } from '../config/loader.js'
+import { loadConfigV2 } from '../platform/config/loader.js'
 import { createProvider } from '../providers/factory.js'
 import type { ChatImageInput } from '../providers/types.js'
 import type { Reviewer } from '../orchestrator/types.js'
@@ -41,8 +41,9 @@ import type {
   ParsedPrd,
   TrdSynthesisResult,
 } from '../trd/types.js'
+import { CommandExitError, runInCommandContext } from './shared/runtime.js'
 
-interface TrdOptions {
+export interface TrdOptions extends Record<string, unknown> {
   config?: string
   rounds?: string
   interactive?: boolean
@@ -56,6 +57,17 @@ interface TrdOptions {
   domainOverviewOnly?: boolean
   domainsFile?: string
   autoAcceptDomains?: boolean
+}
+
+export interface RunTrdFlowInput {
+  prdPath?: string
+  options: TrdOptions
+  cwd?: string
+}
+
+export interface TrdFlowResult {
+  exitCode: number
+  summary: string
 }
 
 interface OutputPaths {
@@ -775,6 +787,52 @@ async function handleList(stateManager: StateManager): Promise<void> {
   console.log(chalk.dim('─'.repeat(90)))
 }
 
+export async function runTrdFlow(input: RunTrdFlowInput): Promise<TrdFlowResult> {
+  return runInCommandContext(input.cwd, async () => {
+    const prdArg = input.prdPath
+    const options = input.options
+    const spinner = ora('Loading configuration...').start()
+    try {
+      const config = loadConfigV2(options.config) as unknown as MagpieConfig
+      spinner.succeed('Configuration loaded')
+
+      const stateManager = new StateManager(process.cwd())
+      await stateManager.initTrdSessions()
+
+      if (options.list) {
+        await handleList(stateManager)
+        return { exitCode: 0, summary: 'TRD sessions listed.' }
+      }
+
+      if (options.resume) {
+        await handleResume(options.resume, prdArg, options, config, stateManager)
+        return { exitCode: 0, summary: 'TRD session resumed.' }
+      }
+
+      if (!prdArg) {
+        throw new Error('Please provide a PRD markdown file path')
+      }
+
+      await runNewTrd(prdArg, options, config, stateManager)
+      return { exitCode: 0, summary: `TRD completed for ${prdArg}.` }
+    } catch (error) {
+      if (error instanceof CommandExitError) {
+        return {
+          exitCode: error.code,
+          summary: error.code === 130 ? 'TRD interrupted.' : 'TRD failed.',
+        }
+      }
+      spinner.stop()
+      if (error instanceof Error) {
+        console.error(chalk.red(`Error: ${error.message}`))
+      } else {
+        console.error(chalk.red(String(error)))
+      }
+      return { exitCode: 1, summary: 'TRD failed.' }
+    }
+  })
+}
+
 export const trdCommand = new Command('trd')
   .description('Generate TRD from PRD markdown with multi-role debate')
   .argument('[prd]', 'Path to PRD markdown (or follow-up text when using --resume)')
@@ -792,36 +850,13 @@ export const trdCommand = new Command('trd')
   .option('--list', 'List TRD sessions')
   .option('--resume <id>', 'Resume TRD session with follow-up revision')
   .action(async (prdArg: string | undefined, options: TrdOptions) => {
-    const spinner = ora('Loading configuration...').start()
-    try {
-      const config = loadConfig(options.config)
-      spinner.succeed('Configuration loaded')
+    const result = await runTrdFlow({
+      prdPath: prdArg,
+      options,
+      cwd: process.cwd(),
+    })
 
-      const stateManager = new StateManager(process.cwd())
-      await stateManager.initTrdSessions()
-
-      if (options.list) {
-        await handleList(stateManager)
-        return
-      }
-
-      if (options.resume) {
-        await handleResume(options.resume, prdArg, options, config, stateManager)
-        return
-      }
-
-      if (!prdArg) {
-        throw new Error('Please provide a PRD markdown file path')
-      }
-
-      await runNewTrd(prdArg, options, config, stateManager)
-    } catch (error) {
-      spinner.stop()
-      if (error instanceof Error) {
-        console.error(chalk.red(`Error: ${error.message}`))
-      } else {
-        console.error(chalk.red(String(error)))
-      }
-      process.exit(1)
+    if (result.exitCode !== 0) {
+      process.exitCode = result.exitCode
     }
   })

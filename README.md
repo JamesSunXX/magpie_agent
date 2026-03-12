@@ -33,9 +33,9 @@ Magpie 是一个面向工程场景的多模型 CLI，当前同时包含两套运
 当前仓库是一个混合架构：
 
 - CLI 统一入口：`src/cli.ts` -> `src/cli/program.ts`
-- `review` / `discuss` / `trd` 仍主要走 legacy command 实现
+- `review` / `discuss` / `trd` 已切到 capability runtime 执行
 - `loop`、`quality unit-test-eval`、`workflow *` 已完整走 capability runtime
-- capability 注册表中已经包含 `review` / `discuss` / `trd`，但 CLI 主路径还没有完全切换过去
+- `review` / `discuss` / `trd` 仍保留 legacy flow 代码作为短期兼容与迁移承接层
 - 配置文件仍以 `~/.magpie/config.yaml` 为入口，capability 侧会把 legacy 配置自动迁移成 `capabilities.*` 结构在内存中使用
 
 ### 目录结构
@@ -116,9 +116,9 @@ magpie workflow post-merge-regression
 | 命令 | 作用 | 当前实现 |
 | --- | --- | --- |
 | `magpie init` | 初始化 `~/.magpie/config.yaml` | legacy |
-| `magpie review` | 多 AI 代码评审 | legacy + orchestrator |
-| `magpie discuss` | 多模型讨论/辩论 | legacy + orchestrator |
-| `magpie trd` | PRD -> TRD | legacy |
+| `magpie review` | 多 AI 代码评审 | capability runtime + orchestrator |
+| `magpie discuss` | 多模型讨论/辩论 | capability runtime + orchestrator |
+| `magpie trd` | PRD -> TRD | capability runtime |
 | `magpie reviewers list` | 查看 reviewer 配置 | legacy |
 | `magpie stats` | 查看评审统计（当前为占位） | legacy |
 | `magpie quality unit-test-eval` | 单测质量评估 | capability |
@@ -414,7 +414,7 @@ npm run smoke:notifications -- human_confirmation_required
 
 ## 当前已知状态
 
-- `review` / `discuss` / `trd` 的 capability 版本已注册，但 CLI 主链路仍以 legacy 实现为主
+- `review` / `discuss` / `trd` 已通过 capability runtime 作为 CLI 主链路执行
 - `stats` 仍是轻量占位命令
 - 仓库中保留了较多 V1/V2 并存模块，重构还在继续
 

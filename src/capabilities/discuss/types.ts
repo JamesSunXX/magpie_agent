@@ -1,3 +1,5 @@
+import type { MagpieConfigV2 } from '../../platform/config/types.js'
+
 export interface DiscussCapabilityInput {
   topic: string
   options?: Record<string, unknown>
@@ -5,14 +7,14 @@ export interface DiscussCapabilityInput {
 
 export interface DiscussPreparedInput extends DiscussCapabilityInput {
   preparedAt: Date
+  config: MagpieConfigV2
 }
 
 export interface DiscussExecutionResult {
   status: 'completed' | 'failed'
   payload?: {
     exitCode: number
-    stdout: string
-    stderr: string
+    summary: string
   }
 }
 

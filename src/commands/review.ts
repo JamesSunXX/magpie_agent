@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
-import { loadConfig } from '../config/loader.js'
+import { loadConfigV2 } from '../platform/config/loader.js'
 import { createProvider } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { Reviewer, ReviewerStatus } from '../orchestrator/types.js'
@@ -16,6 +16,7 @@ import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, inter
 import { handleRepoReview } from './review/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from './review/session-cmds.js'
 import { filterDiff } from '../utils/diff-filter.js'
+import { CommandExitError, commandExit, runInCommandContext } from './shared/runtime.js'
 
 // Configure marked to render for terminal
 marked.setOptions({
@@ -26,35 +27,48 @@ marked.setOptions({
   }) as any
 })
 
-export const reviewCommand = new Command('review')
-  .description('Review code changes with multiple AI reviewers')
-  .argument('[pr]', 'PR number or URL (optional if using --local, --branch, or --files)')
-  .option('-c, --config <path>', 'Path to config file')
-  .option('-r, --rounds <number>', 'Maximum debate rounds', '5')
-  .option('-i, --interactive', 'Interactive mode (pause between turns)')
-  .option('-o, --output <file>', 'Output to file instead of stdout')
-  .option('-f, --format <format>', 'Output format (markdown|json)', 'markdown')
-  .option('--no-converge', 'Disable early stop when reviewers reach consensus')
-  .option('-l, --local', 'Review local uncommitted changes (staged + unstaged)')
-  .option('-b, --branch [base]', 'Review current branch vs base (default: main)')
-  .option('--files <files...>', 'Review specific files')
-  .option('--git-remote <name>', 'Git remote to use for PR URL detection (default: origin)')
-  .option('--reviewers <ids>', 'Comma-separated reviewer IDs to use (e.g., claude,gemini)')
-  .option('-a, --all', 'Use all reviewers (skip selection)')
-  // Repo review options
-  .option('--repo', 'Review entire repository')
-  .option('--path <path>', 'Subdirectory to review (with --repo)')
-  .option('--ignore <patterns...>', 'Patterns to ignore (with --repo)')
-  .option('--quick', 'Quick mode: only architecture overview')
-  .option('--deep', 'Deep mode: full analysis without prompts')
-  .option('--plan-only', 'Only generate review plan, do not execute')
-  .option('--reanalyze', 'Force re-analyze features (ignore cache)')
-  .option('--list-sessions', 'List all review sessions')
-  .option('--session <id>', 'Resume specific session by ID')
-  .option('--export <file>', 'Export completed review to markdown')
-  .option('--skip-context', 'Skip context gathering phase')
-  .option('--no-post', 'Skip post-processing (GitHub comment flow)')
-  .action(async (pr: string | undefined, options) => {
+export interface ReviewCommandOptions extends Record<string, unknown> {
+  config?: string
+  rounds: string
+  interactive?: boolean
+  output?: string
+  format: string
+  converge?: boolean
+  local?: boolean
+  branch?: string | boolean
+  files?: string[]
+  gitRemote?: string
+  reviewers?: string
+  all?: boolean
+  repo?: boolean
+  path?: string
+  ignore?: string[]
+  quick?: boolean
+  deep?: boolean
+  planOnly?: boolean
+  reanalyze?: boolean
+  listSessions?: boolean
+  session?: string
+  export?: string
+  skipContext?: boolean
+  post?: boolean
+}
+
+export interface RunReviewFlowInput {
+  target?: string
+  options: ReviewCommandOptions
+  cwd?: string
+}
+
+export interface ReviewFlowResult {
+  exitCode: number
+  summary: string
+}
+
+export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFlowResult> {
+  return runInCommandContext(input.cwd, async () => {
+    const pr = input.target
+    const options = input.options
     const spinner = ora('Loading configuration...').start()
 
     // Graceful Ctrl+C handling: first press marks interrupted, second press force-exits
@@ -65,7 +79,7 @@ export const reviewCommand = new Command('review')
       if (interruptState.interrupted && now - lastSigint < 3000) {
         // Second Ctrl+C within 3s → force exit
         console.error('\nForce exit.')
-        process.exit(130)
+        commandExit(130)
       }
       interruptState.interrupted = true
       lastSigint = now
@@ -75,38 +89,38 @@ export const reviewCommand = new Command('review')
 
     try {
       // Load config first (needed for --repo handling)
-      const config = loadConfig(options.config)
+      const config = loadConfigV2(options.config)
       spinner.succeed('Configuration loaded')
 
       // Handle --list-sessions
       if (options.listSessions) {
         await handleListSessions(spinner)
-        return
+        return { exitCode: 0, summary: 'Review sessions listed.' }
       }
 
       // Handle --session <id>
       if (options.session) {
         await handleResumeSession(options.session, config, spinner)
-        return
+        return { exitCode: 0, summary: 'Review session resumed.' }
       }
 
       // Handle --export <file>
       if (options.export) {
         await handleExportSession(options.export, spinner)
-        return
+        return { exitCode: 0, summary: 'Review exported.' }
       }
 
       // Handle --repo flag
       if (options.repo) {
         await handleRepoReview(options, config, spinner)
-        return
+        return { exitCode: 0, summary: 'Repository review completed.' }
       }
 
       // Validate arguments (for non-repo review)
       if (!options.local && !options.branch && !options.files && !pr) {
         spinner.fail('Error')
         console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --files, or --repo'))
-        process.exit(1)
+        commandExit(1)
       }
 
       spinner.start('Preparing review...')
@@ -126,7 +140,7 @@ export const reviewCommand = new Command('review')
             if (!lastCommitDiff.trim()) {
               spinner.fail('No changes found')
               console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
-              process.exit(0)
+              commandExit(0)
             }
             localDiff = lastCommitDiff
             reviewingLastCommit = true
@@ -139,7 +153,7 @@ export const reviewCommand = new Command('review')
         } catch (error) {
           spinner.fail('Failed to get git diff')
           console.error(chalk.red('Error: Not a git repository or git is not available'))
-          process.exit(1)
+          commandExit(1)
         }
       }
 
@@ -259,7 +273,7 @@ export const reviewCommand = new Command('review')
       } else {
         spinner.fail('Error')
         console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --files, or --repo'))
-        process.exit(1)
+        commandExit(1)
       }
 
       // Setup interactive mode readline early (before reviewer selection)
@@ -288,7 +302,7 @@ export const reviewCommand = new Command('review')
           console.error(chalk.red(`Unknown reviewer(s): ${invalid.join(', ')}`))
           console.error(chalk.dim(`Available: ${allReviewerIds.join(', ')}`))
           rl?.close()
-          process.exit(1)
+          commandExit(1)
         }
       } else if (options.all) {
         // Use all reviewers
@@ -302,7 +316,7 @@ export const reviewCommand = new Command('review')
         spinner.fail('Error')
         console.error(chalk.red('Need at least 1 reviewer'))
         rl?.close()
-        process.exit(1)
+        commandExit(1)
       }
 
       // Create reviewers
@@ -398,7 +412,7 @@ export const reviewCommand = new Command('review')
 
       const orchestrator = new DebateOrchestrator(reviewers, summarizer, analyzer, {
         maxRounds,
-        interactive: options.interactive,
+        interactive: !!options.interactive,
         checkConvergence,
         language: config.defaults.language,
         interruptState,
@@ -708,18 +722,65 @@ export const reviewCommand = new Command('review')
       console.log()
 
       rl?.close()
+      return { exitCode: 0, summary: `Review completed for ${target.label}.` }
     } catch (error) {
+      if (error instanceof CommandExitError) {
+        return {
+          exitCode: error.code,
+          summary: error.code === 130 ? 'Review interrupted.' : error.code === 0 ? 'Review exited early.' : 'Review failed.',
+        }
+      }
       if ((error as Error)?.constructor?.name === 'InterruptedError') {
         spinner.stop()
         console.log(chalk.yellow('\n⚠ Review interrupted.'))
-        process.exit(130)
+        return { exitCode: 130, summary: 'Review interrupted.' }
       }
       spinner.fail('Error')
       if (error instanceof Error) {
         console.error(chalk.red(`Error: ${error.message}`))
       }
-      process.exit(1)
+      return { exitCode: 1, summary: 'Review failed.' }
     } finally {
       process.removeListener('SIGINT', sigintHandler)
+    }
+  })
+}
+
+export const reviewCommand = new Command('review')
+  .description('Review code changes with multiple AI reviewers')
+  .argument('[pr]', 'PR number or URL (optional if using --local, --branch, or --files)')
+  .option('-c, --config <path>', 'Path to config file')
+  .option('-r, --rounds <number>', 'Maximum debate rounds', '5')
+  .option('-i, --interactive', 'Interactive mode (pause between turns)')
+  .option('-o, --output <file>', 'Output to file instead of stdout')
+  .option('-f, --format <format>', 'Output format (markdown|json)', 'markdown')
+  .option('--no-converge', 'Disable early stop when reviewers reach consensus')
+  .option('-l, --local', 'Review local uncommitted changes (staged + unstaged)')
+  .option('-b, --branch [base]', 'Review current branch vs base (default: main)')
+  .option('--files <files...>', 'Review specific files')
+  .option('--git-remote <name>', 'Git remote to use for PR URL detection (default: origin)')
+  .option('--reviewers <ids>', 'Comma-separated reviewer IDs to use (e.g., claude,gemini)')
+  .option('-a, --all', 'Use all reviewers (skip selection)')
+  .option('--repo', 'Review entire repository')
+  .option('--path <path>', 'Subdirectory to review (with --repo)')
+  .option('--ignore <patterns...>', 'Patterns to ignore (with --repo)')
+  .option('--quick', 'Quick mode: only architecture overview')
+  .option('--deep', 'Deep mode: full analysis without prompts')
+  .option('--plan-only', 'Only generate review plan, do not execute')
+  .option('--reanalyze', 'Force re-analyze features (ignore cache)')
+  .option('--list-sessions', 'List all review sessions')
+  .option('--session <id>', 'Resume specific session by ID')
+  .option('--export <file>', 'Export completed review to markdown')
+  .option('--skip-context', 'Skip context gathering phase')
+  .option('--no-post', 'Skip post-processing (GitHub comment flow)')
+  .action(async (pr: string | undefined, options: ReviewCommandOptions) => {
+    const result = await runReviewFlow({
+      target: pr,
+      options,
+      cwd: process.cwd(),
+    })
+
+    if (result.exitCode !== 0) {
+      process.exitCode = result.exitCode
     }
   })

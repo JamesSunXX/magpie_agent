@@ -3,8 +3,8 @@ import chalk from 'chalk'
 import ora from 'ora'
 import crypto from 'crypto'
 import { readFileSync, existsSync, writeFileSync } from 'fs'
-import { loadConfig } from '../config/loader.js'
 import type { MagpieConfig } from '../config/types.js'
+import { loadConfigV2 } from '../platform/config/loader.js'
 import { createProvider } from '../providers/factory.js'
 import type { Reviewer, DebateResult, ReviewerStatus, OrchestratorOptions } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
@@ -14,6 +14,7 @@ import { StateManager } from '../state/index.js'
 import type { DiscussSession, DiscussRound } from '../state/types.js'
 import { loadProjectContext } from '../utils/context-loader.js'
 import { runDebateSession } from './discussion/runner.js'
+import { CommandExitError, commandExit, runInCommandContext } from './shared/runtime.js'
 
 marked.setOptions({
   renderer: new TerminalRenderer({
@@ -176,7 +177,7 @@ function buildPreviousContext(session: DiscussSession): string {
   ).join('\n\n')
 }
 
-interface DiscussOptions {
+export interface DiscussOptions extends Record<string, unknown> {
   config?: string
   rounds: string
   interactive?: boolean
@@ -188,6 +189,17 @@ interface DiscussOptions {
   list?: boolean
   resume?: string
   devilAdvocate?: boolean
+}
+
+export interface RunDiscussFlowInput {
+  topic?: string
+  options: DiscussOptions
+  cwd?: string
+}
+
+export interface DiscussFlowResult {
+  exitCode: number
+  summary: string
 }
 
 async function runDiscussion(
@@ -413,21 +425,10 @@ async function runDiscussion(
   return { result }
 }
 
-export const discussCommand = new Command('discuss')
-  .description('Discuss any topic with multiple AI reviewers through adversarial debate')
-  .argument('[topic]', 'Topic to discuss (text or file path)')
-  .option('-c, --config <path>', 'Path to config file')
-  .option('-r, --rounds <number>', 'Maximum debate rounds', '5')
-  .option('-i, --interactive', 'Interactive mode')
-  .option('-o, --output <file>', 'Output to file')
-  .option('-f, --format <format>', 'Output format (markdown|json)', 'markdown')
-  .option('--no-converge', 'Disable convergence detection')
-  .option('--reviewers <ids>', 'Comma-separated reviewer IDs')
-  .option('-a, --all', 'Use all reviewers')
-  .option('-d, --devil-advocate', "Add a Devil's Advocate to challenge consensus")
-  .option('--list', 'List all discuss sessions')
-  .option('--resume <id>', 'Resume a discuss session')
-  .action(async (topic: string | undefined, options: DiscussOptions) => {
+export async function runDiscussFlow(input: RunDiscussFlowInput): Promise<DiscussFlowResult> {
+  return runInCommandContext(input.cwd, async () => {
+    const topic = input.topic
+    const options = input.options
     const spinner = ora('Loading configuration...').start()
 
     // Graceful Ctrl+C handling: first press marks interrupted, second press force-exits
@@ -437,7 +438,7 @@ export const discussCommand = new Command('discuss')
       const now = Date.now()
       if (interruptState.interrupted && now - lastSigint < 3000) {
         console.error('\nForce exit.')
-        process.exit(130)
+        commandExit(130)
       }
       interruptState.interrupted = true
       lastSigint = now
@@ -446,7 +447,7 @@ export const discussCommand = new Command('discuss')
     process.on('SIGINT', sigintHandler)
 
     try {
-      const config = loadConfig(options.config)
+      const config = loadConfigV2(options.config) as unknown as MagpieConfig
       spinner.succeed('Configuration loaded')
 
       const stateManager = new StateManager(process.cwd())
@@ -455,7 +456,7 @@ export const discussCommand = new Command('discuss')
       // Handle --list
       if (options.list) {
         await handleListSessions(stateManager, spinner)
-        return
+        return { exitCode: 0, summary: 'Discussion sessions listed.' }
       }
 
       // Handle --resume
@@ -463,7 +464,7 @@ export const discussCommand = new Command('discuss')
         const resumeId = options.resume
         const newTopic = topic ? resolveTopic(topic) : undefined
         await handleResume(resumeId, newTopic, stateManager, config, options, spinner, interruptState)
-        return
+        return { exitCode: 0, summary: 'Discussion session resumed.' }
       }
 
       // New discussion
@@ -472,7 +473,7 @@ export const discussCommand = new Command('discuss')
         console.error(chalk.red('Error: Please provide a topic to discuss'))
         console.error(chalk.dim('  Usage: magpie discuss "your topic here"'))
         console.error(chalk.dim('  Usage: magpie discuss /path/to/topic.md'))
-        process.exit(1)
+        commandExit(1)
       }
 
       const resolvedTopic = resolveTopic(topic)
@@ -488,7 +489,7 @@ export const discussCommand = new Command('discuss')
           spinner.fail('Error')
           console.error(chalk.red(`Unknown reviewer(s): ${invalid.join(', ')}`))
           console.error(chalk.dim(`Available: ${allReviewerIds.join(', ')}`))
-          process.exit(1)
+          commandExit(1)
         }
       } else if (options.all) {
         selectedIds = allReviewerIds
@@ -501,7 +502,7 @@ export const discussCommand = new Command('discuss')
       if (selectedIds.length < 1) {
         spinner.fail('Error')
         console.error(chalk.red('Need at least 1 reviewer'))
-        process.exit(1)
+        commandExit(1)
       }
 
       // Create session
@@ -553,19 +554,53 @@ export const discussCommand = new Command('discuss')
       }
 
       console.log()
+      return { exitCode: 0, summary: `Discussion completed for ${session.id}.` }
     } catch (error) {
+      if (error instanceof CommandExitError) {
+        return {
+          exitCode: error.code,
+          summary: error.code === 130 ? 'Discussion interrupted.' : 'Discussion failed.',
+        }
+      }
       if ((error as Error)?.constructor?.name === 'InterruptedError') {
         spinner.stop()
         console.log(chalk.yellow('\n⚠ Discussion interrupted.'))
-        process.exit(130)
+        return { exitCode: 130, summary: 'Discussion interrupted.' }
       }
       spinner.fail('Error')
       if (error instanceof Error) {
         console.error(chalk.red(`Error: ${error.message}`))
       }
-      process.exit(1)
+      return { exitCode: 1, summary: 'Discussion failed.' }
     } finally {
       process.removeListener('SIGINT', sigintHandler)
+    }
+  })
+}
+
+export const discussCommand = new Command('discuss')
+  .description('Discuss any topic with multiple AI reviewers through adversarial debate')
+  .argument('[topic]', 'Topic to discuss (text or file path)')
+  .option('-c, --config <path>', 'Path to config file')
+  .option('-r, --rounds <number>', 'Maximum debate rounds', '5')
+  .option('-i, --interactive', 'Interactive mode')
+  .option('-o, --output <file>', 'Output to file')
+  .option('-f, --format <format>', 'Output format (markdown|json)', 'markdown')
+  .option('--no-converge', 'Disable convergence detection')
+  .option('--reviewers <ids>', 'Comma-separated reviewer IDs')
+  .option('-a, --all', 'Use all reviewers')
+  .option('-d, --devil-advocate', "Add a Devil's Advocate to challenge consensus")
+  .option('--list', 'List all discuss sessions')
+  .option('--resume <id>', 'Resume a discuss session')
+  .action(async (topic: string | undefined, options: DiscussOptions) => {
+    const result = await runDiscussFlow({
+      topic,
+      options,
+      cwd: process.cwd(),
+    })
+
+    if (result.exitCode !== 0) {
+      process.exitCode = result.exitCode
     }
   })
 
