@@ -63,7 +63,6 @@ dist/                    # tsc 构建产物，不手改
 ## 安装
 
 ```bash
-git clone https://github.com/liliu-z/magpie.git
 cd magpie
 npm install
 npm run build
