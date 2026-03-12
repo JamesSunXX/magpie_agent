@@ -35,6 +35,9 @@ describe('config migration', () => {
 
     expect(migrated.capabilities.review?.enabled).toBe(true)
     expect(migrated.capabilities.discuss?.enabled).toBe(true)
+    expect(migrated.capabilities.issue_fix?.enabled).toBe(true)
+    expect(migrated.capabilities.docs_sync?.enabled).toBe(true)
+    expect(migrated.capabilities.post_merge_regression?.enabled).toBe(true)
     expect(migrated.capabilities.quality?.unitTestEval?.enabled).toBe(true)
     expect(migrated.capabilities.loop?.enabled).toBe(true)
     expect(migrated.integrations.notifications?.enabled).toBe(false)

@@ -19,6 +19,23 @@ function buildDefaultCapabilities(config: LegacyMagpieConfig): MagpieConfigV2['c
       reviewers: Object.keys(config.reviewers),
     },
     trd: config.trd,
+    issue_fix: {
+      enabled: true,
+      planner_model: config.analyzer?.model || 'claude-code',
+      executor_model: 'codex',
+      verify_command: 'npm run test:run',
+      auto_commit: false,
+    },
+    docs_sync: {
+      enabled: true,
+      reviewer_model: config.analyzer?.model || 'claude-code',
+      docs_patterns: ['README.md', 'docs'],
+    },
+    post_merge_regression: {
+      enabled: true,
+      evaluator_model: config.analyzer?.model || 'claude-code',
+      commands: ['npm run test:run', 'npm run build'],
+    },
     quality: {
       unitTestEval: {
         enabled: true,

@@ -8,7 +8,7 @@ export async function summarizeTrd(
   return {
     summary: result.status === 'completed'
       ? 'TRD capability execution completed.'
-      : 'TRD capability delegated to legacy flow.',
+      : 'TRD capability execution failed.',
     details: result.payload,
   }
 }

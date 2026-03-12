@@ -8,8 +8,12 @@ export interface TrdPreparedInput extends TrdCapabilityInput {
 }
 
 export interface TrdExecutionResult {
-  status: 'delegated' | 'completed'
-  payload?: unknown
+  status: 'completed' | 'failed'
+  payload?: {
+    exitCode: number
+    stdout: string
+    stderr: string
+  }
 }
 
 export interface TrdSummaryOutput {

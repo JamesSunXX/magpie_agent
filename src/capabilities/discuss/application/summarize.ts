@@ -8,7 +8,7 @@ export async function summarizeDiscuss(
   return {
     summary: result.status === 'completed'
       ? 'Discuss capability execution completed.'
-      : 'Discuss capability delegated to legacy flow.',
+      : 'Discuss capability execution failed.',
     details: result.payload,
   }
 }

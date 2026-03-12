@@ -1,29 +1,20 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { serializeCliOptions } from '../../../core/capability/cli-options.js'
+import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
 import type { TrdExecutionResult, TrdPreparedInput } from '../types.js'
-
-interface TrdExecutor {
-  executeTrd?: (input: TrdPreparedInput, ctx: CapabilityContext) => Promise<unknown>
-}
 
 export async function executeTrd(
   prepared: TrdPreparedInput,
   ctx: CapabilityContext
 ): Promise<TrdExecutionResult> {
-  const hooks = (ctx.metadata || {}) as TrdExecutor
-
-  if (typeof hooks.executeTrd === 'function') {
-    const payload = await hooks.executeTrd(prepared, ctx)
-    return {
-      status: 'completed',
-      payload,
-    }
-  }
+  const payload = await runCapabilitySubprocess(
+    'trd',
+    [prepared.prdPath, ...serializeCliOptions(prepared.options)],
+    ctx
+  )
 
   return {
-    status: 'delegated',
-    payload: {
-      message: 'TRD execution is handled by legacy CLI command for compatibility.',
-      prdPath: prepared.prdPath,
-    },
+    status: payload.exitCode === 0 ? 'completed' : 'failed',
+    payload,
   }
 }

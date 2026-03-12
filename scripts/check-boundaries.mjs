@@ -32,6 +32,7 @@ const legacyCliBridgeAllowList = new Set([
   'src/cli/commands/trd.ts',
   'src/cli/commands/stats.ts',
   'src/cli/commands/init.ts',
+  'src/cli/commands/reviewers.ts',
 ])
 
 for (const file of files) {

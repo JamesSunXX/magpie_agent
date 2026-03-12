@@ -8,8 +8,12 @@ export interface DiscussPreparedInput extends DiscussCapabilityInput {
 }
 
 export interface DiscussExecutionResult {
-  status: 'delegated' | 'completed'
-  payload?: unknown
+  status: 'completed' | 'failed'
+  payload?: {
+    exitCode: number
+    stdout: string
+    stderr: string
+  }
 }
 
 export interface DiscussSummaryOutput {

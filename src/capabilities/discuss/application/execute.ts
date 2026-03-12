@@ -1,29 +1,20 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { serializeCliOptions } from '../../../core/capability/cli-options.js'
+import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
 import type { DiscussExecutionResult, DiscussPreparedInput } from '../types.js'
-
-interface DiscussExecutor {
-  executeDiscuss?: (input: DiscussPreparedInput, ctx: CapabilityContext) => Promise<unknown>
-}
 
 export async function executeDiscuss(
   prepared: DiscussPreparedInput,
   ctx: CapabilityContext
 ): Promise<DiscussExecutionResult> {
-  const hooks = (ctx.metadata || {}) as DiscussExecutor
-
-  if (typeof hooks.executeDiscuss === 'function') {
-    const payload = await hooks.executeDiscuss(prepared, ctx)
-    return {
-      status: 'completed',
-      payload,
-    }
-  }
+  const payload = await runCapabilitySubprocess(
+    'discuss',
+    [prepared.topic, ...serializeCliOptions(prepared.options)],
+    ctx
+  )
 
   return {
-    status: 'delegated',
-    payload: {
-      message: 'Discuss execution is handled by legacy CLI command for compatibility.',
-      topic: prepared.topic,
-    },
+    status: payload.exitCode === 0 ? 'completed' : 'failed',
+    payload,
   }
 }

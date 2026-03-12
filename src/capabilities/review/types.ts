@@ -8,8 +8,12 @@ export interface ReviewPreparedInput extends ReviewCapabilityInput {
 }
 
 export interface ReviewExecutionResult {
-  status: 'delegated' | 'completed'
-  payload?: unknown
+  status: 'completed' | 'failed'
+  payload?: {
+    exitCode: number
+    stdout: string
+    stderr: string
+  }
 }
 
 export interface ReviewSummaryOutput {

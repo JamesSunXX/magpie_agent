@@ -1,29 +1,20 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { serializeCliOptions } from '../../../core/capability/cli-options.js'
+import { runCapabilitySubprocess } from '../../../core/capability/subprocess.js'
 import type { ReviewExecutionResult, ReviewPreparedInput } from '../types.js'
-
-interface ReviewExecutor {
-  executeReview?: (input: ReviewPreparedInput, ctx: CapabilityContext) => Promise<unknown>
-}
 
 export async function executeReview(
   prepared: ReviewPreparedInput,
   ctx: CapabilityContext
 ): Promise<ReviewExecutionResult> {
-  const hooks = (ctx.metadata || {}) as ReviewExecutor
-
-  if (typeof hooks.executeReview === 'function') {
-    const payload = await hooks.executeReview(prepared, ctx)
-    return {
-      status: 'completed',
-      payload,
-    }
-  }
+  const args = [
+    ...(prepared.target ? [prepared.target] : []),
+    ...serializeCliOptions(prepared.options),
+  ]
+  const payload = await runCapabilitySubprocess('review', args, ctx)
 
   return {
-    status: 'delegated',
-    payload: {
-      message: 'Review execution is handled by legacy CLI command for compatibility.',
-      target: prepared.target,
-    },
+    status: payload.exitCode === 0 ? 'completed' : 'failed',
+    payload,
   }
 }

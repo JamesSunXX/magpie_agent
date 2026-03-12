@@ -4,6 +4,9 @@ export type CapabilityName =
   | 'review'
   | 'discuss'
   | 'trd'
+  | 'issue-fix'
+  | 'docs-sync'
+  | 'post-merge-regression'
   | 'quality/unit-test-eval'
   | 'loop'
 

@@ -34,6 +34,26 @@ export interface UnitTestEvalConfig {
   output_format?: 'markdown' | 'json'
 }
 
+export interface IssueFixConfig {
+  enabled?: boolean
+  planner_model?: string
+  executor_model?: string
+  verify_command?: string
+  auto_commit?: boolean
+}
+
+export interface DocsSyncConfig {
+  enabled?: boolean
+  reviewer_model?: string
+  docs_patterns?: string[]
+}
+
+export interface PostMergeRegressionConfig {
+  enabled?: boolean
+  evaluator_model?: string
+  commands?: string[]
+}
+
 export interface QualityConfig {
   unitTestEval?: UnitTestEvalConfig
 }
@@ -42,6 +62,9 @@ export interface CapabilitiesConfig {
   review?: ReviewConfig
   discuss?: DiscussConfig
   trd?: TrdConfig
+  issue_fix?: IssueFixConfig
+  docs_sync?: DocsSyncConfig
+  post_merge_regression?: PostMergeRegressionConfig
   quality?: QualityConfig
   loop?: LoopConfig
 }

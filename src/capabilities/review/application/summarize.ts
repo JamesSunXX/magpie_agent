@@ -8,7 +8,7 @@ export async function summarizeReview(
   return {
     summary: result.status === 'completed'
       ? 'Review capability execution completed.'
-      : 'Review capability delegated to legacy flow.',
+      : 'Review capability execution failed.',
     details: result.payload,
   }
 }
