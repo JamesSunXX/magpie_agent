@@ -1,6 +1,6 @@
 // tests/config/init.test.ts
 import { describe, it, expect, afterEach } from 'vitest'
-import { initConfig, generateConfig } from '../../src/config/init'
+import { initConfig, generateConfig } from '../../src/platform/config/init.js'
 import { existsSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -20,6 +20,8 @@ describe('Config Init', () => {
     const content = readFileSync(configPath, 'utf-8')
     expect(content).toContain('providers:')
     expect(content).toContain('reviewers:')
+    expect(content).toContain('capabilities:')
+    expect(content).toContain('integrations:')
     expect(content).toContain('trd:')
     expect(content).toContain('default_reviewers:')
     expect(content).not.toContain('image_reader:')

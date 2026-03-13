@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { loadConfigV2 } from '../../../platform/config/loader.js'
+import { loadConfig } from '../../../platform/config/loader.js'
 import { createProvider } from '../../../providers/factory.js'
 import type { AIProvider, Message } from '../../../providers/types.js'
 import type {
@@ -744,7 +744,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     throw new Error('loop run requires --prd path')
   }
 
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
@@ -853,7 +853,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     }
   }
 
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number

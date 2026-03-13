@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { executeTrd } from '../../../src/capabilities/trd/application/execute.js'
-import { runTrdFlow } from '../../../src/commands/trd.js'
+import { runTrdFlow } from '../../../src/capabilities/trd/runtime/flow.js'
 
-vi.mock('../../../src/commands/trd.js', () => ({
+vi.mock('../../../src/capabilities/trd/runtime/flow.js', () => ({
   runTrdFlow: vi.fn(),
 }))
 

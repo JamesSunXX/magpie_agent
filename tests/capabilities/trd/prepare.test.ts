@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { prepareTrdInput } from '../../../src/capabilities/trd/application/prepare.js'
-import { loadConfigV2 } from '../../../src/platform/config/loader.js'
+import { loadConfig } from '../../../src/platform/config/loader.js'
 
 vi.mock('../../../src/platform/config/loader.js', () => ({
-  loadConfigV2: vi.fn(),
+  loadConfig: vi.fn(),
 }))
 
 describe('trd capability prepare', () => {
-  it('loads v2 config into prepared input', async () => {
+  it('loads config into prepared input', async () => {
     const config = {
       capabilities: {
         trd: {
@@ -16,7 +16,7 @@ describe('trd capability prepare', () => {
         },
       },
     }
-    vi.mocked(loadConfigV2).mockReturnValue(config as never)
+    vi.mocked(loadConfig).mockReturnValue(config as never)
 
     const prepared = await prepareTrdInput({
       prdPath: '/tmp/prd.md',
@@ -25,7 +25,7 @@ describe('trd capability prepare', () => {
       },
     }, createCapabilityContext({ configPath: '/tmp/magpie.yaml' }))
 
-    expect(loadConfigV2).toHaveBeenCalledWith('/tmp/magpie.yaml')
+    expect(loadConfig).toHaveBeenCalledWith('/tmp/magpie.yaml')
     expect(prepared.config).toBe(config)
     expect(prepared.prdPath).toBe('/tmp/prd.md')
     expect(prepared.options).toEqual({ reviewers: 'claude' })

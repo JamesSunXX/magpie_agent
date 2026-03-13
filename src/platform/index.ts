@@ -1,4 +1,5 @@
 export * from './config/index.js'
 export * from './providers/index.js'
 export * from './integrations/github/index.js'
-export * from './integrations/notifications/index.js'
+export * from './integrations/notifications/router.js'
+export * from './integrations/notifications/factory.js'

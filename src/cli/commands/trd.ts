@@ -7,10 +7,10 @@ import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import type {
   TrdCapabilityInput,
   TrdExecutionResult,
+  TrdOptions,
   TrdPreparedInput,
   TrdSummaryOutput,
 } from '../../capabilities/trd/types.js'
-import type { TrdOptions } from '../../commands/trd.js'
 
 export const trdCommand = new Command('trd')
   .description('Generate TRD from PRD markdown with multi-role debate')

@@ -2,11 +2,11 @@
 
 Magpie 是一个面向工程场景的多模型 CLI。它把多模型代码评审、技术讨论、PRD 到 TRD、目标闭环执行，以及文档/回归类工程工作流统一到一个本地开发入口里。
 
-当前仓库已经进入 capability runtime 迁移阶段：
+当前 CLI 主链路已经统一到 capability runtime：
 
 - `review`、`discuss`、`trd` 已通过 capability runtime 作为 CLI 主链路执行
 - `quality unit-test-eval`、`loop`、`workflow *` 是 capability-native 能力
-- 仓库中仍保留部分 legacy 模块，主要用于兼容和迁移承接
+- `init`、`reviewers list`、`stats` 已脱离 legacy CLI 入口
 
 ## 核心能力
 
@@ -40,11 +40,11 @@ Magpie 是一个面向工程场景的多模型 CLI。它把多模型代码评审
 ```text
 src/
   cli/                   # Commander 命令注册
-  commands/              # legacy 命令实现
+  commands/              # 兼容壳与仍待收敛的历史入口
   capabilities/          # capability 模块与 workflow
   core/                  # capability runtime / reporting / context / repo
-  platform/              # v2 config、provider、integration 适配
-  providers/             # legacy provider 实现
+  platform/              # config、provider、integration 适配
+  providers/             # provider 实现（部分仍在历史目录）
   orchestrator/          # 多 reviewer 辩论编排
   context-gatherer/      # review 前上下文采集
   reporter/              # markdown 报告输出
@@ -120,12 +120,12 @@ magpie workflow post-merge-regression
 
 | 命令 | 作用 | 当前实现 |
 | --- | --- | --- |
-| `magpie init` | 初始化 `~/.magpie/config.yaml` | legacy |
+| `magpie init` | 初始化 `~/.magpie/config.yaml` | cli + platform config |
 | `magpie review` | 多 AI 代码评审 | capability runtime + orchestrator |
 | `magpie discuss` | 多模型讨论/辩论 | capability runtime + orchestrator |
 | `magpie trd` | PRD -> TRD | capability runtime |
-| `magpie reviewers list` | 查看 reviewer 配置 | legacy |
-| `magpie stats` | 查看评审统计 | legacy（占位） |
+| `magpie reviewers list` | 查看 reviewer 配置 | cli + platform config |
+| `magpie stats` | 查看评审统计 | cli（占位） |
 | `magpie quality unit-test-eval` | 单测质量评估 | capability |
 | `magpie loop run/resume/list` | 目标驱动的阶段执行闭环 | capability |
 | `magpie workflow issue-fix` | 问题修复工作流 | capability |
@@ -456,8 +456,8 @@ capabilities:
 说明：
 
 - 配置文件入口仍是 `~/.magpie/config.yaml`
-- capability 侧会把 legacy 配置自动迁移为 `capabilities.*` 结构并在内存中使用
-- 仓库里仍有 legacy / v2 并存代码，文档优先描述当前 CLI 主链路
+- 仅支持当前 schema，配置中必须包含 `capabilities` 与 `integrations`
+- 可通过 `magpie init` 重新生成最新配置模板
 
 ## 通知集成
 
@@ -537,9 +537,10 @@ npm run build
 
 ## 当前已知状态
 
-- `review`、`discuss`、`trd` 的 CLI 入口已切到 capability runtime
+- `review`、`discuss`、`trd` 已由 capability 模块持有运行时实现
+- `init`、`reviewers list`、`stats` 已脱离 legacy CLI 入口
 - `stats` 仍是轻量占位命令
-- 仓库中仍保留较多 V1/V2 并存模块，重构还在继续
+- provider 与部分历史支撑模块仍在继续收敛
 
 ## License
 

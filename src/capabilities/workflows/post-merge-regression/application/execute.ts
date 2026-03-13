@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
-import { loadConfigV2 } from '../../../../platform/config/loader.js'
+import { loadConfig } from '../../../../platform/config/loader.js'
 import { createProvider } from '../../../../providers/factory.js'
 import {
   generateWorkflowId,
@@ -15,7 +15,7 @@ export async function executePostMergeRegression(
   prepared: PostMergeRegressionPreparedInput,
   ctx: CapabilityContext
 ): Promise<PostMergeRegressionResult> {
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.post_merge_regression || {}
   const commands = prepared.commands || runtime.commands || []
   const sessionId = generateWorkflowId('post-merge-regression')

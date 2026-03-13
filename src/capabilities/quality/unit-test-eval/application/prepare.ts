@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'fs'
 import { join, relative, resolve } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
-import { loadConfigV2 } from '../../../../platform/config/loader.js'
+import { loadConfig } from '../../../../platform/config/loader.js'
 import { DEFAULT_UNIT_TEST_EVAL_CONFIG } from '../config.js'
 import type { UnitTestEvalInput, UnitTestEvalPrepared } from '../types.js'
 
@@ -56,7 +56,7 @@ export async function prepareUnitTestEval(
     throw new Error(`Path does not exist: ${cwd}`)
   }
 
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const moduleConfig = config.capabilities.quality?.unitTestEval || DEFAULT_UNIT_TEST_EVAL_CONFIG
 
   const { sourceFiles, testFiles } = collectSourceAndTests(cwd)

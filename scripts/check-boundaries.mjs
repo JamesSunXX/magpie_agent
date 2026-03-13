@@ -26,15 +26,6 @@ function resolveImport(file, spec) {
 const files = walk(srcDir)
 const violations = []
 
-const legacyCliBridgeAllowList = new Set([
-  'src/cli/commands/review.ts',
-  'src/cli/commands/discuss.ts',
-  'src/cli/commands/trd.ts',
-  'src/cli/commands/stats.ts',
-  'src/cli/commands/init.ts',
-  'src/cli/commands/reviewers.ts',
-])
-
 for (const file of files) {
   const relFile = toPosix(path.relative(root, file))
   const content = fs.readFileSync(file, 'utf-8')
@@ -69,10 +60,11 @@ for (const file of files) {
     if (relFile.startsWith('src/cli/')) {
       const allowed =
         target.startsWith('src/cli/') ||
-        target.startsWith('src/core/capability/') ||
-        target.startsWith('src/capabilities/')
+        target.startsWith('src/core/') ||
+        target.startsWith('src/capabilities/') ||
+        target.startsWith('src/platform/')
 
-      if (!allowed && !legacyCliBridgeAllowList.has(relFile)) {
+      if (!allowed) {
         violations.push(`${relFile} has disallowed dependency (${target})`)
       }
     }

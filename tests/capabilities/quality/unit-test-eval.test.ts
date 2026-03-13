@@ -15,7 +15,7 @@ describe('unit-test-eval capability', () => {
     writeFileSync(join(dir, 'src', 'sum.ts'), 'export const sum = (a:number,b:number)=>a+b\n')
     writeFileSync(join(dir, 'tests', 'sum.test.ts'), 'import { describe, it, expect } from \"vitest\"\n')
 
-    const config = `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  claude:\n    model: claude-code\n    prompt: review\nsummarizer:\n  model: claude-code\n  prompt: summarize\nanalyzer:\n  model: claude-code\n  prompt: analyze\n`
+    const config = `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  claude:\n    model: claude-code\n    prompt: review\nsummarizer:\n  model: claude-code\n  prompt: summarize\nanalyzer:\n  model: claude-code\n  prompt: analyze\ncapabilities:\n  quality:\n    unitTestEval:\n      enabled: true\n      provider: claude-code\n      max_files: 50\n      min_coverage: 0.8\n      output_format: json\nintegrations:\n  notifications:\n    enabled: false\n`
     const configPath = join(dir, 'config.yaml')
     writeFileSync(configPath, config)
 

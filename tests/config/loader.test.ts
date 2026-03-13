@@ -1,6 +1,6 @@
 // tests/config/loader.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { loadConfig, expandEnvVars, getConfigPath } from '../../src/config/loader.js'
+import { loadConfig, expandEnvVars, getConfigPath } from '../../src/platform/config/loader.js'
 import { writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -40,6 +40,7 @@ providers:
 defaults:
   max_rounds: 3
   output_format: markdown
+  check_convergence: true
 reviewers:
   test-reviewer:
     model: claude-sonnet-4-20250514
@@ -50,6 +51,12 @@ summarizer:
 analyzer:
   model: claude-sonnet-4-20250514
   prompt: Analyzer prompt
+capabilities:
+  review:
+    enabled: true
+integrations:
+  notifications:
+    enabled: false
 `)
       const config = loadConfig(configPath)
       expect(config.defaults.max_rounds).toBe(3)

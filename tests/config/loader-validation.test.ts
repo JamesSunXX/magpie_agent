@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { MagpieConfig } from '../../src/config/types.js'
+import type { MagpieConfigV2 } from '../../src/platform/config/types.js'
 
 // Mock fs and yaml
 vi.mock('fs', () => ({
@@ -11,7 +11,7 @@ vi.mock('yaml', () => ({
 }))
 
 // Mock logger to suppress output
-vi.mock('../../src/utils/logger.js', () => ({
+vi.mock('../../src/shared/utils/logger.js', () => ({
   logger: {
     warn: vi.fn(),
     error: vi.fn(),
@@ -20,21 +20,27 @@ vi.mock('../../src/utils/logger.js', () => ({
   }
 }))
 
-import { loadConfig } from '../../src/config/loader.js'
+import { loadConfig } from '../../src/platform/config/loader.js'
 import { existsSync, readFileSync } from 'fs'
 import { parse } from 'yaml'
-import { logger } from '../../src/utils/logger.js'
+import { logger } from '../../src/shared/utils/logger.js'
 
-const validConfig: MagpieConfig = {
-  defaults: { max_rounds: 3, check_convergence: true },
+const validConfig: MagpieConfigV2 = {
+  defaults: { max_rounds: 3, output_format: 'markdown', check_convergence: true },
   providers: {
-    anthropic: { api_key: 'test-key' }
+    anthropic: { api_key: 'test-key' },
   },
   reviewers: {
-    claude: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Review this code' }
+    claude: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Review this code' },
   },
   summarizer: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Summarize' },
-  analyzer: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Analyze' }
+  analyzer: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Analyze' },
+  capabilities: {
+    review: { enabled: true },
+  },
+  integrations: {
+    notifications: { enabled: false },
+  },
 }
 
 describe('loadConfig - validation', () => {
@@ -81,7 +87,7 @@ describe('loadConfig - validation', () => {
     const bad = structuredClone(validConfig)
     bad.summarizer = { model: '', prompt: 'summarize' }
     vi.mocked(parse).mockReturnValue(bad)
-    expect(() => loadConfig('/path/to/config.yaml')).toThrow('summarizer is missing a "model"')
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('summarizer is missing a "model" field')
   })
 
   it('warns on empty API key', () => {
@@ -131,7 +137,7 @@ describe('loadConfig - validation', () => {
         },
       },
     }
-    vi.mocked(parse).mockReturnValue(legacy as MagpieConfig)
+    vi.mocked(parse).mockReturnValue(legacy as MagpieConfigV2)
     expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
   })
 })

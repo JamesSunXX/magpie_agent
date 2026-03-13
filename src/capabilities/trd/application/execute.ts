@@ -1,5 +1,5 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { runTrdFlow } from '../../../commands/trd.js'
+import { runTrdFlow } from '../runtime/flow.js'
 import type { TrdExecutionResult, TrdPreparedInput } from '../types.js'
 
 export async function executeTrd(

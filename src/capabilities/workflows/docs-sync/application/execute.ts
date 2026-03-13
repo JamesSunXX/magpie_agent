@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
-import { loadConfigV2 } from '../../../../platform/config/loader.js'
+import { loadConfig } from '../../../../platform/config/loader.js'
 import { createProvider } from '../../../../providers/factory.js'
 import { RepoScanner } from '../../../../repo-scanner/scanner.js'
 import { collectDocs } from '../../../../context-gatherer/collectors/docs-collector.js'
@@ -12,7 +12,7 @@ export async function executeDocsSync(
   prepared: DocsSyncPreparedInput,
   ctx: CapabilityContext
 ): Promise<DocsSyncResult> {
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.docs_sync || {}
   const sessionId = generateWorkflowId('docs-sync')
   const sessionDir = sessionDirFor('docs-sync', sessionId)

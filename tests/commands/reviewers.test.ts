@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { MagpieConfig } from '../../src/config/types.js'
-import { listConfiguredReviewers } from '../../src/commands/reviewers.js'
+import type { MagpieConfigV2 } from '../../src/platform/config/types.js'
+import { listConfiguredReviewers } from '../../src/cli/commands/reviewers.js'
 
-function buildConfig(reviewers: MagpieConfig['reviewers']): MagpieConfig {
+function buildConfig(reviewers: MagpieConfigV2['reviewers']): MagpieConfigV2 {
   return {
     providers: {
       'claude-code': { enabled: true },
@@ -17,6 +17,12 @@ function buildConfig(reviewers: MagpieConfig['reviewers']): MagpieConfig {
     reviewers,
     summarizer: { model: 'claude-code', prompt: 'summary' },
     analyzer: { model: 'claude-code', prompt: 'analysis' },
+    capabilities: {
+      review: { enabled: true },
+    },
+    integrations: {
+      notifications: { enabled: false },
+    },
   }
 }
 

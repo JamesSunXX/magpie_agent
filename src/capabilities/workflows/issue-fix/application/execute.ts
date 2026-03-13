@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { createProvider } from '../../../../providers/factory.js'
-import { loadConfigV2 } from '../../../../platform/config/loader.js'
+import { loadConfig } from '../../../../platform/config/loader.js'
 import {
   generateWorkflowId,
   persistWorkflowSession,
@@ -15,7 +15,7 @@ export async function executeIssueFix(
   prepared: IssueFixPreparedInput,
   ctx: CapabilityContext
 ): Promise<IssueFixResult> {
-  const config = loadConfigV2(ctx.configPath)
+  const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.issue_fix || {}
   const sessionId = generateWorkflowId('issue-fix')
   const sessionDir = sessionDirFor('issue-fix', sessionId)

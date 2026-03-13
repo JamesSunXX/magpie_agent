@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { executeDiscuss } from '../../../src/capabilities/discuss/application/execute.js'
-import { runDiscussFlow } from '../../../src/commands/discuss.js'
+import { runDiscussFlow } from '../../../src/capabilities/discuss/runtime/flow.js'
 
-vi.mock('../../../src/commands/discuss.js', () => ({
+vi.mock('../../../src/capabilities/discuss/runtime/flow.js', () => ({
   runDiscussFlow: vi.fn(),
 }))
 

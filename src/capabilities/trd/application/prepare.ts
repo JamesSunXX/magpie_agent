@@ -1,5 +1,5 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { loadConfigV2 } from '../../../platform/config/loader.js'
+import { loadConfig } from '../../../platform/config/loader.js'
 import type { TrdCapabilityInput, TrdPreparedInput } from '../types.js'
 
 export async function prepareTrdInput(
@@ -9,6 +9,6 @@ export async function prepareTrdInput(
   return {
     ...input,
     preparedAt: new Date(),
-    config: loadConfigV2(ctx.configPath),
+    config: loadConfig(ctx.configPath),
   }
 }

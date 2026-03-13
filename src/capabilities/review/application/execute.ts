@@ -1,5 +1,5 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { runReviewFlow } from '../../../commands/review.js'
+import { runReviewFlow } from '../runtime/flow.js'
 import type { ReviewExecutionResult, ReviewPreparedInput } from '../types.js'
 
 export async function executeReview(

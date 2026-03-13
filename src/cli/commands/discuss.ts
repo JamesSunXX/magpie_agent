@@ -6,11 +6,11 @@ import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import type {
   DiscussCapabilityInput,
+  DiscussOptions,
   DiscussExecutionResult,
   DiscussPreparedInput,
   DiscussSummaryOutput,
 } from '../../capabilities/discuss/types.js'
-import type { DiscussOptions } from '../../commands/discuss.js'
 
 export const discussCommand = new Command('discuss')
   .description('Discuss any topic with multiple AI reviewers through adversarial debate')

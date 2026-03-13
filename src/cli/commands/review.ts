@@ -6,11 +6,11 @@ import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import type {
   ReviewCapabilityInput,
+  ReviewCommandOptions,
   ReviewExecutionResult,
   ReviewPreparedInput,
   ReviewSummaryOutput,
 } from '../../capabilities/review/types.js'
-import type { ReviewCommandOptions } from '../../commands/review.js'
 
 export const reviewCommand = new Command('review')
   .description('Review code changes with multiple AI reviewers')
