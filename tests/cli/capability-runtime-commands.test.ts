@@ -93,4 +93,23 @@ describe('capability runtime CLI commands', () => {
       expect.any(Object)
     )
   })
+
+  it('dispatches stats through capability runtime', async () => {
+    getTypedCapability.mockReturnValue({ name: 'stats' })
+    const { statsCommand } = await import('../../src/cli/commands/stats.js')
+
+    await statsCommand.parseAsync(['node', 'stats', '--since', '14', '--format', 'json'], {
+      from: 'node',
+    })
+
+    expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'stats')
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'stats' },
+      {
+        since: 14,
+        format: 'json',
+      },
+      expect.any(Object)
+    )
+  })
 })

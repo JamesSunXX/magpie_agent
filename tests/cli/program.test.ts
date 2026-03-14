@@ -21,4 +21,11 @@ describe('CLI program', () => {
       'post-merge-regression',
     ])
   })
+
+  it('registers stats as a top-level command', () => {
+    const program = createProgram()
+    const stats = program.commands.find((command) => command.name() === 'stats')
+
+    expect(stats).toBeTruthy()
+  })
 })

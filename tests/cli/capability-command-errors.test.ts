@@ -65,4 +65,15 @@ describe('capability-backed CLI command errors', () => {
     expect(process.exitCode).toBe(1)
     errorSpy.mockRestore()
   })
+
+  it('prints a deterministic error and sets exit code for stats', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { statsCommand } = await import('../../src/cli/commands/stats.js')
+
+    await statsCommand.parseAsync(['node', 'test', '--since', '7'], { from: 'node' })
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('bad config'))
+    expect(process.exitCode).toBe(1)
+    errorSpy.mockRestore()
+  })
 })

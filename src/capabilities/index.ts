@@ -6,11 +6,13 @@ import { loopCapability } from './loop/index.js'
 import { postMergeRegressionCapability } from './workflows/post-merge-regression/index.js'
 import { unitTestEvalCapability } from './quality/unit-test-eval/index.js'
 import { reviewCapability } from './review/index.js'
+import { statsCapability } from './stats/index.js'
 import { trdCapability } from './trd/index.js'
 
 export { reviewCapability } from './review/index.js'
 export { discussCapability } from './discuss/index.js'
 export { trdCapability } from './trd/index.js'
+export { statsCapability } from './stats/index.js'
 export { issueFixCapability } from './workflows/issue-fix/index.js'
 export { docsSyncCapability } from './workflows/docs-sync/index.js'
 export { postMergeRegressionCapability } from './workflows/post-merge-regression/index.js'
@@ -22,6 +24,7 @@ export function createDefaultCapabilityRegistry() {
     reviewCapability,
     discussCapability,
     trdCapability,
+    statsCapability,
     issueFixCapability,
     docsSyncCapability,
     postMergeRegressionCapability,
