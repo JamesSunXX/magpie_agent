@@ -10,13 +10,13 @@ import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../../../core/context/gatherer.js'
 import type { RunReviewFlowInput, ReviewCommandOptions, ReviewFlowResult } from '../types.js'
-import type { ReviewTarget, ReviewerSessionState } from '../../../commands/review/types.js'
-import { fixMarkdown, getRandomJoke, formatMarkdown } from '../../../commands/review/utils.js'
+import type { ReviewTarget, ReviewerSessionState } from './types.js'
+import { fixMarkdown, getRandomJoke, formatMarkdown } from './utils.js'
 import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion } from '../presentation/interactive.js'
-import { handleRepoReview } from '../../../commands/review/repo-review.js'
+import { handleRepoReview } from '../application/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from '../presentation/session-cmds.js'
 import { filterDiff } from '../../../utils/diff-filter.js'
-import { CommandExitError, commandExit, runInCommandContext } from '../../../commands/shared/runtime.js'
+import { CommandExitError, commandExit, runInCommandContext } from '../../../core/capability/command-context.js'
 
 // Configure marked to render for terminal
 marked.setOptions({

@@ -12,8 +12,8 @@ import TerminalRenderer from 'marked-terminal'
 import { StateManager } from '../../../state/index.js'
 import type { DiscussSession, DiscussRound } from '../../../state/types.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
-import { runDebateSession } from '../../../commands/discussion/runner.js'
-import { CommandExitError, commandExit, runInCommandContext } from '../../../commands/shared/runtime.js'
+import { runDebateSession } from '../../../core/debate/runner.js'
+import { CommandExitError, commandExit, runInCommandContext } from '../../../core/capability/command-context.js'
 import type { DiscussFlowResult, DiscussOptions, RunDiscussFlowInput } from '../types.js'
 
 marked.setOptions({

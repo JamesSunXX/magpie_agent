@@ -48,6 +48,10 @@ for (const file of files) {
     }
 
     if (relFile.startsWith('src/capabilities/') && relFile !== 'src/capabilities/index.ts') {
+      if (target.startsWith('src/commands/')) {
+        violations.push(`${relFile} must not depend on commands (${target})`)
+      }
+
       const fromCap = relFile.split('/')[2]
       if (target.startsWith('src/capabilities/')) {
         const toCap = target.split('/')[2]

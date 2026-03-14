@@ -8,6 +8,11 @@ Magpie 是一个面向工程场景的多模型 CLI。它把多模型代码评审
 - `quality unit-test-eval`、`loop`、`workflow *` 是 capability-native 能力
 - `init`、`reviewers list`、`stats` 已脱离 legacy CLI 入口
 
+当前 follow-up 范围只覆盖 direct legacy import cleanup：
+
+- capability runtime 与其直接依赖入口已不再直接 import `src/commands/*`
+- 仍保留少量二跳桥接，例如 `src/core/context/gatherer.ts` 和 `src/capabilities/review/domain/debate-orchestrator.ts`
+
 ## 核心能力
 
 ### 代码与工程协作
@@ -538,8 +543,10 @@ npm run build
 ## 当前已知状态
 
 - `review`、`discuss`、`trd` 已由 capability 模块持有运行时实现
+- capability 运行时及其直接依赖入口已清掉对 `src/commands/*` 的直接 import
 - `init`、`reviewers list`、`stats` 已脱离 legacy CLI 入口
 - `stats` 仍是轻量占位命令
+- `src/core/context/gatherer.ts`、`src/capabilities/review/domain/debate-orchestrator.ts` 等二跳桥接仍保留
 - provider 与部分历史支撑模块仍在继续收敛
 
 ## License

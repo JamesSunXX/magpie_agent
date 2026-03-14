@@ -13,7 +13,7 @@ import type { Reviewer } from '../../../orchestrator/types.js'
 import { StateManager } from '../../../state/index.js'
 import type { TrdSession } from '../../../state/types.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
-import { runDebateSession } from '../../../commands/discussion/runner.js'
+import { runDebateSession } from '../../../core/debate/runner.js'
 import { parsePrdMarkdown } from '../domain/prd-parser.js'
 import { collectChatImages } from '../../../trd/image-inputs.js'
 import { buildPrdDigestText, mapRequirementsToDomains } from '../domain/digest.js'
@@ -40,7 +40,7 @@ import type {
   ParsedPrd,
   TrdSynthesisResult,
 } from '../../../trd/types.js'
-import { CommandExitError, runInCommandContext } from '../../../commands/shared/runtime.js'
+import { CommandExitError, runInCommandContext } from '../../../core/capability/command-context.js'
 import type { RunTrdFlowInput, TrdFlowResult, TrdOptions } from '../types.js'
 
 interface OutputPaths {
