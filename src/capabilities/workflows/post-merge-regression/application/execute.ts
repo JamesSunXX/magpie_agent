@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
+import { createOperationsRouter } from '../../../../platform/integrations/operations/factory.js'
 import { createProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
@@ -21,16 +22,27 @@ export async function executePostMergeRegression(
   const sessionId = generateWorkflowId('post-merge-regression')
   const sessionDir = sessionDirFor('post-merge-regression', sessionId)
   const reportPath = join(sessionDir, 'regression-report.md')
+  const evidencePath = join(sessionDir, 'evidence.json')
   await mkdir(sessionDir, { recursive: true })
 
-  const results = commands.map((command) => ({
-    command,
-    ...runSafeCommand(ctx.cwd, command),
-  }))
+  const operationsRouter = createOperationsRouter(config.integrations.operations)
+  const evidence = config.integrations.operations?.enabled
+    ? await operationsRouter.collectEvidence({
+        cwd: ctx.cwd,
+        commands,
+      })
+    : {
+        runs: commands.map((command) => ({
+          command,
+          ...runSafeCommand(ctx.cwd, command),
+        })),
+        summary: commands.join('\n'),
+      }
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2), 'utf-8')
 
   const evaluator = createProvider(runtime.evaluator_model || config.analyzer.model, config)
   evaluator.setCwd?.(ctx.cwd)
-  const prompt = `You are summarizing a post-merge regression run.\n\n${results.map((result) => `Command: ${result.command}\nPassed: ${result.passed}\nOutput:\n${result.output}`).join('\n\n')}`
+  const prompt = `You are summarizing a post-merge regression run.\n\n${evidence.runs.map((result) => `Command: ${result.command}\nPassed: ${result.passed}\nOutput:\n${result.output}`).join('\n\n')}`
   const summary = await evaluator.chat([{ role: 'user', content: prompt }])
   await writeFile(reportPath, summary, 'utf-8')
 
@@ -40,11 +52,13 @@ export async function executePostMergeRegression(
     title: 'Post-merge regression',
     createdAt: new Date(),
     updatedAt: new Date(),
-    status: results.every((result) => result.passed) ? 'completed' as const : 'failed' as const,
+    status: evidence.runs.every((result) => result.passed) ? 'completed' as const : 'failed' as const,
     summary,
     artifacts: {
       reportPath,
+      evidencePath,
     },
+    evidence,
   }
   await persistWorkflowSession(session)
 

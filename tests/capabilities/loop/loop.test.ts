@@ -2,10 +2,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
+
+const planningMocks = vi.hoisted(() => ({
+  syncPlanArtifact: vi.fn().mockResolvedValue({ synced: true }),
+}))
+
+vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
+  createPlanningRouter: vi.fn(() => ({
+    createPlanContext: vi.fn().mockResolvedValue(null),
+    syncPlanArtifact: planningMocks.syncPlanArtifact,
+  })),
+}))
 
 describe('loop capability', () => {
   it('runs a minimal dry-run loop session with mock providers', async () => {
@@ -34,6 +45,32 @@ describe('loop capability', () => {
     expect(result.result.status).toBe('completed')
     expect(result.result.session).toBeDefined()
     expect(result.result.session?.stages).toEqual(['prd_review'])
+  })
+
+  it('syncs loop plan artifacts to the planning router when configured', async () => {
+    planningMocks.syncPlanArtifact.mockClear()
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-planning-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n  planning:\n    enabled: true\n    default_provider: jira_main\n    providers:\n      jira_main:\n        type: jira\n        base_url: https://example.atlassian.net\n        project_key: ENG\n        email: bot@example.com\n        api_token: token\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(planningMocks.syncPlanArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Goal: Complete delivery flow'),
+    }))
   })
 
   it('does not create or switch branches in dry-run mode', async () => {

@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
+import { createPlanningRouter } from '../../../../platform/integrations/planning/factory.js'
 import { createProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
@@ -17,6 +18,7 @@ export async function executeIssueFix(
 ): Promise<IssueFixResult> {
   const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.issue_fix || {}
+  const planningRouter = createPlanningRouter(config.integrations.planning)
   const sessionId = generateWorkflowId('issue-fix')
   const sessionDir = sessionDirFor('issue-fix', sessionId)
   const planPath = join(sessionDir, 'plan.md')
@@ -49,6 +51,20 @@ export async function executeIssueFix(
     verificationOutput = verification.output
     await writeFile(verificationPath, verification.output, 'utf-8')
   }
+
+  await planningRouter.syncPlanArtifact({
+    title: prepared.issue,
+    body: [
+      `Issue: ${prepared.issue}`,
+      '',
+      'Plan:',
+      plan,
+      '',
+      'Execution:',
+      execution,
+      ...(verifyCommand ? ['', `Verification (${verifyCommand}):`, verificationOutput] : []),
+    ].join('\n'),
+  })
 
   const session = {
     id: sessionId,

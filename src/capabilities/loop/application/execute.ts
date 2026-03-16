@@ -18,6 +18,7 @@ import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopConfig, LoopStageName } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
+import { createPlanningRouter } from '../../../platform/integrations/planning/factory.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
   appendHumanConfirmationItem,
@@ -750,6 +751,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
+  const planningRouter = createPlanningRouter(config.integrations.planning)
 
   const planner = createProvider(loopRuntime.plannerModel, config)
   const executor = createProvider(loopRuntime.executorModel, config)
@@ -767,6 +769,16 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const tasks = await generateLoopPlan(planner, prepared.goal, prepared.prdPath, loopRuntime.stages)
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
+  await planningRouter.syncPlanArtifact({
+    title: prepared.goal,
+    body: [
+      `Goal: ${prepared.goal}`,
+      `PRD: ${resolve(prepared.prdPath)}`,
+      '',
+      'Plan:',
+      JSON.stringify(tasks, null, 2),
+    ].join('\n'),
+  })
 
   const branchName = (loopRuntime.autoCommit && prepared.dryRun !== true)
     ? ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined

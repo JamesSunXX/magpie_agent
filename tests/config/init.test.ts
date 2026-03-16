@@ -42,6 +42,18 @@ describe('Config Init', () => {
     expect(content).toContain('chat_guid:${BLUEBUBBLES_CHAT_GUID}')
   })
 
+  it('should include planning and operations integration templates', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    initConfig(testDir)
+
+    const content = readFileSync(configPath, 'utf-8')
+    expect(content).toContain('planning:')
+    expect(content).toContain('type: "jira"')
+    expect(content).toContain('type: "feishu-project"')
+    expect(content).toContain('operations:')
+    expect(content).toContain('type: "local-commands"')
+  })
+
   it('should backup existing config before writing a new one', () => {
     const configPath = join(testDir, '.magpie', 'config.yaml')
     const magpieDir = join(testDir, '.magpie')

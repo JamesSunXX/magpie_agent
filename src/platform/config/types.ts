@@ -145,8 +145,53 @@ export interface NotificationsIntegrationConfig {
   providers?: Record<string, NotificationProviderConfig>
 }
 
+export interface FeishuProjectPlanningProviderConfig {
+  type: 'feishu-project'
+  enabled?: boolean
+  base_url: string
+  project_key?: string
+  app_id: string
+  app_secret: string
+}
+
+export interface JiraPlanningProviderConfig {
+  type: 'jira'
+  enabled?: boolean
+  base_url: string
+  project_key?: string
+  email: string
+  api_token: string
+}
+
+export type PlanningProviderConfig =
+  | FeishuProjectPlanningProviderConfig
+  | JiraPlanningProviderConfig
+
+export interface PlanningIntegrationConfig {
+  enabled?: boolean
+  default_provider?: string
+  providers?: Record<string, PlanningProviderConfig>
+}
+
+export interface LocalCommandsOperationsProviderConfig {
+  type: 'local-commands'
+  enabled?: boolean
+  timeout_ms?: number
+  max_buffer_bytes?: number
+}
+
+export type OperationsProviderConfig = LocalCommandsOperationsProviderConfig
+
+export interface OperationsIntegrationConfig {
+  enabled?: boolean
+  default_provider?: string
+  providers?: Record<string, OperationsProviderConfig>
+}
+
 export interface IntegrationsConfig {
   notifications?: NotificationsIntegrationConfig
+  planning?: PlanningIntegrationConfig
+  operations?: OperationsIntegrationConfig
 }
 
 export interface ReviewConfig {

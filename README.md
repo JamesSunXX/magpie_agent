@@ -484,6 +484,40 @@ integrations:
           - "chat_guid:${BLUEBUBBLES_CHAT_GUID}"
 ```
 
+## Planning / Operations 集成
+
+`integrations.planning` 用于把 `loop` / `workflow issue-fix` 产出的计划或执行摘要同步到外部项目系统；`integrations.operations` 用于让 `workflow post-merge-regression` 通过统一 provider 采集命令执行证据。
+
+最小配置示例：
+
+```yaml
+integrations:
+  planning:
+    enabled: false
+    default_provider: "jira_main"
+    providers:
+      jira_main:
+        type: "jira"
+        base_url: "https://your-company.atlassian.net"
+        project_key: "ENG"
+        email: ${JIRA_EMAIL}
+        api_token: ${JIRA_API_TOKEN}
+      feishu_project:
+        type: "feishu-project"
+        base_url: "https://project.feishu.cn"
+        project_key: "ENG"
+        app_id: ${FEISHU_PROJECT_APP_ID}
+        app_secret: ${FEISHU_PROJECT_APP_SECRET}
+  operations:
+    enabled: false
+    default_provider: "local_main"
+    providers:
+      local_main:
+        type: "local-commands"
+        timeout_ms: 600000
+        max_buffer_bytes: 10485760
+```
+
 ## 会话与产物存储
 
 - repo review 会话：`<repo>/.magpie/sessions/`

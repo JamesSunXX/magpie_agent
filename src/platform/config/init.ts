@@ -303,6 +303,30 @@ ${appleScriptTargetsYaml}
         targets:
           - ${yamlDoubleQuoted(notifications.imessageBluebubblesTarget)}
         method: "private-api"
+  planning:
+    enabled: false
+    default_provider: "jira_main"
+    providers:
+      jira_main:
+        type: "jira"
+        base_url: "https://your-company.atlassian.net"
+        project_key: "ENG"
+        email: \${JIRA_EMAIL}
+        api_token: \${JIRA_API_TOKEN}
+      feishu_project:
+        type: "feishu-project"
+        base_url: "https://project.feishu.cn"
+        project_key: "ENG"
+        app_id: \${FEISHU_PROJECT_APP_ID}
+        app_secret: \${FEISHU_PROJECT_APP_SECRET}
+  operations:
+    enabled: false
+    default_provider: "local_main"
+    providers:
+      local_main:
+        type: "local-commands"
+        timeout_ms: 600000
+        max_buffer_bytes: 10485760
 `
 }
 

@@ -1,10 +1,21 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { issueFixCapability } from '../../../src/capabilities/workflows/issue-fix/index.js'
+
+const issueFixPlanningMocks = vi.hoisted(() => ({
+  syncPlanArtifact: vi.fn().mockResolvedValue({ synced: true }),
+}))
+
+vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
+  createPlanningRouter: vi.fn(() => ({
+    createPlanContext: vi.fn().mockResolvedValue(null),
+    syncPlanArtifact: issueFixPlanningMocks.syncPlanArtifact,
+  })),
+}))
 
 describe('issue-fix workflow', () => {
   it('creates a persisted issue-fix session with plan and execution artifacts', async () => {
@@ -25,5 +36,26 @@ describe('issue-fix workflow', () => {
     expect(result.result.session?.artifacts.planPath).toBeTruthy()
     expect(result.result.session?.artifacts.executionPath).toBeTruthy()
     expect(readFileSync(result.result.session!.artifacts.planPath, 'utf-8')).toContain('Add input validation')
+  })
+
+  it('syncs issue-fix artifacts to the planning router when configured', async () => {
+    issueFixPlanningMocks.syncPlanArtifact.mockClear()
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-planning-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'sum.ts'), 'export const sum = (a: number, b: number) => a + b\n', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  issue_fix:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    verify_command: "node --version"\n    auto_commit: false\nintegrations:\n  notifications:\n    enabled: false\n  planning:\n    enabled: true\n    default_provider: jira_main\n    providers:\n      jira_main:\n        type: jira\n        base_url: https://example.atlassian.net\n        project_key: ENG\n        email: bot@example.com\n        api_token: token\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    await runCapability(issueFixCapability, {
+      issue: 'Add input validation to sum() and describe the fix.',
+      apply: false,
+    }, ctx)
+
+    expect(issueFixPlanningMocks.syncPlanArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Add input validation'),
+    }))
   })
 })
