@@ -2,7 +2,7 @@
 import chalk from 'chalk'
 import ora from 'ora'
 import type { MagpieConfig } from '../../config/types.js'
-import { StateManager } from '../../state/index.js'
+import { StateManager } from '../../core/state/index.js'
 import { resumeReview } from './repo-review.js'
 
 export async function handleListSessions(spinner: ReturnType<typeof ora>): Promise<void> {

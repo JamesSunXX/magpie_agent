@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { HistoryTracker } from '../../core/history/tracker.js'
+import { HistoryTracker } from '../../core/history/index.js'
 
 export const statsCommand = new Command('stats')
   .description('Show review statistics for the current repository')

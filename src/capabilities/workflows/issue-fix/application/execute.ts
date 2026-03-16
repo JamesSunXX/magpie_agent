@@ -1,8 +1,8 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
-import { createProvider } from '../../../../providers/factory.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
+import { createProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
   persistWorkflowSession,

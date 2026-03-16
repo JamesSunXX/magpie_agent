@@ -1,5 +1,5 @@
-export * from './types.js'
-export * from './factory.js'
+export * from '../../providers/types.js'
+export * from '../../providers/factory.js'
 
 export * from './api/anthropic.js'
 export * from './api/openai.js'

@@ -1,1 +1,1 @@
-export * from '../../../orchestrator/orchestrator.js'
+export * from '../../../core/debate/orchestrator.js'

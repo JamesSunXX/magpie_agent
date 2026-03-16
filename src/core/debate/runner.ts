@@ -1,4 +1,4 @@
-import type { ContextGatherer } from '../context/gatherer.js'
+import type { ContextGatherer } from '../context/index.js'
 import { DebateOrchestrator } from '../../orchestrator/orchestrator.js'
 import type {
   Reviewer,

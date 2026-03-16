@@ -4,13 +4,13 @@ import crypto from 'crypto'
 import { readFileSync, existsSync, writeFileSync } from 'fs'
 import type { MagpieConfigV2 } from '../../../platform/config/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { createProvider } from '../../../providers/factory.js'
-import type { Reviewer, DebateResult, ReviewerStatus, OrchestratorOptions } from '../../../orchestrator/types.js'
+import type { DebateResult, OrchestratorOptions, Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
+import { StateManager } from '../../../core/state/index.js'
+import type { DiscussRound, DiscussSession } from '../../../core/state/index.js'
+import { createProvider } from '../../../platform/providers/index.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
-import { StateManager } from '../../../state/index.js'
-import type { DiscussSession, DiscussRound } from '../../../state/types.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
 import { runDebateSession } from '../../../core/debate/runner.js'
 import { CommandExitError, commandExit, runInCommandContext } from '../../../core/capability/command-context.js'
@@ -20,7 +20,6 @@ marked.setOptions({
   renderer: new TerminalRenderer({
     reflowText: true,
     width: 80,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TerminalRenderer type mismatch with marked
   }) as any
 })
 
@@ -203,7 +202,7 @@ async function runDiscussion(
   }
 
   const isSoloDiscussion = reviewers.length === 1
-  const maxRounds = isSoloDiscussion ? 1 : parseInt(options.rounds, 10)
+  const maxRounds = isSoloDiscussion ? 1 : parseInt(options.rounds ?? '5', 10)
   const checkConvergence = !isSoloDiscussion && options.converge !== false && (config.defaults.check_convergence !== false)
 
   const summarizer: Reviewer = {

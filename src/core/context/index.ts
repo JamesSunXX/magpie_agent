@@ -1,2 +1,2 @@
-export * from './gatherer.js'
-export * from './types.js'
+export * from '../../context-gatherer/gatherer.js'
+export * from '../../context-gatherer/types.js'

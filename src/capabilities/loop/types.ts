@@ -1,4 +1,4 @@
-import type { LoopSession } from '../../state/types.js'
+import type { LoopSession } from '../../core/state/index.js'
 
 export type LoopMode = 'run' | 'resume' | 'list'
 

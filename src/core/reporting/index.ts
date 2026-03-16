@@ -1,2 +1,2 @@
-export * from './types.js'
-export * from './markdown.js'
+export * from '../../reporter/types.js'
+export * from '../../reporter/markdown.js'

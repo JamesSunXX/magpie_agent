@@ -1,4 +1,4 @@
-import type { Message } from '../../../providers/types.js'
+import type { Message } from '../../../platform/providers/index.js'
 
 export interface ReviewTarget {
   type: 'pr' | 'local' | 'branch' | 'files'

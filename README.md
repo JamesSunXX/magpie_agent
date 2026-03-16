@@ -529,8 +529,14 @@ npm run dev -- --help
 # watch 模式测试
 npm test
 
+# 代码质量检查
+npm run lint
+
 # 单次测试
 npm run test:run
+
+# 覆盖率
+npm run test:coverage
 
 # TypeScript 构建
 npm run build
@@ -545,8 +551,11 @@ npm run smoke:notifications -- human_confirmation_required
 提交前至少执行：
 
 ```bash
+npm run lint
 npm run test:run
+npm run test:coverage
 npm run build
+npm run check:boundaries
 ```
 
 ## 相关文档

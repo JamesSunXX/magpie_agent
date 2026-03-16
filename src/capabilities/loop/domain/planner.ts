@@ -1,6 +1,6 @@
-import type { AIProvider, Message } from '../../../providers/types.js'
+import type { LoopTask } from '../../../core/state/index.js'
+import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopStageName } from '../../../config/types.js'
-import type { LoopTask } from '../../../state/types.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 
 interface PlanJson {

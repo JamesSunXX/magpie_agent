@@ -1,7 +1,6 @@
 // src/commands/review/utils.ts
-import type { MergedIssue } from '../../orchestrator/types.js'
-import type { ReviewFocus } from '../../orchestrator/repo-orchestrator.js'
-import type { DebateResult } from '../../orchestrator/types.js'
+import type { MergedIssue, DebateResult } from '../../core/debate/types.js'
+import type { ReviewFocus } from '../../core/debate/repo-orchestrator.js'
 
 // Fix malformed markdown from some LLMs (e.g., Codex uses indented lists)
 export function fixMarkdown(text: string): string {

@@ -1,10 +1,10 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
+import { RepoScanner } from '../../../../core/repo/index.js'
+import { collectDocs } from '../../../../core/context/collectors/docs-collector.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
-import { createProvider } from '../../../../providers/factory.js'
-import { RepoScanner } from '../../../../repo-scanner/scanner.js'
-import { collectDocs } from '../../../../context-gatherer/collectors/docs-collector.js'
+import { createProvider } from '../../../../platform/providers/index.js'
 import { generateWorkflowId, persistWorkflowSession, sessionDirFor } from '../../shared/runtime.js'
 import type { DocsSyncPreparedInput, DocsSyncResult } from '../types.js'
 

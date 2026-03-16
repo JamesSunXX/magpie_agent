@@ -4,15 +4,15 @@ import ora from 'ora'
 import crypto from 'crypto'
 import { createInterface } from 'readline'
 import type { MagpieConfig } from '../../config/types.js'
-import { createProvider } from '../../providers/factory.js'
-import type { Reviewer } from '../../orchestrator/types.js'
-import type { ReviewFocus } from '../../orchestrator/repo-orchestrator.js'
-import { RepoOrchestrator } from '../../orchestrator/repo-orchestrator.js'
-import type { RepoStats } from '../../repo-scanner/types.js'
-import { RepoScanner } from '../../repo-scanner/index.js'
-import { MarkdownReporter } from '../../reporter/index.js'
-import { StateManager } from '../../state/index.js'
-import type { ReviewSession, FeatureAnalysis, FeatureReviewResult } from '../../state/types.js'
+import type { Reviewer } from '../../core/debate/types.js'
+import type { ReviewFocus } from '../../core/debate/repo-orchestrator.js'
+import { RepoOrchestrator } from '../../core/debate/repo-orchestrator.js'
+import { RepoScanner } from '../../core/repo/index.js'
+import type { RepoStats } from '../../core/repo/index.js'
+import { MarkdownReporter } from '../../core/reporting/index.js'
+import { StateManager } from '../../core/state/index.js'
+import type { ReviewSession, FeatureAnalysis, FeatureReviewResult } from '../../core/state/index.js'
+import { createProvider } from '../../platform/providers/index.js'
 import { FeatureAnalyzer } from '../../feature-analyzer/index.js'
 import { FeaturePlanner } from '../../planner/feature-planner.js'
 import { FOCUS_OPTIONS } from './utils.js'
@@ -179,7 +179,6 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
 
   if (!analysis) {
     const analyzerProvider = createProvider(config.summarizer.model, config)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AIProvider.chat uses strict Message role, FeatureAnalyzerConfig uses string
     const analyzer = new FeatureAnalyzer({ provider: analyzerProvider as any })
     analysis = await analyzer.analyze(files)
     await stateManager.saveFeatureAnalysis(analysis)

@@ -8,7 +8,7 @@ export async function executeDiscuss(
 ): Promise<DiscussExecutionResult> {
   const payload = await runDiscussFlow({
     topic: prepared.topic,
-    options: (prepared.options || {}) as never,
+    options: prepared.options,
     cwd: ctx.cwd,
   })
 

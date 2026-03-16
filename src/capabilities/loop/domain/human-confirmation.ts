@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { dirname } from 'path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import type { HumanConfirmationItem } from '../../../state/types.js'
+import type { HumanConfirmationItem } from '../../../core/state/index.js'
 
 const START_MARKER = '<!-- MAGPIE_HUMAN_CONFIRMATION_START -->'
 const END_MARKER = '<!-- MAGPIE_HUMAN_CONFIRMATION_END -->'

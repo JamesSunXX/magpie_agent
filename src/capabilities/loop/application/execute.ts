@@ -5,16 +5,16 @@ import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import type { CapabilityContext } from '../../../core/capability/context.js'
-import { loadConfig } from '../../../platform/config/loader.js'
-import { createProvider } from '../../../providers/factory.js'
-import type { AIProvider, Message } from '../../../providers/types.js'
 import type {
   HumanConfirmationItem,
   LoopSession,
   LoopStageResult,
   LoopTask,
-} from '../../../state/types.js'
-import { StateManager } from '../../../state/index.js'
+} from '../../../core/state/index.js'
+import { StateManager } from '../../../core/state/index.js'
+import { loadConfig } from '../../../platform/config/loader.js'
+import { createProvider } from '../../../platform/providers/index.js'
+import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopConfig, LoopStageName } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'

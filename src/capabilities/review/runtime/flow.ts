@@ -1,14 +1,14 @@
 import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
+import type { Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { createProvider } from '../../../providers/factory.js'
+import { createProvider } from '../../../platform/providers/index.js'
 import { DebateOrchestrator } from '../domain/debate-orchestrator.js'
-import type { Reviewer, ReviewerStatus } from '../../../orchestrator/types.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
-import { ContextGatherer } from '../../../core/context/gatherer.js'
+import { ContextGatherer } from '../../../core/context/index.js'
 import type { RunReviewFlowInput, ReviewCommandOptions, ReviewFlowResult } from '../types.js'
 import type { ReviewTarget, ReviewerSessionState } from './types.js'
 import { fixMarkdown, getRandomJoke, formatMarkdown } from './utils.js'
@@ -23,7 +23,6 @@ marked.setOptions({
   renderer: new TerminalRenderer({
     reflowText: true,   // Reflow text to fit terminal width
     width: 120,         // Wider output for modern terminals
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TerminalRenderer type mismatch with marked
   }) as any
 })
 
@@ -599,7 +598,7 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       // Save and compare with previous review (if structured issues available)
       if (result.parsedIssues && result.parsedIssues.length > 0) {
         try {
-          const { HistoryTracker } = await import('../../../core/history/tracker.js')
+          const { HistoryTracker } = await import('../../../core/history/index.js')
           const repoName = process.cwd().split('/').pop() || 'repo'
           const tracker = new HistoryTracker(process.cwd())
           await tracker.saveReview(repoName, target.label, result.parsedIssues)

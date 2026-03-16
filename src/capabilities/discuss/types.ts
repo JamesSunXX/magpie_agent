@@ -3,14 +3,25 @@ import type { MagpieConfigV2 } from '../../platform/config/types.js'
 export interface DiscussCapabilityInput {
   topic: string
   options?: DiscussOptions
+  config?: string
+  rounds?: string
+  interactive?: boolean
+  output?: string
+  format?: string
+  converge?: boolean
+  reviewers?: string
+  all?: boolean
+  devilAdvocate?: boolean
+  list?: boolean
+  resume?: string
 }
 
 export interface DiscussOptions extends Record<string, unknown> {
   config?: string
-  rounds: string
+  rounds?: string
   interactive?: boolean
   output?: string
-  format: string
+  format?: string
   converge?: boolean
   reviewers?: string
   all?: boolean
@@ -30,7 +41,8 @@ export interface DiscussFlowResult {
   summary: string
 }
 
-export interface DiscussPreparedInput extends DiscussCapabilityInput {
+export interface DiscussPreparedInput extends Omit<DiscussCapabilityInput, 'config'> {
+  options: DiscussOptions
   preparedAt: Date
   config: MagpieConfigV2
 }

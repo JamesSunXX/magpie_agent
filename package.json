@@ -13,7 +13,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
+    "lint": "eslint .",
     "test": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:run": "vitest run",
     "test:notifications": "vitest run tests/platform/notifications/providers/feishu-webhook.test.ts tests/platform/notifications/providers/imessage.test.ts tests/platform/notifications/providers/macos.test.ts tests/platform/notifications/factory.test.ts",
     "check:boundaries": "node scripts/check-boundaries.mjs",
@@ -36,9 +38,13 @@
     "yaml": "^2.8.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "@types/marked-terminal": "^6.1.1",
     "@types/node": "^25.0.10",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9.39.1",
     "tsx": "^4.21.0",
+    "typescript-eslint": "^8.46.1",
     "vitest": "^4.0.18"
   }
 }
