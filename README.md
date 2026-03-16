@@ -488,6 +488,11 @@ integrations:
 
 `integrations.planning` 用于把 `loop` / `workflow issue-fix` 产出的计划或执行摘要同步到外部项目系统；`integrations.operations` 用于让 `workflow post-merge-regression` 通过统一 provider 采集命令执行证据。
 
+当 `integrations.planning.enabled: true` 时，`loop run` 和 `workflow issue-fix` 会先尝试拉取远端 planning context，再把它注入本地 planner prompt。默认会从 `issue` / `goal` / `PRD` 路径里推断类似 `ENG-123` 的条目标识；如果需要显式指定，可使用：
+
+- `magpie loop run "<goal>" --prd <path> --planning-project ENG --planning-item ENG-123`
+- `magpie workflow issue-fix "<issue>" --planning-project ENG --planning-item ENG-123`
+
 最小配置示例：
 
 ```yaml

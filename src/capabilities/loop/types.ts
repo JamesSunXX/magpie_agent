@@ -7,6 +7,8 @@ export interface LoopCapabilityInput {
   goal?: string
   prdPath?: string
   sessionId?: string
+  planningProjectKey?: string
+  planningItemKey?: string
   waitHuman?: boolean
   dryRun?: boolean
   maxIterations?: number

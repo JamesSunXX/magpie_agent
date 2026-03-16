@@ -3,6 +3,11 @@ import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import { createPlanningRouter } from '../../../../platform/integrations/planning/factory.js'
+import {
+  buildPlanningContextBlock,
+  extractPlanningItemKey,
+  getDefaultPlanningProjectKey,
+} from '../../../../platform/integrations/planning/index.js'
 import { createProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
@@ -19,6 +24,9 @@ export async function executeIssueFix(
   const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.issue_fix || {}
   const planningRouter = createPlanningRouter(config.integrations.planning)
+  const planningProjectKey = prepared.planningProjectKey || getDefaultPlanningProjectKey(config.integrations.planning)
+  const planningItemKey = prepared.planningItemKey
+    || extractPlanningItemKey(prepared.issue, planningProjectKey)
   const sessionId = generateWorkflowId('issue-fix')
   const sessionDir = sessionDirFor('issue-fix', sessionId)
   const planPath = join(sessionDir, 'plan.md')
@@ -32,7 +40,22 @@ export async function executeIssueFix(
   planner.setCwd?.(ctx.cwd)
   executor.setCwd?.(ctx.cwd)
 
-  const planPrompt = `You are triaging an engineering issue in this repository.\n\nIssue:\n${prepared.issue}\n\nCreate a concise execution plan with risks, likely files, and verification steps.`
+  const planningContext = await planningRouter.createPlanContext({
+    projectKey: planningProjectKey,
+    itemKey: planningItemKey,
+    title: prepared.issue,
+  })
+  const planningContextBlock = buildPlanningContextBlock(planningContext)
+
+  const planPrompt = [
+    'You are triaging an engineering issue in this repository.',
+    '',
+    'Issue:',
+    prepared.issue,
+    ...(planningContextBlock ? ['', planningContextBlock] : []),
+    '',
+    'Create a concise execution plan with risks, likely files, and verification steps.',
+  ].join('\n')
   const plan = await planner.chat([{ role: 'user', content: planPrompt }])
   await writeFile(planPath, plan, 'utf-8')
 
@@ -53,6 +76,8 @@ export async function executeIssueFix(
   }
 
   await planningRouter.syncPlanArtifact({
+    projectKey: planningContext?.projectKey || planningProjectKey,
+    itemKey: planningContext?.itemKey || planningItemKey,
     title: prepared.issue,
     body: [
       `Issue: ${prepared.issue}`,

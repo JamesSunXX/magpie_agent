@@ -21,4 +21,20 @@ describe('CLI program', () => {
       'post-merge-regression',
     ])
   })
+
+  it('registers explicit planning target options for loop run and workflow issue-fix', () => {
+    const program = createProgram()
+    const loop = program.commands.find((command) => command.name() === 'loop')
+    const workflow = program.commands.find((command) => command.name() === 'workflow')
+    const loopRun = loop?.commands.find((subcommand) => subcommand.name() === 'run')
+    const issueFix = workflow?.commands.find((subcommand) => subcommand.name() === 'issue-fix')
+
+    const loopOptionFlags = loopRun?.options.map((option) => option.long) || []
+    const issueFixOptionFlags = issueFix?.options.map((option) => option.long) || []
+
+    expect(loopOptionFlags).toContain('--planning-item')
+    expect(loopOptionFlags).toContain('--planning-project')
+    expect(issueFixOptionFlags).toContain('--planning-item')
+    expect(issueFixOptionFlags).toContain('--planning-project')
+  })
 })

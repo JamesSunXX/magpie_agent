@@ -4,6 +4,8 @@ export interface IssueFixInput {
   issue: string
   apply?: boolean
   verifyCommand?: string
+  planningProjectKey?: string
+  planningItemKey?: string
 }
 
 export interface IssueFixPreparedInput extends IssueFixInput {

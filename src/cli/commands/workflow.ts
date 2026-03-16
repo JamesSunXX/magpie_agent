@@ -22,6 +22,8 @@ workflowCommand
   .option('-c, --config <path>', 'Path to config file')
   .option('--apply', 'Allow executor agent to apply changes', false)
   .option('--verify-command <command>', 'Override verification command')
+  .option('--planning-project <key>', 'Override planning project key for remote context lookup')
+  .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .action(async (issue: string, options) => {
     const registry = createDefaultCapabilityRegistry()
     const capability = getTypedCapability<IssueFixInput, IssueFixPreparedInput, IssueFixResult, IssueFixSummary>(
@@ -33,6 +35,8 @@ workflowCommand
       issue,
       apply: options.apply,
       verifyCommand: options.verifyCommand,
+      planningProjectKey: options.planningProject,
+      planningItemKey: options.planningItem,
     }, ctx)
 
     console.log(output.summary)

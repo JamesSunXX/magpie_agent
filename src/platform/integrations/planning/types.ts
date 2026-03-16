@@ -10,6 +10,7 @@ export interface PlanningContext {
   itemKey?: string
   title?: string
   url?: string
+  summary?: string
   raw?: unknown
 }
 

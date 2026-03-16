@@ -7,12 +7,17 @@ import { createCapabilityContext } from '../../../src/core/capability/context.js
 import { issueFixCapability } from '../../../src/capabilities/workflows/issue-fix/index.js'
 
 const issueFixPlanningMocks = vi.hoisted(() => ({
+  createPlanContext: vi.fn().mockResolvedValue({
+    providerId: 'jira_main',
+    itemKey: 'ENG-42',
+    summary: 'Remote planning context:\n- Ticket: ENG-42\n- Summary: Fix planner context injection',
+  }),
   syncPlanArtifact: vi.fn().mockResolvedValue({ synced: true }),
 }))
 
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
   createPlanningRouter: vi.fn(() => ({
-    createPlanContext: vi.fn().mockResolvedValue(null),
+    createPlanContext: issueFixPlanningMocks.createPlanContext,
     syncPlanArtifact: issueFixPlanningMocks.syncPlanArtifact,
   })),
 }))
@@ -39,6 +44,7 @@ describe('issue-fix workflow', () => {
   })
 
   it('syncs issue-fix artifacts to the planning router when configured', async () => {
+    issueFixPlanningMocks.createPlanContext.mockClear()
     issueFixPlanningMocks.syncPlanArtifact.mockClear()
 
     const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-planning-'))
@@ -57,5 +63,27 @@ describe('issue-fix workflow', () => {
     expect(issueFixPlanningMocks.syncPlanArtifact).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('Add input validation'),
     }))
+  })
+
+  it('injects fetched planning context into the issue-fix planner prompt', async () => {
+    issueFixPlanningMocks.createPlanContext.mockClear()
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-context-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'sum.ts'), 'export const sum = (a: number, b: number) => a + b\n', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  issue_fix:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    auto_commit: false\nintegrations:\n  notifications:\n    enabled: false\n  planning:\n    enabled: true\n    default_provider: jira_main\n    providers:\n      jira_main:\n        type: jira\n        base_url: https://example.atlassian.net\n        project_key: ENG\n        email: bot@example.com\n        api_token: token\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(issueFixCapability, {
+      issue: 'ENG-42 Add input validation to sum() and describe the fix.',
+      apply: false,
+    }, ctx)
+
+    expect(issueFixPlanningMocks.createPlanContext).toHaveBeenCalledWith(expect.objectContaining({
+      itemKey: 'ENG-42',
+    }))
+    expect(readFileSync(result.result.session!.artifacts.planPath, 'utf-8')).toContain('Remote planning context:')
   })
 })

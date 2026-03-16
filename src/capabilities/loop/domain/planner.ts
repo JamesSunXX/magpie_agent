@@ -55,13 +55,15 @@ export async function generateLoopPlan(
   planner: AIProvider,
   goal: string,
   prdPath: string,
-  stages: LoopStageName[]
+  stages: LoopStageName[],
+  planningContext?: string
 ): Promise<LoopTask[]> {
   const prompt = `You are a planning agent. Build an execution plan for this goal in this repository.
 
 Goal: ${goal}
 PRD path: ${prdPath}
 Allowed stages: ${stages.join(', ')}
+${planningContext ? `\n\n${planningContext}` : ''}
 
 Return ONLY JSON:
 \`\`\`json

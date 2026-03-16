@@ -19,6 +19,11 @@ import type { LoopConfig, LoopStageName } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
 import { createPlanningRouter } from '../../../platform/integrations/planning/factory.js'
+import {
+  buildPlanningContextBlock,
+  extractPlanningItemKey,
+  getDefaultPlanningProjectKey,
+} from '../../../platform/integrations/planning/index.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
   appendHumanConfirmationItem,
@@ -752,6 +757,9 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   }
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const planningRouter = createPlanningRouter(config.integrations.planning)
+  const planningProjectKey = prepared.planningProjectKey || getDefaultPlanningProjectKey(config.integrations.planning)
+  const planningItemKey = prepared.planningItemKey
+    || extractPlanningItemKey(`${prepared.goal}\n${prepared.prdPath}`, planningProjectKey)
 
   const planner = createProvider(loopRuntime.plannerModel, config)
   const executor = createProvider(loopRuntime.executorModel, config)
@@ -767,9 +775,23 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await mkdir(sessionDir, { recursive: true })
 
-  const tasks = await generateLoopPlan(planner, prepared.goal, prepared.prdPath, loopRuntime.stages)
+  const planningContext = await planningRouter.createPlanContext({
+    projectKey: planningProjectKey,
+    itemKey: planningItemKey,
+    title: prepared.goal,
+  })
+  const planningContextBlock = buildPlanningContextBlock(planningContext)
+  const tasks = await generateLoopPlan(
+    planner,
+    prepared.goal,
+    prepared.prdPath,
+    loopRuntime.stages,
+    planningContextBlock
+  )
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
   await planningRouter.syncPlanArtifact({
+    projectKey: planningContext?.projectKey || planningProjectKey,
+    itemKey: planningContext?.itemKey || planningItemKey,
     title: prepared.goal,
     body: [
       `Goal: ${prepared.goal}`,
@@ -871,12 +893,28 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
+  const planningRouter = createPlanningRouter(config.integrations.planning)
+  const planningProjectKey = prepared.planningProjectKey || getDefaultPlanningProjectKey(config.integrations.planning)
+  const planningItemKey = prepared.planningItemKey
+    || extractPlanningItemKey(`${session.goal}\n${session.prdPath}`, planningProjectKey)
 
   const planner = createProvider(loopRuntime.plannerModel, config)
   const executor = createProvider(loopRuntime.executorModel, config)
+  const planningContext = await planningRouter.createPlanContext({
+    projectKey: planningProjectKey,
+    itemKey: planningItemKey,
+    title: session.goal,
+  })
+  const planningContextBlock = buildPlanningContextBlock(planningContext)
 
   if (!session.plan || session.plan.length === 0) {
-    session.plan = await generateLoopPlan(planner, session.goal, session.prdPath, session.stages)
+    session.plan = await generateLoopPlan(
+      planner,
+      session.goal,
+      session.prdPath,
+      session.stages,
+      planningContextBlock
+    )
     await writeFile(session.artifacts.planPath, JSON.stringify(session.plan, null, 2), 'utf-8')
   }
 
