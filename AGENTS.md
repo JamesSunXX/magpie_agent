@@ -29,6 +29,12 @@
 - Run targeted checks during development, for example: `npm test -- tests/orchestrator/orchestrator.test.ts`.
 - Before submitting changes, run at least `npm run test:run` and `npm run build`.
 
+### Coverage Requirements
+- **New/modified files must have ≥ 80% line coverage.** Check with: `npm run test:coverage`
+- Write tests **before** implementation when possible — verify new tests fail first, then implement.
+- If a change touches an existing file with low coverage, add tests for the lines you changed at minimum.
+- CI enforces `npm run test:coverage`; review the coverage table in the output to confirm your files meet the threshold.
+
 ## Commit & Pull Request Guidelines
 - Follow Conventional Commits seen in history: `feat: ...`, `fix: ...`, `docs: ...`, optionally with scope (`feat(config): ...`) and issue refs (`(#8)`).
 - Keep commits focused and atomic; avoid mixing refactors with behavior changes.
@@ -37,6 +43,13 @@
   - testing evidence (command + result),
   - linked issue(s),
   - sample CLI output/screenshots for UX-facing changes.
+
+## Documentation Guidelines
+- Design docs and plans go in `docs/plans/` with date prefix: `YYYY-MM-DD-<topic>.md`.
+- When adding a new capability or workflow, update `README.md` (capability list and usage section).
+- When changing CLI flags or commands, update the relevant help text in `src/commands/` and the README.
+- Inline code comments: explain **why**, not **what**. Skip obvious comments.
+- Public functions/types that form module boundaries should have JSDoc with a one-line summary.
 
 ## Security & Configuration Tips
 - Never commit API keys or `.env` secrets.
