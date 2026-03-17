@@ -20,8 +20,32 @@ export interface InitNotificationsOptions {
   imessageBluebubblesChatGuid?: string
 }
 
+export type InitPlanningProviderId = 'jira_main' | 'feishu_project'
+
+export interface InitPlanningOptions {
+  enabled?: boolean
+  defaultProvider?: InitPlanningProviderId
+  jiraBaseUrl?: string
+  jiraProjectKey?: string
+  jiraEmail?: string
+  jiraApiToken?: string
+  feishuBaseUrl?: string
+  feishuProjectKey?: string
+  feishuAppId?: string
+  feishuAppSecret?: string
+}
+
+export interface InitOperationsOptions {
+  enabled?: boolean
+  defaultProvider?: string
+  timeoutMs?: number
+  maxBufferBytes?: number
+}
+
 export interface InitConfigOptions {
   notifications?: InitNotificationsOptions
+  planning?: InitPlanningOptions
+  operations?: InitOperationsOptions
 }
 
 export interface InitConfigResult {
@@ -74,6 +98,10 @@ function yamlDoubleQuoted(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
+function yamlStringOrEnvRef(value: string): string {
+  return value.startsWith('${') && value.endsWith('}') ? value : yamlDoubleQuoted(value)
+}
+
 function normalizeBluebubblesTarget(target: string): string {
   return target.startsWith('chat_guid:') ? target : `chat_guid:${target}`
 }
@@ -96,6 +124,34 @@ function resolveNotificationsOptions(options?: InitConfigOptions) {
     imessageBluebubblesServerUrl,
     imessageBluebubblesPassword,
     imessageBluebubblesTarget,
+  }
+}
+
+function resolvePlanningOptions(options?: InitConfigOptions) {
+  const planning = options?.planning
+
+  return {
+    enabled: planning?.enabled ?? false,
+    defaultProvider: planning?.defaultProvider || 'jira_main',
+    jiraBaseUrl: planning?.jiraBaseUrl?.trim() || 'https://your-company.atlassian.net',
+    jiraProjectKey: planning?.jiraProjectKey?.trim() || 'ENG',
+    jiraEmail: planning?.jiraEmail?.trim() || '${JIRA_EMAIL}',
+    jiraApiToken: planning?.jiraApiToken?.trim() || '${JIRA_API_TOKEN}',
+    feishuBaseUrl: planning?.feishuBaseUrl?.trim() || 'https://project.feishu.cn',
+    feishuProjectKey: planning?.feishuProjectKey?.trim() || 'ENG',
+    feishuAppId: planning?.feishuAppId?.trim() || '${FEISHU_PROJECT_APP_ID}',
+    feishuAppSecret: planning?.feishuAppSecret?.trim() || '${FEISHU_PROJECT_APP_SECRET}',
+  }
+}
+
+function resolveOperationsOptions(options?: InitConfigOptions) {
+  const operations = options?.operations
+
+  return {
+    enabled: operations?.enabled ?? false,
+    defaultProvider: operations?.defaultProvider?.trim() || 'local_main',
+    timeoutMs: operations?.timeoutMs ?? 600000,
+    maxBufferBytes: operations?.maxBufferBytes ?? 10485760,
   }
 }
 
@@ -122,6 +178,8 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   if (defaultReviewers.length === 1) defaultReviewers.push(defaultReviewers[0])
 
   const notifications = resolveNotificationsOptions(options)
+  const planning = resolvePlanningOptions(options)
+  const operations = resolveOperationsOptions(options)
   const appleScriptTargetsYaml = notifications.imessageAppleScriptTargets
     .map(target => `          - ${yamlDoubleQuoted(target)}`)
     .join('\n')
@@ -304,29 +362,29 @@ ${appleScriptTargetsYaml}
           - ${yamlDoubleQuoted(notifications.imessageBluebubblesTarget)}
         method: "private-api"
   planning:
-    enabled: false
-    default_provider: "jira_main"
+    enabled: ${planning.enabled ? 'true' : 'false'}
+    default_provider: ${yamlDoubleQuoted(planning.defaultProvider)}
     providers:
       jira_main:
         type: "jira"
-        base_url: "https://your-company.atlassian.net"
-        project_key: "ENG"
-        email: \${JIRA_EMAIL}
-        api_token: \${JIRA_API_TOKEN}
+        base_url: ${yamlDoubleQuoted(planning.jiraBaseUrl)}
+        project_key: ${yamlDoubleQuoted(planning.jiraProjectKey)}
+        email: ${yamlStringOrEnvRef(planning.jiraEmail)}
+        api_token: ${yamlStringOrEnvRef(planning.jiraApiToken)}
       feishu_project:
         type: "feishu-project"
-        base_url: "https://project.feishu.cn"
-        project_key: "ENG"
-        app_id: \${FEISHU_PROJECT_APP_ID}
-        app_secret: \${FEISHU_PROJECT_APP_SECRET}
+        base_url: ${yamlDoubleQuoted(planning.feishuBaseUrl)}
+        project_key: ${yamlDoubleQuoted(planning.feishuProjectKey)}
+        app_id: ${yamlStringOrEnvRef(planning.feishuAppId)}
+        app_secret: ${yamlStringOrEnvRef(planning.feishuAppSecret)}
   operations:
-    enabled: false
-    default_provider: "local_main"
+    enabled: ${operations.enabled ? 'true' : 'false'}
+    default_provider: ${yamlDoubleQuoted(operations.defaultProvider)}
     providers:
-      local_main:
+      ${operations.defaultProvider}:
         type: "local-commands"
-        timeout_ms: 600000
-        max_buffer_bytes: 10485760
+        timeout_ms: ${operations.timeoutMs}
+        max_buffer_bytes: ${operations.maxBufferBytes}
 `
 }
 

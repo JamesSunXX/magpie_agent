@@ -117,7 +117,7 @@ magpie workflow post-merge-regression --command "npm run test:run" "npm run buil
 
 | 命令 | 作用 | 说明 |
 | --- | --- | --- |
-| `magpie init` | 初始化 `~/.magpie/config.yaml` | 支持交互式 reviewer/通知配置 |
+| `magpie init` | 初始化 `~/.magpie/config.yaml` | 支持交互式 reviewer/通知/planning/operations 配置 |
 | `magpie review` | 多 AI 代码评审 | capability runtime + orchestrator |
 | `magpie discuss` | 多模型讨论/辩论 | capability runtime + orchestrator |
 | `magpie trd` | PRD -> TRD | capability runtime |
@@ -441,6 +441,7 @@ capabilities:
 - 默认 reviewer 由 `init` 选择结果决定；`-y` 时默认是 `claude-code` + `codex`
 - `init` 会在已有配置存在时自动备份旧文件为 `config.yaml.bak-<timestamp>`
 - 通知配置会同时生成 `macos_local`、`feishu_team`、`imessage_local`、`imessage_remote` provider 模板
+- `init` 交互模式会额外引导填写 `integrations.planning` 和 `integrations.operations` 的默认 provider 与关键字段
 
 ## 通知集成
 

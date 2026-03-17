@@ -97,4 +97,44 @@ describe('Config Init', () => {
     expect(content).toContain('password: "bb-password"')
     expect(content).toContain('- "chat_guid:iMessage;-;+8613800138000"')
   })
+
+  it('should render interactive planning and operations values when provided', () => {
+    const content = generateConfig(
+      ['claude-code', 'codex'],
+      {
+        planning: {
+          enabled: true,
+          defaultProvider: 'feishu_project',
+          jiraBaseUrl: 'https://jira.example.com',
+          jiraProjectKey: 'ENG',
+          jiraEmail: 'jira@example.com',
+          jiraApiToken: 'jira-token',
+          feishuBaseUrl: 'https://project.feishu.cn',
+          feishuProjectKey: 'OPS',
+          feishuAppId: 'app-id',
+          feishuAppSecret: 'app-secret',
+        },
+        operations: {
+          enabled: true,
+          defaultProvider: 'ops_main',
+          timeoutMs: 120000,
+          maxBufferBytes: 2048,
+        }
+      }
+    )
+
+    expect(content).toContain('planning:')
+    expect(content).toContain('enabled: true')
+    expect(content).toContain('default_provider: "feishu_project"')
+    expect(content).toContain('base_url: "https://jira.example.com"')
+    expect(content).toContain('email: "jira@example.com"')
+    expect(content).toContain('api_token: "jira-token"')
+    expect(content).toContain('project_key: "OPS"')
+    expect(content).toContain('app_id: "app-id"')
+    expect(content).toContain('app_secret: "app-secret"')
+    expect(content).toContain('operations:')
+    expect(content).toContain('default_provider: "ops_main"')
+    expect(content).toContain('timeout_ms: 120000')
+    expect(content).toContain('max_buffer_bytes: 2048')
+  })
 })
