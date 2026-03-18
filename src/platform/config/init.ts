@@ -21,14 +21,18 @@ export interface InitNotificationsOptions {
 }
 
 export type InitPlanningProviderId = 'jira_main' | 'feishu_project'
+export type InitJiraAuthMode = 'cloud' | 'basic'
 
 export interface InitPlanningOptions {
   enabled?: boolean
   defaultProvider?: InitPlanningProviderId
   jiraBaseUrl?: string
   jiraProjectKey?: string
+  jiraAuthMode?: InitJiraAuthMode
   jiraEmail?: string
   jiraApiToken?: string
+  jiraUsername?: string
+  jiraPassword?: string
   feishuBaseUrl?: string
   feishuProjectKey?: string
   feishuAppId?: string
@@ -129,14 +133,18 @@ function resolveNotificationsOptions(options?: InitConfigOptions) {
 
 function resolvePlanningOptions(options?: InitConfigOptions) {
   const planning = options?.planning
+  const jiraAuthMode = planning?.jiraAuthMode === 'basic' ? 'basic' : 'cloud'
 
   return {
     enabled: planning?.enabled ?? false,
     defaultProvider: planning?.defaultProvider || 'jira_main',
     jiraBaseUrl: planning?.jiraBaseUrl?.trim() || 'https://your-company.atlassian.net',
     jiraProjectKey: planning?.jiraProjectKey?.trim() || 'ENG',
+    jiraAuthMode,
     jiraEmail: planning?.jiraEmail?.trim() || '${JIRA_EMAIL}',
     jiraApiToken: planning?.jiraApiToken?.trim() || '${JIRA_API_TOKEN}',
+    jiraUsername: planning?.jiraUsername?.trim() || '${JIRA_USERNAME}',
+    jiraPassword: planning?.jiraPassword?.trim() || '${JIRA_PASSWORD}',
     feishuBaseUrl: planning?.feishuBaseUrl?.trim() || 'https://project.feishu.cn',
     feishuProjectKey: planning?.feishuProjectKey?.trim() || 'ENG',
     feishuAppId: planning?.feishuAppId?.trim() || '${FEISHU_PROJECT_APP_ID}',
@@ -180,6 +188,11 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const notifications = resolveNotificationsOptions(options)
   const planning = resolvePlanningOptions(options)
   const operations = resolveOperationsOptions(options)
+  const jiraCredentialLines = planning.jiraAuthMode === 'basic'
+    ? `        username: ${yamlStringOrEnvRef(planning.jiraUsername)}
+        password: ${yamlStringOrEnvRef(planning.jiraPassword)}`
+    : `        email: ${yamlStringOrEnvRef(planning.jiraEmail)}
+        api_token: ${yamlStringOrEnvRef(planning.jiraApiToken)}`
   const appleScriptTargetsYaml = notifications.imessageAppleScriptTargets
     .map(target => `          - ${yamlDoubleQuoted(target)}`)
     .join('\n')
@@ -369,8 +382,8 @@ ${appleScriptTargetsYaml}
         type: "jira"
         base_url: ${yamlDoubleQuoted(planning.jiraBaseUrl)}
         project_key: ${yamlDoubleQuoted(planning.jiraProjectKey)}
-        email: ${yamlStringOrEnvRef(planning.jiraEmail)}
-        api_token: ${yamlStringOrEnvRef(planning.jiraApiToken)}
+        auth_mode: ${yamlDoubleQuoted(planning.jiraAuthMode)}
+${jiraCredentialLines}
       feishu_project:
         type: "feishu-project"
         base_url: ${yamlDoubleQuoted(planning.feishuBaseUrl)}

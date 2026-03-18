@@ -140,10 +140,17 @@ export async function promptForPlanningOptions(
   }
 
   if (defaultProvider === 'jira_main') {
+    const authModeAnswer = (await ask(chalk.white('Jira auth mode [1=cloud(email+api_token), 2=basic(username+password)] [1]: '))).trim()
+    options.jiraAuthMode = authModeAnswer === '2' ? 'basic' : 'cloud'
     options.jiraBaseUrl = (await ask(chalk.white('Jira base URL [https://your-company.atlassian.net]: '))).trim() || undefined
     options.jiraProjectKey = (await ask(chalk.white('Jira project key [ENG]: '))).trim() || undefined
-    options.jiraEmail = (await ask(chalk.white('Jira email [${JIRA_EMAIL}]: '))).trim() || undefined
-    options.jiraApiToken = (await ask(chalk.white('Jira API token [${JIRA_API_TOKEN}]: '))).trim() || undefined
+    if (options.jiraAuthMode === 'basic') {
+      options.jiraUsername = (await ask(chalk.white('Jira username [${JIRA_USERNAME}]: '))).trim() || undefined
+      options.jiraPassword = (await ask(chalk.white('Jira password [${JIRA_PASSWORD}]: '))).trim() || undefined
+    } else {
+      options.jiraEmail = (await ask(chalk.white('Jira email [${JIRA_EMAIL}]: '))).trim() || undefined
+      options.jiraApiToken = (await ask(chalk.white('Jira API token [${JIRA_API_TOKEN}]: '))).trim() || undefined
+    }
   } else {
     options.feishuBaseUrl = (await ask(chalk.white('Feishu project base URL [https://project.feishu.cn]: '))).trim() || undefined
     options.feishuProjectKey = (await ask(chalk.white('Feishu project key [ENG]: '))).trim() || undefined

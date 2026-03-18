@@ -159,8 +159,11 @@ export interface JiraPlanningProviderConfig {
   enabled?: boolean
   base_url: string
   project_key?: string
-  email: string
-  api_token: string
+  auth_mode?: 'cloud' | 'basic'
+  email?: string
+  api_token?: string
+  username?: string
+  password?: string
 }
 
 export type PlanningProviderConfig =

@@ -1,5 +1,5 @@
 # Human Confirmation Queue
-
+curl -u "sunchenhui:123456" -X GET "http://139.9.215.174:8081/rest/api/2/issue/TEST-1"
 This file is read by `magpie loop` for human-gated decisions.
 
 Rules for operators:

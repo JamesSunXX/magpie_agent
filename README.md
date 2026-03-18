@@ -506,6 +506,7 @@ integrations:
         type: "jira"
         base_url: "https://your-company.atlassian.net"
         project_key: "ENG"
+        auth_mode: "cloud"
         email: ${JIRA_EMAIL}
         api_token: ${JIRA_API_TOKEN}
       feishu_project:
@@ -522,6 +523,25 @@ integrations:
         type: "local-commands"
         timeout_ms: 600000
         max_buffer_bytes: 10485760
+```
+
+Jira Cloud 使用 `auth_mode: "cloud"`，凭证字段为 `email` / `api_token`。
+
+Jira Server/Data Center（例如 8.8.1）可使用：
+
+```yaml
+integrations:
+  planning:
+    enabled: true
+    default_provider: "jira_main"
+    providers:
+      jira_main:
+        type: "jira"
+        base_url: "https://jira.example.com"
+        project_key: "ENG"
+        auth_mode: "basic"
+        username: ${JIRA_USERNAME}
+        password: ${JIRA_PASSWORD}
 ```
 
 ## 会话与产物存储

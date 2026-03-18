@@ -11,8 +11,50 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`
 }
 
-function toBasicAuth(email: string, token: string): string {
-  return `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`
+function toBasicAuth(principal: string, secret: string): string {
+  return `Basic ${Buffer.from(`${principal}:${secret}`).toString('base64')}`
+}
+
+function resolveAuthMode(config: JiraPlanningProviderConfig): 'cloud' | 'basic' {
+  if (config.auth_mode === 'basic' || config.auth_mode === 'cloud') {
+    return config.auth_mode
+  }
+
+  if (config.username || config.password) {
+    return 'basic'
+  }
+
+  return 'cloud'
+}
+
+function resolveAuth(config: JiraPlanningProviderConfig): { authorization: string, apiVersion: '2' | '3' } {
+  const authMode = resolveAuthMode(config)
+
+  if (authMode === 'basic') {
+    const username = config.username || config.email
+    const password = config.password || config.api_token
+
+    if (!username || !password) {
+      throw new Error('Jira planning provider requires username/password when auth_mode is "basic"')
+    }
+
+    return {
+      authorization: toBasicAuth(username, password),
+      apiVersion: '2',
+    }
+  }
+
+  const email = config.email || config.username
+  const apiToken = config.api_token || config.password
+
+  if (!email || !apiToken) {
+    throw new Error('Jira planning provider requires email/api_token when auth_mode is "cloud"')
+  }
+
+  return {
+    authorization: toBasicAuth(email, apiToken),
+    apiVersion: '3',
+  }
 }
 
 function jiraRichTextToString(value: unknown): string {
@@ -84,6 +126,8 @@ export class JiraPlanningProvider implements PlanningProvider {
       return null
     }
 
+    const auth = resolveAuth(this.config)
+
     const url = input.itemKey
       ? joinUrl(this.config.base_url, `/browse/${input.itemKey}`)
       : joinUrl(this.config.base_url, `/jira/software/projects/${projectKey}`)
@@ -92,10 +136,10 @@ export class JiraPlanningProvider implements PlanningProvider {
     let summary: string | undefined
 
     if (input.itemKey) {
-      const response = await fetch(joinUrl(this.config.base_url, `/rest/api/3/issue/${input.itemKey}`), {
+      const response = await fetch(joinUrl(this.config.base_url, `/rest/api/${auth.apiVersion}/issue/${input.itemKey}`), {
         method: 'GET',
         headers: {
-          Authorization: toBasicAuth(this.config.email, this.config.api_token),
+          Authorization: auth.authorization,
           Accept: 'application/json',
         },
       })
@@ -122,13 +166,14 @@ export class JiraPlanningProvider implements PlanningProvider {
       return { providerId: this.id, synced: false }
     }
 
+    const auth = resolveAuth(this.config)
     const url = input.itemKey
-      ? joinUrl(this.config.base_url, `/rest/api/3/issue/${input.itemKey}/comment`)
-      : joinUrl(this.config.base_url, `/rest/api/3/project/${projectKey}/properties/magpie-plan`)
+      ? joinUrl(this.config.base_url, `/rest/api/${auth.apiVersion}/issue/${input.itemKey}/comment`)
+      : joinUrl(this.config.base_url, `/rest/api/${auth.apiVersion}/project/${projectKey}/properties/magpie-plan`)
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: toBasicAuth(this.config.email, this.config.api_token),
+        Authorization: auth.authorization,
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },

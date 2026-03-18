@@ -49,6 +49,7 @@ describe('Config Init', () => {
     const content = readFileSync(configPath, 'utf-8')
     expect(content).toContain('planning:')
     expect(content).toContain('type: "jira"')
+    expect(content).toContain('auth_mode: "cloud"')
     expect(content).toContain('type: "feishu-project"')
     expect(content).toContain('operations:')
     expect(content).toContain('type: "local-commands"')
@@ -107,6 +108,7 @@ describe('Config Init', () => {
           defaultProvider: 'feishu_project',
           jiraBaseUrl: 'https://jira.example.com',
           jiraProjectKey: 'ENG',
+          jiraAuthMode: 'cloud',
           jiraEmail: 'jira@example.com',
           jiraApiToken: 'jira-token',
           feishuBaseUrl: 'https://project.feishu.cn',
@@ -127,6 +129,7 @@ describe('Config Init', () => {
     expect(content).toContain('enabled: true')
     expect(content).toContain('default_provider: "feishu_project"')
     expect(content).toContain('base_url: "https://jira.example.com"')
+    expect(content).toContain('auth_mode: "cloud"')
     expect(content).toContain('email: "jira@example.com"')
     expect(content).toContain('api_token: "jira-token"')
     expect(content).toContain('project_key: "OPS"')
@@ -136,5 +139,29 @@ describe('Config Init', () => {
     expect(content).toContain('default_provider: "ops_main"')
     expect(content).toContain('timeout_ms: 120000')
     expect(content).toContain('max_buffer_bytes: 2048')
+  })
+
+  it('should render jira basic auth planning values when provided', () => {
+    const content = generateConfig(
+      ['claude-code', 'codex'],
+      {
+        planning: {
+          enabled: true,
+          defaultProvider: 'jira_main',
+          jiraBaseUrl: 'https://jira.example.com',
+          jiraProjectKey: 'OPS',
+          jiraAuthMode: 'basic',
+          jiraUsername: 'jira-user',
+          jiraPassword: 'jira-password',
+        },
+      }
+    )
+
+    expect(content).toContain('default_provider: "jira_main"')
+    expect(content).toContain('auth_mode: "basic"')
+    expect(content).toContain('username: "jira-user"')
+    expect(content).toContain('password: "jira-password"')
+    expect(content).not.toContain('email: ')
+    expect(content).not.toContain('api_token: ')
   })
 })

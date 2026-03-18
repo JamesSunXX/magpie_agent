@@ -71,6 +71,7 @@ describe('init CLI command helpers', () => {
     const result = await promptForPlanningOptions(askFromAnswers([
       'y',
       '1',
+      '1',
       'https://jira.example.com',
       'ENG',
       'jira@example.com',
@@ -80,10 +81,35 @@ describe('init CLI command helpers', () => {
     expect(result).toEqual({
       enabled: true,
       defaultProvider: 'jira_main',
+      jiraAuthMode: 'cloud',
       jiraBaseUrl: 'https://jira.example.com',
       jiraProjectKey: 'ENG',
       jiraEmail: 'jira@example.com',
       jiraApiToken: 'jira-token',
+    })
+  })
+
+  it('collects jira basic auth planning options when selected', async () => {
+    const { promptForPlanningOptions } = await import('../../src/cli/commands/init.js')
+
+    const result = await promptForPlanningOptions(askFromAnswers([
+      'y',
+      '1',
+      '2',
+      'https://jira.example.com',
+      'OPS',
+      'jira-user',
+      'jira-password',
+    ]))
+
+    expect(result).toEqual({
+      enabled: true,
+      defaultProvider: 'jira_main',
+      jiraAuthMode: 'basic',
+      jiraBaseUrl: 'https://jira.example.com',
+      jiraProjectKey: 'OPS',
+      jiraUsername: 'jira-user',
+      jiraPassword: 'jira-password',
     })
   })
 
