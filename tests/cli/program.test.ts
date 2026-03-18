@@ -22,6 +22,16 @@ describe('CLI program', () => {
     ])
   })
 
+  it('documents repo review as a valid mode without a PR argument', () => {
+    const program = createProgram()
+    const review = program.commands.find((command) => command.name() === 'review')
+    const help = review?.helpInformation().replace(/\s+/g, ' ')
+
+    expect(help).toContain(
+      'PR number or URL (optional if using --local, --branch, --files, or --repo)'
+    )
+  })
+
   it('registers explicit planning target options for loop run and workflow issue-fix', () => {
     const program = createProgram()
     const loop = program.commands.find((command) => command.name() === 'loop')
