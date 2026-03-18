@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { execFileSync } from 'child_process'
-import { homedir } from 'os'
 import { join } from 'path'
+import { getMagpieHomeDir } from '../../../platform/paths.js'
 
 export interface WorkflowSession {
   id: string
@@ -24,7 +24,7 @@ export function generateWorkflowId(prefix: string): string {
 }
 
 export function sessionDirFor(capability: WorkflowSession['capability'], id: string): string {
-  return join(homedir(), '.magpie', 'workflow-sessions', capability, id)
+  return join(getMagpieHomeDir(), 'workflow-sessions', capability, id)
 }
 
 export async function persistWorkflowSession(session: WorkflowSession): Promise<void> {

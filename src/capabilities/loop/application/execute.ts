@@ -3,7 +3,6 @@ import { appendFile, mkdir, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
-import { homedir } from 'os'
 import type { CapabilityContext } from '../../../core/capability/context.js'
 import type {
   HumanConfirmationItem,
@@ -13,6 +12,7 @@ import type {
 } from '../../../core/state/index.js'
 import { StateManager } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
+import { getMagpieHomeDir } from '../../../platform/paths.js'
 import { createProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopConfig, LoopStageName } from '../../../config/types.js'
@@ -768,7 +768,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   await stateManager.initLoopSessions()
 
   const sessionId = generateId()
-  const sessionDir = join(homedir(), '.magpie', 'loop-sessions', sessionId)
+  const sessionDir = join(getMagpieHomeDir(), 'loop-sessions', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
   const humanConfirmationPath = resolve(ctx.cwd, loopRuntime.humanConfirmationFile)

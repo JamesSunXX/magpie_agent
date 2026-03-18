@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
 import { parse } from 'yaml'
+import { getMagpieHomeDir } from '../paths.js'
 import { logger } from '../../shared/utils/logger.js'
 import type { MagpieConfigV2, ReviewerConfig, TrdConfig } from './types.js'
 
@@ -23,7 +23,7 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 }
 
 export function getConfigPath(customPath?: string): string {
-  return customPath || join(homedir(), '.magpie', 'config.yaml')
+  return customPath || join(getMagpieHomeDir(), 'config.yaml')
 }
 
 function validateReviewerConfig(name: string, rc: ReviewerConfig | undefined): void {

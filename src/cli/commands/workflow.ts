@@ -25,25 +25,30 @@ workflowCommand
   .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .action(async (issue: string, options) => {
-    const registry = createDefaultCapabilityRegistry()
-    const capability = getTypedCapability<IssueFixInput, IssueFixPreparedInput, IssueFixResult, IssueFixSummary>(
-      registry,
-      'issue-fix'
-    )
-    const ctx = createCapabilityContext({ cwd: process.cwd(), configPath: options.config })
-    const { output } = await runCapability(capability, {
-      issue,
-      apply: options.apply,
-      verifyCommand: options.verifyCommand,
-      planningProjectKey: options.planningProject,
-      planningItemKey: options.planningItem,
-    }, ctx)
+    try {
+      const registry = createDefaultCapabilityRegistry()
+      const capability = getTypedCapability<IssueFixInput, IssueFixPreparedInput, IssueFixResult, IssueFixSummary>(
+        registry,
+        'issue-fix'
+      )
+      const ctx = createCapabilityContext({ cwd: process.cwd(), configPath: options.config })
+      const { output } = await runCapability(capability, {
+        issue,
+        apply: options.apply,
+        verifyCommand: options.verifyCommand,
+        planningProjectKey: options.planningProject,
+        planningItemKey: options.planningItem,
+      }, ctx)
 
-    console.log(output.summary)
-    if (output.details) {
-      console.log(`Session: ${output.details.id}`)
-      console.log(`Plan: ${output.details.artifacts.planPath}`)
-      console.log(`Execution: ${output.details.artifacts.executionPath}`)
+      console.log(output.summary)
+      if (output.details) {
+        console.log(`Session: ${output.details.id}`)
+        console.log(`Plan: ${output.details.artifacts.planPath}`)
+        console.log(`Execution: ${output.details.artifacts.executionPath}`)
+      }
+    } catch (error) {
+      console.error('issue-fix failed:', error instanceof Error ? error.message : error)
+      process.exitCode = 1
     }
   })
 

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
@@ -23,6 +23,37 @@ vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
 }))
 
 describe('issue-fix workflow', () => {
+  it('stores workflow artifacts under MAGPIE_HOME when provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-home-'))
+    const magpieHome = join(dir, '.magpie-test-home')
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'sum.ts'), 'export const sum = (a: number, b: number) => a + b\n', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  issue_fix:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    auto_commit: false\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const previousMagpieHome = process.env.MAGPIE_HOME
+    process.env.MAGPIE_HOME = magpieHome
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const result = await runCapability(issueFixCapability, {
+        issue: 'Add input validation to sum() and describe the fix.',
+        apply: false,
+      }, ctx)
+
+      expect(result.result.session?.artifacts.planPath).toContain(magpieHome)
+      expect(result.result.session?.artifacts.executionPath).toContain(magpieHome)
+    } finally {
+      if (previousMagpieHome === undefined) {
+        delete process.env.MAGPIE_HOME
+      } else {
+        process.env.MAGPIE_HOME = previousMagpieHome
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('creates a persisted issue-fix session with plan and execution artifacts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-'))
     mkdirSync(join(dir, 'src'), { recursive: true })

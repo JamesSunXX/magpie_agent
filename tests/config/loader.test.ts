@@ -70,9 +70,25 @@ integrations:
       expect(result).toBe('/custom/path.yaml')
     })
 
+    it('should prefer MAGPIE_HOME when building the default path', () => {
+      const previousMagpieHome = process.env.MAGPIE_HOME
+      process.env.MAGPIE_HOME = '/tmp/magpie-home'
+
+      try {
+        const result = getConfigPath()
+        expect(result).toBe('/tmp/magpie-home/config.yaml')
+      } finally {
+        if (previousMagpieHome === undefined) {
+          delete process.env.MAGPIE_HOME
+        } else {
+          process.env.MAGPIE_HOME = previousMagpieHome
+        }
+      }
+    })
+
     it('should return default path if not provided', () => {
       const result = getConfigPath()
-      expect(result).toContain('.magpie/config.yaml')
+      expect(result).toBe(join(process.env.MAGPIE_HOME!, 'config.yaml'))
     })
   })
 })

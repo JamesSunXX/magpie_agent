@@ -1,7 +1,7 @@
 // src/state/state-manager.ts
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
 import { join } from 'path'
-import { homedir } from 'os'
+import { getMagpieHomeDir } from '../platform/paths.js'
 import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession, LoopSession } from './types.js'
 
 export class StateManager {
@@ -108,7 +108,7 @@ export class StateManager {
 
   // Discuss session methods — stored in ~/.magpie/discussions/
   private get discussionsDir(): string {
-    return join(homedir(), '.magpie', 'discussions')
+    return join(getMagpieHomeDir(), 'discussions')
   }
 
   async initDiscussions(): Promise<void> {
@@ -160,7 +160,7 @@ export class StateManager {
 
   // TRD session methods — stored in ~/.magpie/trd-sessions/
   private get trdSessionsDir(): string {
-    return join(homedir(), '.magpie', 'trd-sessions')
+    return join(getMagpieHomeDir(), 'trd-sessions')
   }
 
   async initTrdSessions(): Promise<void> {
@@ -210,7 +210,7 @@ export class StateManager {
 
   // Loop session methods — stored in ~/.magpie/loop-sessions/
   private get loopSessionsDir(): string {
-    return join(homedir(), '.magpie', 'loop-sessions')
+    return join(getMagpieHomeDir(), 'loop-sessions')
   }
 
   async initLoopSessions(): Promise<void> {

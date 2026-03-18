@@ -10,6 +10,7 @@ import type { Reviewer } from '../../../core/debate/types.js'
 import { StateManager } from '../../../core/state/index.js'
 import type { TrdSession } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
+import { getMagpieHomeDir } from '../../../platform/paths.js'
 import { createProvider } from '../../../platform/providers/index.js'
 import type { ChatImageInput } from '../../../platform/providers/index.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
@@ -105,7 +106,7 @@ function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions,
   const confirmedDomainsPath = `${base}.domains.confirmed.yaml`
   const trdPath = options.output || `${base}${defaults.trdSuffix}`
   const openQuestionsPath = options.questionsOutput || `${base}${defaults.openQuestionsSuffix}`
-  const partialDir = join(process.env.HOME || process.cwd(), '.magpie', 'trd-sessions', sessionId, 'artifacts')
+  const partialDir = join(getMagpieHomeDir(), 'trd-sessions', sessionId, 'artifacts')
 
   return {
     domainOverviewPath,
