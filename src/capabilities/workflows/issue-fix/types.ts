@@ -4,7 +4,6 @@ export interface IssueFixInput {
   issue: string
   apply?: boolean
   verifyCommand?: string
-  planningProjectKey?: string
   planningItemKey?: string
 }
 

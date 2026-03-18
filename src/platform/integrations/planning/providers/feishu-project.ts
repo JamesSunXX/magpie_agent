@@ -72,6 +72,7 @@ export class FeishuProjectPlanningProvider implements PlanningProvider {
 
   async createPlanContext(input: PlanningContextInput): Promise<PlanningContext | null> {
     const projectKey = input.projectKey || this.config.project_key
+      || (input.itemKey?.match(/^([A-Z][A-Z0-9]+)-\d+$/i)?.[1]?.toUpperCase())
     if (!projectKey) {
       return null
     }
@@ -111,6 +112,7 @@ export class FeishuProjectPlanningProvider implements PlanningProvider {
 
   async syncPlanArtifact(input: PlanningArtifactSyncInput): Promise<PlanningArtifactSyncResult> {
     const projectKey = input.projectKey || this.config.project_key
+      || (input.itemKey?.match(/^([A-Z][A-Z0-9]+)-\d+$/i)?.[1]?.toUpperCase())
     if (!projectKey) {
       return { providerId: this.id, synced: false }
     }

@@ -15,7 +15,6 @@ interface SharedLoopOptions {
   waitHuman?: boolean
   dryRun?: boolean
   maxIterations?: number
-  planningProject?: string
   planningItem?: string
 }
 
@@ -70,7 +69,6 @@ loopCommand
   .option('--wait-human', 'Wait for human confirmation (default)', true)
   .option('--no-wait-human', 'Do not wait for human confirmation; pause and exit')
   .option('--dry-run', 'Do not execute mutating stage actions')
-  .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .option('--max-iterations <number>', 'Maximum iterations when waiting for human decision', (v) => Number.parseInt(v, 10))
   .action(async (goal: string, options: SharedLoopOptions & { prd: string }) => {
@@ -78,7 +76,6 @@ loopCommand
       mode: 'run',
       goal,
       prdPath: options.prd,
-      planningProjectKey: options.planningProject,
       planningItemKey: options.planningItem,
       waitHuman: options.waitHuman,
       dryRun: options.dryRun,

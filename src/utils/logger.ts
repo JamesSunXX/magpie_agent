@@ -17,27 +17,31 @@ class Logger {
     return LEVEL_ORDER[level] >= LEVEL_ORDER[this.level]
   }
 
+  private ts(): string {
+    return new Date().toISOString().slice(11, 23)
+  }
+
   debug(...args: unknown[]): void {
     if (this.shouldLog('debug')) {
-      console.error(chalk.dim('[DEBUG]'), ...args)
+      console.error(chalk.dim(`[${this.ts()}] [DEBUG]`), ...args)
     }
   }
 
   info(...args: unknown[]): void {
     if (this.shouldLog('info')) {
-      console.error(chalk.blue('[INFO]'), ...args)
+      console.error(chalk.blue(`[${this.ts()}] [INFO]`), ...args)
     }
   }
 
   warn(...args: unknown[]): void {
     if (this.shouldLog('warn')) {
-      console.error(chalk.yellow('[WARN]'), ...args)
+      console.error(chalk.yellow(`[${this.ts()}] [WARN]`), ...args)
     }
   }
 
   error(...args: unknown[]): void {
     if (this.shouldLog('error')) {
-      console.error(chalk.red('[ERROR]'), ...args)
+      console.error(chalk.red(`[${this.ts()}] [ERROR]`), ...args)
     }
   }
 

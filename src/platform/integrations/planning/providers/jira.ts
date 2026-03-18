@@ -1,3 +1,4 @@
+import { logger } from '../../../../shared/utils/logger.js'
 import type {
   JiraPlanningProviderConfig,
   PlanningArtifactSyncInput,
@@ -122,30 +123,36 @@ export class JiraPlanningProvider implements PlanningProvider {
 
   async createPlanContext(input: PlanningContextInput): Promise<PlanningContext | null> {
     const projectKey = input.projectKey || this.config.project_key
-    if (!projectKey) {
-      return null
-    }
+      || (input.itemKey?.match(/^([A-Z][A-Z0-9]+)-\d+$/i)?.[1]?.toUpperCase())
 
     const auth = resolveAuth(this.config)
 
     const url = input.itemKey
       ? joinUrl(this.config.base_url, `/browse/${input.itemKey}`)
-      : joinUrl(this.config.base_url, `/jira/software/projects/${projectKey}`)
+      : projectKey
+        ? joinUrl(this.config.base_url, `/jira/software/projects/${projectKey}`)
+        : this.config.base_url
 
     let raw: unknown
     let summary: string | undefined
 
     if (input.itemKey) {
-      const response = await fetch(joinUrl(this.config.base_url, `/rest/api/${auth.apiVersion}/issue/${input.itemKey}`), {
+      const apiUrl = joinUrl(this.config.base_url, `/rest/api/${auth.apiVersion}/issue/${input.itemKey}`)
+      logger.debug(`[jira] GET ${apiUrl}`)
+      const response = await fetch(apiUrl, {
         method: 'GET',
         headers: {
           Authorization: auth.authorization,
           Accept: 'application/json',
         },
       })
+      logger.debug(`[jira] response status=${response.status} ${response.statusText}`)
       if (response.ok) {
         raw = await response.json()
         summary = buildJiraSummary(raw)
+      } else {
+        const body = await response.text()
+        logger.debug(`[jira] error body: ${body.slice(0, 500)}`)
       }
     }
 
@@ -162,6 +169,7 @@ export class JiraPlanningProvider implements PlanningProvider {
 
   async syncPlanArtifact(input: PlanningArtifactSyncInput): Promise<PlanningArtifactSyncResult> {
     const projectKey = input.projectKey || this.config.project_key
+      || (input.itemKey?.match(/^([A-Z][A-Z0-9]+)-\d+$/i)?.[1]?.toUpperCase())
     if (!projectKey && !input.itemKey) {
       return { providerId: this.id, synced: false }
     }

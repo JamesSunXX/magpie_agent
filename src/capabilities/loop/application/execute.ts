@@ -22,7 +22,6 @@ import { createPlanningRouter } from '../../../platform/integrations/planning/fa
 import {
   buildPlanningContextBlock,
   extractPlanningItemKey,
-  getDefaultPlanningProjectKey,
 } from '../../../platform/integrations/planning/index.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
@@ -757,9 +756,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   }
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const planningRouter = createPlanningRouter(config.integrations.planning)
-  const planningProjectKey = prepared.planningProjectKey || getDefaultPlanningProjectKey(config.integrations.planning)
   const planningItemKey = prepared.planningItemKey
-    || extractPlanningItemKey(`${prepared.goal}\n${prepared.prdPath}`, planningProjectKey)
+    || extractPlanningItemKey(`${prepared.goal}\n${prepared.prdPath}`)
 
   const planner = createProvider(loopRuntime.plannerModel, config)
   const executor = createProvider(loopRuntime.executorModel, config)
@@ -776,7 +774,6 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   await mkdir(sessionDir, { recursive: true })
 
   const planningContext = await planningRouter.createPlanContext({
-    projectKey: planningProjectKey,
     itemKey: planningItemKey,
     title: prepared.goal,
   })
@@ -790,7 +787,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   )
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
   await planningRouter.syncPlanArtifact({
-    projectKey: planningContext?.projectKey || planningProjectKey,
+    projectKey: planningContext?.projectKey,
     itemKey: planningContext?.itemKey || planningItemKey,
     title: prepared.goal,
     body: [
@@ -894,14 +891,12 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   }
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const planningRouter = createPlanningRouter(config.integrations.planning)
-  const planningProjectKey = prepared.planningProjectKey || getDefaultPlanningProjectKey(config.integrations.planning)
   const planningItemKey = prepared.planningItemKey
-    || extractPlanningItemKey(`${session.goal}\n${session.prdPath}`, planningProjectKey)
+    || extractPlanningItemKey(`${session.goal}\n${session.prdPath}`)
 
   const planner = createProvider(loopRuntime.plannerModel, config)
   const executor = createProvider(loopRuntime.executorModel, config)
   const planningContext = await planningRouter.createPlanContext({
-    projectKey: planningProjectKey,
     itemKey: planningItemKey,
     title: session.goal,
   })
