@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { createProgram } from '../../src/cli/program.js'
 
 describe('CLI program', () => {
+  it('registers the tui command', () => {
+    const program = createProgram()
+
+    expect(program.commands.some((command) => command.name() === 'tui')).toBe(true)
+  })
+
   it('registers reviewers command with list subcommand', () => {
     const program = createProgram()
     const reviewers = program.commands.find((command) => command.name() === 'reviewers')

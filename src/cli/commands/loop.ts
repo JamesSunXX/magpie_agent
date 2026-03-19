@@ -16,6 +16,7 @@ interface SharedLoopOptions {
   dryRun?: boolean
   maxIterations?: number
   planningItem?: string
+  planningProject?: string
 }
 
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
@@ -70,6 +71,7 @@ loopCommand
   .option('--no-wait-human', 'Do not wait for human confirmation; pause and exit')
   .option('--dry-run', 'Do not execute mutating stage actions')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
+  .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .option('--max-iterations <number>', 'Maximum iterations when waiting for human decision', (v) => Number.parseInt(v, 10))
   .action(async (goal: string, options: SharedLoopOptions & { prd: string }) => {
     await runLoop({
@@ -77,6 +79,7 @@ loopCommand
       goal,
       prdPath: options.prd,
       planningItemKey: options.planningItem,
+      planningProjectKey: options.planningProject,
       waitHuman: options.waitHuman,
       dryRun: options.dryRun,
       maxIterations: Number.isFinite(options.maxIterations) ? options.maxIterations : undefined,

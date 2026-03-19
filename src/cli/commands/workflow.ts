@@ -23,6 +23,7 @@ workflowCommand
   .option('--apply', 'Allow executor agent to apply changes', false)
   .option('--verify-command <command>', 'Override verification command')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
+  .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .action(async (issue: string, options) => {
     try {
       const registry = createDefaultCapabilityRegistry()
@@ -36,6 +37,7 @@ workflowCommand
         apply: options.apply,
         verifyCommand: options.verifyCommand,
         planningItemKey: options.planningItem,
+        planningProjectKey: options.planningProject,
       }, ctx)
 
       console.log(output.summary)
