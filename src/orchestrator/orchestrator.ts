@@ -270,7 +270,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
       // End summarizer session for clean JSON extraction call
       this.summarizer.provider.endSession?.()
-      const parsedIssues = await this.extractIssues()
+      const parsedIssues = this.options.mode === 'discuss' ? [] : await this.extractIssues()
 
       return {
         prNumber: label,
@@ -386,7 +386,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       for (let round = 1; round <= this.options.maxRounds; round++) {
         this.checkInterrupt()
         // Handle interactive mode before round starts
-        if (this.options.interactive && this.options.onInteractive) {
+        if (round > 1 && this.options.interactive && this.options.onInteractive) {
           this.options.onWaiting?.('interactive-input')
           const userInput = await this.options.onInteractive()
           if (userInput === 'q') break
@@ -488,7 +488,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       // non-session call. The session context (convergence + conclusion) would
       // pollute the JSON extraction and --resume ignores custom system prompts.
       this.summarizer.provider.endSession?.()
-      const parsedIssues = await this.extractIssues()
+      const parsedIssues = this.options.mode === 'discuss' ? [] : await this.extractIssues()
 
       return {
         prNumber: label,
@@ -544,15 +544,22 @@ ${this.gatheredContext.summary}
         callChainSection = '\n' + formatCallChainForReviewer(this.gatheredContext.rawReferences) + '\n'
       }
 
-      // First round - independent, exhaustive review
+      // First round - independent review/discussion
+      const isDiscuss = this.options.mode === 'discuss'
+      const firstRoundInstruction = isDiscuss
+        ? `You are [${currentReviewerId}]. Analyze the topic thoroughly from your unique perspective.
+Identify key considerations, trade-offs, risks, and provide concrete recommendations.
+Do NOT look for code changes, PRs, or diffs — this is a discussion, not a code review.`
+        : `You are [${currentReviewerId}]. Review EVERY changed file and EVERY changed function/block — do not skip any.
+For each change, check: correctness, security, performance, error handling, edge cases, maintainability.
+If you reviewed a file and found no issues, say so briefly. Do not stop early.`
+
       const prompt = `Task: ${this.taskPrompt}
 ${contextSection}${focusSection}${callChainSection}Here is the analysis:
 
 ${this.analysis}
 
-You are [${currentReviewerId}]. Review EVERY changed file and EVERY changed function/block — do not skip any.
-For each change, check: correctness, security, performance, error handling, edge cases, maintainability.
-If you reviewed a file and found no issues, say so briefly. Do not stop early.${this.langSuffix}`
+${firstRoundInstruction}${this.langSuffix}`
 
       return [{ role: 'user', content: prompt }]
     }
@@ -593,14 +600,30 @@ If you reviewed a file and found no issues, say so briefly. Do not stop early.${
         .map(m => `[${m.reviewerId}]: ${m.content}`)
         .join('\n\n---\n\n')
 
+      const sessionFollowUp = this.options.mode === 'discuss'
+        ? `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Deepen your analysis — are there dimensions or risks you haven't covered yet? Cover them now.\n2. Point out what the other participants MISSED — which considerations did they skip or underestimate?\n3. Respond to their points — agree where valid, challenge where you disagree.`
+        : `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.`
+
       return [{
         role: 'user',
-        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.${this.langSuffix}`
+        content: `${sessionFollowUp}${this.langSuffix}`
       }]
     }
 
     // Non-session mode: full context with all previous rounds
-    const debateContext = `You are [${currentReviewerId}] in a code review debate with [${otherReviewerIds.join('], [')}].
+    const debateContext = this.options.mode === 'discuss'
+      ? `You are [${currentReviewerId}] in a multi-perspective discussion with [${otherReviewerIds.join('], [')}].
+Your shared goal: thoroughly analyze the topic from all angles — leave no dimension uncovered.
+
+IMPORTANT:
+- You are [${currentReviewerId}], the other participant${otherReviewerIds.length > 1 ? 's are' : ' is'} [${otherReviewerIds.join('], [')}]
+- Deepen your analysis — cover any dimensions, risks, or trade-offs you haven't addressed yet
+- Point out what others MISSED — which considerations did they skip or underestimate?
+- Challenge weak arguments - don't agree just to be polite
+- Acknowledge good points and build on them
+- If you disagree, explain why with evidence
+- Do NOT look for code changes, PRs, or diffs — this is a discussion, not a code review`
+      : `You are [${currentReviewerId}] in a code review debate with [${otherReviewerIds.join('], [')}].
 Your shared goal: find ALL real issues in the code — leave nothing uncovered.
 
 IMPORTANT:
@@ -769,7 +792,9 @@ Use reviewer IDs: ${reviewerIds}`
 
   private async collectSummaries(): Promise<DebateSummary[]> {
     const summaries: DebateSummary[] = []
-    const summaryPrompt = `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
+    const summaryPrompt = this.options.mode === 'discuss'
+      ? `Please summarize your analysis. Include: (1) your core conclusions, (2) key risks or trade-offs you identified, (3) your recommended actions. Do not reveal your identity or role.${this.langSuffix}`
+      : `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
 
     for (const reviewer of this.reviewers) {
       const messages = this.buildMessages(reviewer.id)

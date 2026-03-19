@@ -67,6 +67,7 @@ export interface OrchestratorOptions {
   onPostAnalysisQA?: () => Promise<{ target: string; question: string } | null>
   onContextGathered?: (context: GatheredContext) => void  // Context gathering complete callback
   interruptState?: { interrupted: boolean }  // External interrupt signal (e.g., Ctrl+C)
+  mode?: 'review' | 'discuss'  // Controls prompt templates in buildMessages
 }
 
 /** Structured issue from a reviewer */

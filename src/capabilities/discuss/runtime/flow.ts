@@ -271,6 +271,7 @@ async function runDiscussion(
     interactive: !!options.interactive,
     checkConvergence,
     interruptState,
+    mode: 'discuss',
     onWaiting: (reviewerId: string) => {
       flushBuffer()
       if (spinnerRef.spinner) spinnerRef.spinner.stop()
