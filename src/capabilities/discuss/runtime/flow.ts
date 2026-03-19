@@ -276,6 +276,10 @@ async function runDiscussion(
       if (spinnerRef.spinner) spinnerRef.spinner.stop()
       if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
 
+
+      if (reviewerId === 'interactive-input') {
+        return  // Just stop spinner, let readline take over
+      }
       if (reviewerId === 'convergence-check') {
         console.log(chalk.yellow.bold(`\n┌─ Convergence Judge ─────────────────────────`))
       }

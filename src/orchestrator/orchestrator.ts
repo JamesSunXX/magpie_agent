@@ -387,6 +387,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         this.checkInterrupt()
         // Handle interactive mode before round starts
         if (this.options.interactive && this.options.onInteractive) {
+          this.options.onWaiting?.('interactive-input')
           const userInput = await this.options.onInteractive()
           if (userInput === 'q') break
           if (userInput) {
@@ -424,11 +425,13 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             }
             this.options.onParallelStatus?.(round, statuses)
 
+            logger.debug(`[Round ${round}] Calling ${reviewer.id} (${reviewer.provider.name})...`)
             let fullResponse = ''
             for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
               fullResponse += chunk
             }
 
+            logger.debug(`[Round ${round}] ${reviewer.id} (${reviewer.provider.name}) done in ${((Date.now() - statuses[index].startTime!) / 1000).toFixed(1)}s`)
             // Mark as done
             const endTime = Date.now()
             const startTime = statuses[index].startTime!
