@@ -14,7 +14,7 @@ import type {
 
 export const reviewCommand = new Command('review')
   .description('Review code changes with multiple AI reviewers')
-  .argument('[pr]', 'PR number or URL (optional if using --local, --branch, or --files)')
+  .argument('[pr]', 'PR number or URL (optional if using --local, --branch, --files, or --repo)')
   .option('-c, --config <path>', 'Path to config file')
   .option('-r, --rounds <number>', 'Maximum debate rounds', '5')
   .option('-i, --interactive', 'Interactive mode (pause between turns)')
