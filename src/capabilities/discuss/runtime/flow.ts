@@ -719,7 +719,7 @@ async function handleResume(
   console.log()
 }
 
-function formatDiscussMarkdown(session: DiscussSession): string {
+export function formatDiscussMarkdown(session: DiscussSession): string {
   let md = `# Discussion: ${session.title}\n\n`
   md += `**Session:** ${session.id}\n`
   md += `**Created:** ${session.createdAt.toISOString()}\n`
