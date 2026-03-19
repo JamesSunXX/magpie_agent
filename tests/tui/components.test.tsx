@@ -95,6 +95,32 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('Loading environment checks...')
   })
 
+  it('renders recent sessions when present', () => {
+    const element = Dashboard({
+      selectedIndex: 5,
+      sessions: {
+        continue: [],
+        recent: [
+          {
+            id: 'review-1',
+            capability: 'review',
+            title: 'Repo review',
+            status: 'completed',
+            updatedAt: new Date('2026-03-19T11:00:00.000Z'),
+            resumeCommand: ['review', '--session', 'review-1'],
+            artifactPaths: [],
+          },
+        ],
+      },
+      health: {
+        items: [],
+      },
+    })
+
+    expect(normalizedText(element)).toContain('Repo review')
+    expect(normalizedText(element)).toContain('review-1')
+  })
+
   it('renders wizard fields and advanced status', () => {
     const task = getTaskDefinition('change-review')
     const element = TaskWizard({

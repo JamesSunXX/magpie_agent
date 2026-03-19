@@ -112,6 +112,54 @@ describe('App', () => {
     expect(exit).toHaveBeenCalledTimes(1)
   })
 
+  it('moves dashboard selection and refreshes dashboard data', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'dashboard',
+      selectedIndex: 0,
+      sessions: {
+        continue: [],
+        recent: [
+          {
+            id: 'review-1',
+            capability: 'review',
+            title: 'Repo review',
+            status: 'completed',
+            updatedAt: new Date('2026-03-19T11:00:00.000Z'),
+            resumeCommand: ['review', '--session', 'review-1'],
+            artifactPaths: [],
+          },
+        ],
+      },
+    }
+    mockUseState.mockReturnValue([state, setState])
+    loadSessionDashboard.mockResolvedValue({ continue: [], recent: [] })
+    inspectEnvironmentHealth.mockResolvedValue({ items: [] })
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo', configPath: '/tmp/config.yaml' })
+
+    capturedInput?.('', { downArrow: true })
+    let next = setState.mock.calls[0][0](state) as AppState
+    expect(next.selectedIndex).toBe(1)
+
+    setState.mockClear()
+    capturedInput?.('', { upArrow: true })
+    next = setState.mock.calls[0][0](state) as AppState
+    expect(next.selectedIndex).toBe(5)
+
+    setState.mockClear()
+    capturedInput?.('r', {})
+    await flushPromises()
+    await flushPromises()
+    expect(loadSessionDashboard).toHaveBeenCalledWith({ cwd: '/repo' })
+    expect(inspectEnvironmentHealth).toHaveBeenCalledWith({
+      cwd: '/repo',
+      configPath: '/tmp/config.yaml',
+    })
+    expect(setState).toHaveBeenCalled()
+  })
+
   it('opens a resume preview from the dashboard', async () => {
     const setState = vi.fn()
     const state: AppState = {
@@ -221,6 +269,79 @@ describe('App', () => {
     expect(next.route).toBe('dashboard')
   })
 
+  it('handles wizard navigation, toggle values, and text backspace', async () => {
+    const setState = vi.fn()
+    const { App } = await import('../../src/tui/app.js')
+
+    const navigationState: AppState = {
+      route: 'wizard',
+      activeTaskId: 'issue-fix',
+      selectedIndex: 0,
+      draft: {
+        taskId: 'issue-fix',
+        values: {
+          issue: 'AB',
+        },
+        showAdvanced: false,
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([navigationState, setState])
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { downArrow: true })
+    let next = setState.mock.calls[0][0](navigationState) as AppState
+    expect(next.selectedIndex).toBe(0)
+
+    setState.mockClear()
+    capturedInput?.('', { backspace: true })
+    next = setState.mock.calls[0][0](navigationState) as AppState
+    expect(next.draft?.values.issue).toBe('A')
+
+    setState.mockClear()
+    const toggleState: AppState = {
+      route: 'wizard',
+      activeTaskId: 'change-review',
+      selectedIndex: 2,
+      draft: {
+        taskId: 'change-review',
+        values: {
+          mode: 'local',
+          all: false,
+        },
+        showAdvanced: true,
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([toggleState, setState])
+    App({ cwd: '/repo' })
+
+    capturedInput?.(' ', {})
+    next = setState.mock.calls[0][0](toggleState) as AppState
+    expect(next.draft?.values.all).toBe(true)
+
+    setState.mockClear()
+    const selectState: AppState = {
+      route: 'wizard',
+      activeTaskId: 'change-review',
+      selectedIndex: 0,
+      draft: {
+        taskId: 'change-review',
+        values: {
+          mode: 'branch',
+        },
+        showAdvanced: false,
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([selectState, setState])
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { leftArrow: true })
+    next = setState.mock.calls[0][0](selectState) as AppState
+    expect(next.draft?.values.mode).toBe('local')
+  })
+
   it('starts runs from preview and closes completed runs', async () => {
     const setState = vi.fn()
     const command: BuiltCommand = {
@@ -276,5 +397,55 @@ describe('App', () => {
     capturedInput?.('', { escape: true })
     const closed = setState.mock.calls[0][0](runState) as AppState
     expect(closed.route).toBe('dashboard')
+  })
+
+  it('returns from preview on escape and keeps running sessions from quitting', async () => {
+    const setState = vi.fn()
+    const command: BuiltCommand = {
+      argv: ['review', '--local'],
+      display: 'magpie review --local',
+      summary: 'Review local changes',
+    }
+    const previewState: AppState = {
+      route: 'preview',
+      selectedIndex: 0,
+      command,
+      draft: {
+        taskId: 'issue-fix',
+        values: {
+          issue: 'Fix dashboard crash',
+        },
+        showAdvanced: false,
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([previewState, setState])
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { escape: true })
+    const next = setState.mock.calls[0][0](previewState) as AppState
+    expect(next.route).toBe('wizard')
+
+    setState.mockClear()
+    const activeRunState: AppState = {
+      route: 'run',
+      selectedIndex: 0,
+      command,
+      run: {
+        command,
+        display: command.display,
+        logs: [],
+        status: 'running',
+        artifacts: {},
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([activeRunState, setState])
+    App({ cwd: '/repo' })
+
+    capturedInput?.('q', {})
+    expect(exit).not.toHaveBeenCalled()
   })
 })
