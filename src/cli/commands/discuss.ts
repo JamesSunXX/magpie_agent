@@ -6,7 +6,7 @@ import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import { StateManager } from '../../state/state-manager.js'
-import { formatDiscussMarkdown } from '../../capabilities/discuss/runtime/flow.js'
+import { formatDiscussMarkdown, formatDiscussConclusion } from '../../capabilities/discuss/runtime/flow.js'
 import type {
   DiscussCapabilityInput,
   DiscussOptions,
@@ -30,6 +30,7 @@ export const discussCommand = new Command('discuss')
   .option('--list', 'List all discuss sessions')
   .option('--resume <id>', 'Resume a discuss session')
   .option('--export <id>', 'Export a discuss session to file')
+  .option('--conclusion', 'Export only the final conclusion (use with --export)')
   .action(async (topic: string | undefined, options: DiscussOptions) => {
     // Handle --export: pure local operation, no AI calls
     if (options.export) {
@@ -59,7 +60,7 @@ export const discussCommand = new Command('discuss')
         if (format === 'json') {
           writeFileSync(outputFile, JSON.stringify(session, null, 2))
         } else {
-          writeFileSync(outputFile, formatDiscussMarkdown(session))
+          writeFileSync(outputFile, options.conclusion ? formatDiscussConclusion(session) : formatDiscussMarkdown(session))
         }
         console.log(chalk.green(`Exported session ${session.id} to ${outputFile}`))
         return

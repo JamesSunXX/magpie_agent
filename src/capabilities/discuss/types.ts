@@ -15,6 +15,7 @@ export interface DiscussCapabilityInput {
   list?: boolean
   resume?: string
   export?: string
+  conclusion?: boolean
 }
 
 export interface DiscussOptions extends Record<string, unknown> {
@@ -30,6 +31,7 @@ export interface DiscussOptions extends Record<string, unknown> {
   list?: boolean
   resume?: string
   export?: string
+  conclusion?: boolean
 }
 
 export interface RunDiscussFlowInput {

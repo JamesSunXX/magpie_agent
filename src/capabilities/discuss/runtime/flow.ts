@@ -747,3 +747,22 @@ export function formatDiscussMarkdown(session: DiscussSession): string {
 
   return md
 }
+
+export function formatDiscussConclusion(session: DiscussSession): string {
+  let md = `# Conclusion: ${session.title}\n\n`
+  md += `**Session:** ${session.id}  \n`
+  md += `**Reviewers:** ${session.reviewerIds.join(', ')}\n\n---\n\n`
+
+  for (const round of session.rounds) {
+    if (session.rounds.length > 1) {
+      md += `## Round ${round.roundNumber}: ${round.topic}\n\n`
+    }
+    md += `${round.conclusion}\n\n`
+    if (round.convergedAtRound) {
+      md += `> Converged at debate round ${round.convergedAtRound}\n\n`
+    }
+    md += `---\n\n`
+  }
+
+  return md
+}
