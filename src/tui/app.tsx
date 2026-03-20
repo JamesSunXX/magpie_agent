@@ -305,6 +305,7 @@ export function App(props: AppProps) {
           {
             cwd: props.cwd,
             cliArgv0: process.argv[1],
+            configPath: props.configPath,
           },
           {
             onUpdate: (run) => {

@@ -49,7 +49,7 @@ function appendReviewOptions(argv: string[], values: Record<string, string | boo
     argv.push('--format', 'json')
   }
 
-  maybePushText(argv, '--export', values.export)
+  maybePushText(argv, '--output', values.output)
 }
 
 export function buildTaskCommand(

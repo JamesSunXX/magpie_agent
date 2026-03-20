@@ -2,6 +2,7 @@ import { readFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
 import { buildResumeArgv } from './command-builder.js'
+import { CONTINUABLE_STATUSES } from './types.js'
 import type { DashboardSessions, SessionCard } from './types.js'
 
 interface ReviewSessionFile {
@@ -105,7 +106,7 @@ async function loadWorkflowSessions(magpieHomeDir: string): Promise<SessionCard[
 }
 
 function isContinuable(card: SessionCard): boolean {
-  return ['planning', 'paused', 'in_progress', 'active', 'running', 'paused_for_human'].includes(card.status)
+  return (CONTINUABLE_STATUSES as readonly string[]).includes(card.status)
 }
 
 function withResumeCommand(card: SessionCard): SessionCard {
