@@ -271,11 +271,16 @@ async function runDiscussion(
     interactive: !!options.interactive,
     checkConvergence,
     interruptState,
+    mode: 'discuss',
     onWaiting: (reviewerId: string) => {
       flushBuffer()
       if (spinnerRef.spinner) spinnerRef.spinner.stop()
       if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
 
+
+      if (reviewerId === 'interactive-input') {
+        return  // Just stop spinner, let readline take over
+      }
       if (reviewerId === 'convergence-check') {
         console.log(chalk.yellow.bold(`\n┌─ Convergence Judge ─────────────────────────`))
       }
@@ -714,7 +719,7 @@ async function handleResume(
   console.log()
 }
 
-function formatDiscussMarkdown(session: DiscussSession): string {
+export function formatDiscussMarkdown(session: DiscussSession): string {
   let md = `# Discussion: ${session.title}\n\n`
   md += `**Session:** ${session.id}\n`
   md += `**Created:** ${session.createdAt.toISOString()}\n`
@@ -737,6 +742,25 @@ function formatDiscussMarkdown(session: DiscussSession): string {
     }
 
     md += `### Conclusion\n\n${round.conclusion}\n\n`
+    md += `---\n\n`
+  }
+
+  return md
+}
+
+export function formatDiscussConclusion(session: DiscussSession): string {
+  let md = `# Conclusion: ${session.title}\n\n`
+  md += `**Session:** ${session.id}  \n`
+  md += `**Reviewers:** ${session.reviewerIds.join(', ')}\n\n---\n\n`
+
+  for (const round of session.rounds) {
+    if (session.rounds.length > 1) {
+      md += `## Round ${round.roundNumber}: ${round.topic}\n\n`
+    }
+    md += `${round.conclusion}\n\n`
+    if (round.convergedAtRound) {
+      md += `> Converged at debate round ${round.convergedAtRound}\n\n`
+    }
     md += `---\n\n`
   }
 
