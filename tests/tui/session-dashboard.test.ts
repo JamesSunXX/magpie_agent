@@ -1,0 +1,113 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { describe, expect, it } from 'vitest'
+import { loadSessionDashboard } from '../../src/tui/session-dashboard.js'
+
+describe('session dashboard', () => {
+  it('aggregates review, discuss, trd, loop, and workflow sessions', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(join(repoDir, '.magpie', 'sessions'), { recursive: true })
+    mkdirSync(join(magpieHomeDir, 'discussions'), { recursive: true })
+    mkdirSync(join(magpieHomeDir, 'trd-sessions'), { recursive: true })
+    mkdirSync(join(magpieHomeDir, 'loop-sessions'), { recursive: true })
+    mkdirSync(join(magpieHomeDir, 'workflow-sessions', 'issue-fix', 'wf-1'), { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'review-1.json'), JSON.stringify({
+      id: 'review-1',
+      startedAt: '2026-03-19T08:00:00.000Z',
+      updatedAt: '2026-03-19T09:00:00.000Z',
+      status: 'paused',
+      config: {
+        focusAreas: [],
+        selectedFeatures: [],
+      },
+      plan: {
+        features: [],
+        totalFeatures: 0,
+        selectedCount: 0,
+      },
+      progress: {
+        currentFeatureIndex: 0,
+        completedFeatures: [],
+        featureResults: {},
+      },
+    }), 'utf-8')
+
+    writeFileSync(join(magpieHomeDir, 'discussions', 'discussion-1.json'), JSON.stringify({
+      id: 'discussion-1',
+      title: 'Design tradeoffs',
+      createdAt: '2026-03-19T08:00:00.000Z',
+      updatedAt: '2026-03-19T08:30:00.000Z',
+      status: 'active',
+      reviewerIds: ['claude'],
+      rounds: [],
+    }), 'utf-8')
+
+    writeFileSync(join(magpieHomeDir, 'trd-sessions', 'trd-1.json'), JSON.stringify({
+      id: 'trd-1',
+      title: 'Checkout PRD',
+      prdPath: '/tmp/prd.md',
+      createdAt: '2026-03-19T07:00:00.000Z',
+      updatedAt: '2026-03-19T07:30:00.000Z',
+      stage: 'completed',
+      reviewerIds: ['claude'],
+      domains: [],
+      artifacts: {
+        domainOverviewPath: '/tmp/domain-overview.md',
+        draftDomainsPath: '/tmp/draft-domains.yaml',
+        confirmedDomainsPath: '/tmp/confirmed-domains.yaml',
+        trdPath: '/tmp/trd.md',
+        openQuestionsPath: '/tmp/questions.md',
+        partialDir: '/tmp/partial',
+      },
+      rounds: [],
+    }), 'utf-8')
+
+    writeFileSync(join(magpieHomeDir, 'loop-sessions', 'loop-1.json'), JSON.stringify({
+      id: 'loop-1',
+      title: 'Paused loop',
+      goal: 'Fix dashboard',
+      prdPath: '/tmp/prd.md',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T10:30:00.000Z',
+      status: 'paused_for_human',
+      currentStageIndex: 1,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: '/tmp/loop-1',
+        eventsPath: '/tmp/loop-1/events.jsonl',
+        planPath: '/tmp/loop-1/plan.md',
+        humanConfirmationPath: '/tmp/loop-1/human_confirmation.md',
+      },
+    }), 'utf-8')
+
+    writeFileSync(join(magpieHomeDir, 'workflow-sessions', 'issue-fix', 'wf-1', 'session.json'), JSON.stringify({
+      id: 'wf-1',
+      capability: 'issue-fix',
+      title: 'Fix dashboard crash',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'completed',
+      summary: 'Fixed dashboard crash',
+      artifacts: {
+        planPath: '/tmp/workflow/plan.md',
+        executionPath: '/tmp/workflow/execution.md',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+
+    expect(result.continue[0]).toMatchObject({ capability: 'loop', status: 'paused_for_human' })
+    expect(result.continue[1]).toMatchObject({ capability: 'review', status: 'paused' })
+    expect(result.recent[0]).toMatchObject({ capability: 'issue-fix', status: 'completed' })
+    expect(result.recent[1]).toMatchObject({ capability: 'trd', status: 'completed' })
+    expect(result.continue[0]?.resumeCommand).toEqual(['loop', 'resume', 'loop-1'])
+    expect(result.continue[1]?.resumeCommand).toEqual(['review', '--session', 'review-1'])
+  })
+})

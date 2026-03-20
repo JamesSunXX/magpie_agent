@@ -27,12 +27,14 @@ export interface InitPlanningOptions {
   enabled?: boolean
   defaultProvider?: InitPlanningProviderId
   jiraBaseUrl?: string
+  jiraProjectKey?: string
   jiraAuthMode?: InitJiraAuthMode
   jiraEmail?: string
   jiraApiToken?: string
   jiraUsername?: string
   jiraPassword?: string
   feishuBaseUrl?: string
+  feishuProjectKey?: string
   feishuAppId?: string
   feishuAppSecret?: string
 }
@@ -137,12 +139,14 @@ function resolvePlanningOptions(options?: InitConfigOptions) {
     enabled: planning?.enabled ?? false,
     defaultProvider: planning?.defaultProvider || 'jira_main',
     jiraBaseUrl: planning?.jiraBaseUrl?.trim() || 'https://your-company.atlassian.net',
+    jiraProjectKey: planning?.jiraProjectKey?.trim() || 'ENG',
     jiraAuthMode,
     jiraEmail: planning?.jiraEmail?.trim() || '${JIRA_EMAIL}',
     jiraApiToken: planning?.jiraApiToken?.trim() || '${JIRA_API_TOKEN}',
     jiraUsername: planning?.jiraUsername?.trim() || '${JIRA_USERNAME}',
     jiraPassword: planning?.jiraPassword?.trim() || '${JIRA_PASSWORD}',
     feishuBaseUrl: planning?.feishuBaseUrl?.trim() || 'https://project.feishu.cn',
+    feishuProjectKey: planning?.feishuProjectKey?.trim() || 'ENG',
     feishuAppId: planning?.feishuAppId?.trim() || '${FEISHU_PROJECT_APP_ID}',
     feishuAppSecret: planning?.feishuAppSecret?.trim() || '${FEISHU_PROJECT_APP_SECRET}',
   }
@@ -377,11 +381,13 @@ ${appleScriptTargetsYaml}
       jira_main:
         type: "jira"
         base_url: ${yamlDoubleQuoted(planning.jiraBaseUrl)}
+        project_key: ${yamlDoubleQuoted(planning.jiraProjectKey)}
         auth_mode: ${yamlDoubleQuoted(planning.jiraAuthMode)}
 ${jiraCredentialLines}
       feishu_project:
         type: "feishu-project"
         base_url: ${yamlDoubleQuoted(planning.feishuBaseUrl)}
+        project_key: ${yamlDoubleQuoted(planning.feishuProjectKey)}
         app_id: ${yamlStringOrEnvRef(planning.feishuAppId)}
         app_secret: ${yamlStringOrEnvRef(planning.feishuAppSecret)}
   operations:

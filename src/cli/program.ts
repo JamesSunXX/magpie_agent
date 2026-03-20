@@ -6,6 +6,7 @@ import { qualityCommand } from './commands/quality.js'
 import { reviewCommand } from './commands/review.js'
 import { reviewersCommand } from './commands/reviewers.js'
 import { statsCommand } from './commands/stats.js'
+import { tuiCommand } from './commands/tui.js'
 import { trdCommand } from './commands/trd.js'
 import { workflowCommand } from './commands/workflow.js'
 
@@ -26,6 +27,7 @@ export function createProgram(): Command {
   program.addCommand(loopCommand)
   program.addCommand(workflowCommand)
   program.addCommand(statsCommand)
+  program.addCommand(tuiCommand)
 
   return program
 }

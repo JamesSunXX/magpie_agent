@@ -25,10 +25,9 @@ function resolveCliCommand(): { file: string; args: string[] } {
     }
   }
 
-  const tsxBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx')
   return {
-    file: tsxBin,
-    args: [join(root, 'src', 'cli.ts')],
+    file: process.execPath,
+    args: ['--import', 'tsx', join(root, 'src', 'cli.ts')],
   }
 }
 
