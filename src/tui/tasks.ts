@@ -34,6 +34,7 @@ export const TASKS: TaskDefinition[] = [
         id: 'files',
         label: 'Files (comma-separated)',
         type: 'text',
+        required: true,
         placeholder: 'src/cli/program.ts, tests/cli/program.test.ts',
         visibleWhen: (values) => values.mode === 'files',
       },
@@ -87,8 +88,8 @@ export const TASKS: TaskDefinition[] = [
         ],
       },
       {
-        id: 'export',
-        label: 'Export path',
+        id: 'output',
+        label: 'Output path',
         type: 'text',
         advanced: true,
         placeholder: './review.md',

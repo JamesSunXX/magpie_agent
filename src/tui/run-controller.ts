@@ -4,6 +4,7 @@ import type { BuiltCommand, RunState } from './types.js'
 export interface CliRuntimeOptions {
   cwd: string
   cliArgv0?: string
+  configPath?: string
   execArgv?: string[]
   execPath?: string
 }
@@ -137,7 +138,10 @@ export function startCommandRun(
     throw new Error('Unable to resolve the current CLI entrypoint')
   }
 
-  const args = [...(options.execArgv || process.execArgv), entrypoint, ...command.argv]
+  const args = [...(options.execArgv ?? process.execArgv), entrypoint, ...command.argv]
+  if (options.configPath) {
+    args.push('--config', options.configPath)
+  }
   let state = createInitialRunState(command)
 
   emitUpdate(state, handlers)

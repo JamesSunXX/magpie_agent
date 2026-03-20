@@ -80,6 +80,13 @@ describe('TUI command builder', () => {
     })
   })
 
+  it('appends --output instead of --export for review output path', () => {
+    const result = buildTaskCommand('change-review', { mode: 'local', output: './review.md' })
+    expect(result.argv).toContain('--output')
+    expect(result.argv).not.toContain('--export')
+    expect(result.argv).toEqual(['review', '--local', '--output', './review.md'])
+  })
+
   it('reuses dashboard resume commands', () => {
     const card: SessionCard = {
       id: 'loop-123',

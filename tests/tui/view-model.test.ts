@@ -108,4 +108,15 @@ describe('TUI view model', () => {
     expect(isDraftValid(invalidDraft)).toBe(false)
     expect(isDraftValid(validDraft)).toBe(true)
   })
+
+  it('rejects files mode draft when files field is empty', () => {
+    const draft = createTaskDraft('change-review')
+    draft.values.mode = 'files'
+    draft.values.files = ''
+
+    expect(isDraftValid(draft)).toBe(false)
+
+    draft.values.files = 'src/a.ts'
+    expect(isDraftValid(draft)).toBe(true)
+  })
 })

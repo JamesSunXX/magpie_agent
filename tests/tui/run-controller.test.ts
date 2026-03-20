@@ -79,6 +79,63 @@ describe('run controller', () => {
     expect(states.some((state) => state.logs.includes('warn line\n'))).toBe(true)
   })
 
+  it('appends --config to spawned args when configPath is provided', () => {
+    const child = new FakeChildProcess()
+    const spawn = vi.fn(() => child)
+    const command: BuiltCommand = {
+      argv: ['review', '--local'],
+      display: 'magpie review --local',
+      summary: 'Review local changes',
+    }
+
+    startCommandRun(
+      command,
+      {
+        cwd: '/repo',
+        cliArgv0: '/repo/src/cli.ts',
+        configPath: '/tmp/alt.yaml',
+        execArgv: [],
+        execPath: '/usr/local/bin/node',
+      },
+      undefined,
+      { spawn }
+    )
+
+    expect(spawn).toHaveBeenCalledWith(
+      '/usr/local/bin/node',
+      ['/repo/src/cli.ts', 'review', '--local', '--config', '/tmp/alt.yaml'],
+      expect.objectContaining({ cwd: '/repo' })
+    )
+  })
+
+  it('uses empty execArgv array without falling back to process.execArgv', () => {
+    const child = new FakeChildProcess()
+    const spawn = vi.fn(() => child)
+    const command: BuiltCommand = {
+      argv: ['review', '--local'],
+      display: 'magpie review --local',
+      summary: 'Review local changes',
+    }
+
+    startCommandRun(
+      command,
+      {
+        cwd: '/repo',
+        cliArgv0: '/repo/dist/cli.js',
+        execArgv: [],
+        execPath: '/usr/local/bin/node',
+      },
+      undefined,
+      { spawn }
+    )
+
+    expect(spawn).toHaveBeenCalledWith(
+      '/usr/local/bin/node',
+      ['/repo/dist/cli.js', 'review', '--local'],
+      expect.objectContaining({ cwd: '/repo' })
+    )
+  })
+
   it('marks non-zero exits as failed', () => {
     const child = new FakeChildProcess()
     const spawn = vi.fn(() => child)
