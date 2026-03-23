@@ -660,4 +660,4 @@ npm run check:boundaries
 
 ## License
 
-ISC
+MIT
