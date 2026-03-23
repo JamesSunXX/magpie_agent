@@ -4,8 +4,8 @@ import { writeFileSync } from 'fs'
 import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
+import { StateManager } from '../../core/state/index.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
-import { StateManager } from '../../state/state-manager.js'
 import { formatDiscussMarkdown, formatDiscussConclusion } from '../../capabilities/discuss/runtime/flow.js'
 import type {
   DiscussCapabilityInput,

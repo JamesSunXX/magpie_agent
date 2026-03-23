@@ -121,6 +121,35 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('review-1')
   })
 
+  it('keeps session lists compact while browsing long history', () => {
+    const recent = Array.from({ length: 16 }, (_, index) => ({
+      id: `recent-${index + 1}`,
+      capability: 'loop' as const,
+      title: `Complete delivery flow item ${index + 1}`,
+      status: 'completed',
+      updatedAt: new Date(`2026-03-19T11:${String(index).padStart(2, '0')}:00.000Z`),
+      resumeCommand: ['loop', 'resume', `recent-${index + 1}`],
+      artifactPaths: [],
+    }))
+
+    const element = Dashboard({
+      selectedIndex: 5 + 8,
+      sessions: {
+        continue: [],
+        recent,
+      },
+      health: {
+        items: [],
+      },
+    })
+
+    expect(normalizedText(element)).toContain('Showing 12 of 16 recent sessions')
+    expect(normalizedText(element)).toContain('2 more above')
+    expect(normalizedText(element)).toContain('2 more below')
+    expect(normalizedText(element)).toContain('Complete delivery flow item 9')
+    expect(normalizedText(element)).not.toContain('Complete delivery flow item 2 Loop')
+  })
+
   it('renders wizard fields and advanced status', () => {
     const task = getTaskDefinition('change-review')
     const element = TaskWizard({

@@ -116,6 +116,21 @@ function withResumeCommand(card: SessionCard): SessionCard {
   }
 }
 
+function stripMarkdownPrefix(line: string): string {
+  return line.replace(/^<report>\s*/i, '').replace(/^#+\s*/, '').trim()
+}
+
+function normalizeSessionTitle(title: string | undefined, fallback: string): string {
+  const lines = String(title || '')
+    .split('\n')
+    .map((line) => stripMarkdownPrefix(line))
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+
+  const preferred = lines.find((line) => !/^(执行摘要|summary|摘要)$/i.test(line))
+  return preferred || fallback
+}
+
 export async function loadSessionDashboard(options: SessionDashboardOptions): Promise<DashboardSessions> {
   const magpieHomeDir = options.magpieHomeDir || getMagpieHomeDir()
   const reviewDir = join(options.cwd, '.magpie', 'sessions')
@@ -143,7 +158,7 @@ export async function loadSessionDashboard(options: SessionDashboardOptions): Pr
     ...discussSessions.map((session) => withResumeCommand({
       id: session.id,
       capability: 'discuss',
-      title: session.title,
+      title: normalizeSessionTitle(session.title, 'Discussion'),
       status: session.status,
       updatedAt: new Date(session.updatedAt),
       artifactPaths: [],
@@ -151,7 +166,7 @@ export async function loadSessionDashboard(options: SessionDashboardOptions): Pr
     ...trdSessions.map((session) => withResumeCommand({
       id: session.id,
       capability: 'trd',
-      title: session.title || session.prdPath,
+      title: normalizeSessionTitle(session.title || session.prdPath, session.prdPath),
       status: session.stage === 'completed' ? 'completed' : 'paused',
       updatedAt: new Date(session.updatedAt),
       artifactPaths: toArtifactPaths(session.artifacts),
@@ -159,12 +174,15 @@ export async function loadSessionDashboard(options: SessionDashboardOptions): Pr
     ...loopSessions.map((session) => withResumeCommand({
       id: session.id,
       capability: 'loop',
-      title: session.title,
+      title: normalizeSessionTitle(session.title, 'Loop run'),
       status: session.status,
       updatedAt: new Date(session.updatedAt),
       artifactPaths: toArtifactPaths(session.artifacts),
     })),
-    ...workflowSessions,
+    ...workflowSessions.map((session) => ({
+      ...session,
+      title: normalizeSessionTitle(session.title, session.capability),
+    })),
   ].sort(sortByUpdatedAtDesc)
 
   return {

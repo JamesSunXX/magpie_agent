@@ -107,7 +107,29 @@ describe('session dashboard', () => {
     expect(result.continue[1]).toMatchObject({ capability: 'review', status: 'paused' })
     expect(result.recent[0]).toMatchObject({ capability: 'issue-fix', status: 'completed' })
     expect(result.recent[1]).toMatchObject({ capability: 'trd', status: 'completed' })
+    expect(result.continue[2]?.title).toBe('Design tradeoffs')
     expect(result.continue[0]?.resumeCommand).toEqual(['loop', 'resume', 'loop-1'])
     expect(result.continue[1]?.resumeCommand).toEqual(['review', '--session', 'review-1'])
+  })
+
+  it('extracts readable titles from report-like session names', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(join(magpieHomeDir, 'discussions'), { recursive: true })
+
+    writeFileSync(join(magpieHomeDir, 'discussions', 'discussion-1.json'), JSON.stringify({
+      id: 'discussion-1',
+      title: '<report>\n# 混合在线圈包方案可行性深度研究报告\n\n## 执行摘要\n本报告围绕用户需求展开。',
+      createdAt: '2026-03-19T08:00:00.000Z',
+      updatedAt: '2026-03-19T08:30:00.000Z',
+      status: 'completed',
+      reviewerIds: ['claude'],
+      rounds: [],
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+
+    expect(result.recent[0]?.title).toBe('混合在线圈包方案可行性深度研究报告')
   })
 })
