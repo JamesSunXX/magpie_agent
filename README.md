@@ -147,6 +147,7 @@ magpie tui [options]
 - 同屏展示 `Continue` 与 `Recent` 会话摘要
 - 执行前统一展示命令预览
 - 在 TUI 内执行已有 CLI 命令，并提取 `Session:`、`Plan:`、`Report:`、`Human confirmation file:` 等高信号输出
+- 为避免 TUI 内子命令再次请求终端输入，评审类任务默认补全不会阻塞的参数：未指定 reviewer 时自动使用 `--all`，仓库级评审默认补 `--deep`
 
 当前限制：
 

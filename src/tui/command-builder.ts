@@ -40,6 +40,13 @@ function maybePushDelimitedValues(
 }
 
 function appendReviewOptions(argv: string[], values: Record<string, string | boolean | undefined>): void {
+  const hasExplicitReviewers = typeof values.reviewers === 'string' && values.reviewers.trim().length > 0
+  const useAllReviewers = values.all === true
+
+  if (!hasExplicitReviewers && !useAllReviewers) {
+    argv.push('--all')
+  }
+
   maybePushText(argv, '--reviewers', values.reviewers)
   maybePushBoolean(argv, '--all', values.all)
   maybePushBoolean(argv, '--quick', values.quick)
@@ -74,6 +81,11 @@ export function buildTaskCommand(
         argv.push('--repo')
         maybePushText(argv, '--path', values.path)
         maybePushDelimitedValues(argv, '--ignore', values.ignore)
+
+        // TUI runs cannot answer follow-up prompts, so repo reviews default to deep mode.
+        if (values.quick !== true && values.deep !== true) {
+          argv.push('--deep')
+        }
       }
 
       appendReviewOptions(argv, values)

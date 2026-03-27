@@ -5,40 +5,40 @@ import type { SessionCard } from '../../src/tui/types.js'
 describe('TUI command builder', () => {
   it('builds a local change review command', () => {
     expect(buildTaskCommand('change-review', { mode: 'local' })).toEqual({
-      argv: ['review', '--local'],
-      display: 'magpie review --local',
+      argv: ['review', '--local', '--all'],
+      display: 'magpie review --local --all',
       summary: 'Review local changes',
     })
   })
 
   it('builds a branch change review command', () => {
     expect(buildTaskCommand('change-review', { mode: 'branch', branchBase: 'main' })).toEqual({
-      argv: ['review', '--branch', 'main'],
-      display: 'magpie review --branch main',
+      argv: ['review', '--branch', 'main', '--all'],
+      display: 'magpie review --branch main --all',
       summary: 'Review the current branch against main',
     })
   })
 
   it('builds a files change review command', () => {
     expect(buildTaskCommand('change-review', { mode: 'files', files: 'src/a.ts, src/b.ts' })).toEqual({
-      argv: ['review', '--files', 'src/a.ts', 'src/b.ts'],
-      display: 'magpie review --files src/a.ts src/b.ts',
+      argv: ['review', '--files', 'src/a.ts', 'src/b.ts', '--all'],
+      display: 'magpie review --files src/a.ts src/b.ts --all',
       summary: 'Review selected files',
     })
   })
 
   it('builds a repo change review command', () => {
     expect(buildTaskCommand('change-review', { mode: 'repo', path: 'src', ignore: 'dist,coverage' })).toEqual({
-      argv: ['review', '--repo', '--path', 'src', '--ignore', 'dist', 'coverage'],
-      display: 'magpie review --repo --path src --ignore dist coverage',
+      argv: ['review', '--repo', '--path', 'src', '--ignore', 'dist', 'coverage', '--deep', '--all'],
+      display: 'magpie review --repo --path src --ignore dist coverage --deep --all',
       summary: 'Review the repository scope',
     })
   })
 
   it('builds a PR review command', () => {
     expect(buildTaskCommand('pr-review', { pr: '123' })).toEqual({
-      argv: ['review', '123'],
-      display: 'magpie review 123',
+      argv: ['review', '123', '--all'],
+      display: 'magpie review 123 --all',
       summary: 'Review PR 123',
     })
   })
@@ -84,7 +84,25 @@ describe('TUI command builder', () => {
     const result = buildTaskCommand('change-review', { mode: 'local', output: './review.md' })
     expect(result.argv).toContain('--output')
     expect(result.argv).not.toContain('--export')
-    expect(result.argv).toEqual(['review', '--local', '--output', './review.md'])
+    expect(result.argv).toEqual(['review', '--local', '--all', '--output', './review.md'])
+  })
+
+  it('does not force --all when explicit reviewers are set', () => {
+    const result = buildTaskCommand('change-review', {
+      mode: 'local',
+      reviewers: 'codex,claude-code',
+    })
+
+    expect(result.argv).toEqual(['review', '--local', '--reviewers', 'codex,claude-code'])
+  })
+
+  it('does not force deep mode when repo review already uses quick mode', () => {
+    const result = buildTaskCommand('change-review', {
+      mode: 'repo',
+      quick: true,
+    })
+
+    expect(result.argv).toEqual(['review', '--repo', '--all', '--quick'])
   })
 
   it('reuses dashboard resume commands', () => {
