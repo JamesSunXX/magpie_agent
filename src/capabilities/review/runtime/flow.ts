@@ -354,6 +354,8 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         const statusParts = statuses.map(s => {
           if (s.status === 'done') {
             return chalk.green(`✓ ${s.reviewerId}`) + chalk.dim(` (${s.duration?.toFixed(1)}s)`)
+          } else if (s.status === 'failed') {
+            return chalk.red(`✖ ${s.reviewerId}`)
           } else if (s.status === 'thinking') {
             return chalk.yellow(`⋯ ${s.reviewerId}`)
           } else {

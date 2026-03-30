@@ -15,6 +15,14 @@ const createMockProvider = (name: string, responses: string[]): AIProvider => {
   }
 }
 
+const createFailingProvider = (name: string, errorMessage: string): AIProvider => ({
+  name,
+  chat: vi.fn().mockRejectedValue(new Error(errorMessage)),
+  chatStream: vi.fn().mockImplementation(async function* () {
+    throw new Error(errorMessage)
+  })
+})
+
 describe('DebateOrchestrator', () => {
   it('should run debate for specified rounds', async () => {
     const reviewerA: Reviewer = {
@@ -93,5 +101,87 @@ describe('DebateOrchestrator', () => {
       ]),
       'You are A'
     )
+  })
+
+  it('continues streaming debate when one reviewer fails', async () => {
+    const onMessage = vi.fn()
+    const reviewerA: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['Round 1 from A', 'Summary A']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const reviewerB: Reviewer = {
+      id: 'reviewer-2',
+      provider: createFailingProvider('broken', 'gemini boom'),
+      systemPrompt: 'You are reviewer B'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', ['Final conclusion']),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewerA, reviewerB],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, mode: 'discuss', onMessage }
+    )
+
+    const result = await orchestrator.runStreaming('123', 'Discuss this topic')
+
+    expect(result.messages).toHaveLength(1)
+    expect(result.messages[0].reviewerId).toBe('reviewer-1')
+    expect(result.summaries).toEqual([
+      { reviewerId: 'reviewer-1', summary: 'Summary A' },
+    ])
+    expect(result.finalConclusion).toBe('Final conclusion')
+    expect(onMessage).toHaveBeenCalledWith('reviewer-2', expect.stringContaining('gemini boom'))
+  })
+
+  it('continues non-streaming debate when one reviewer fails', async () => {
+    const onMessage = vi.fn()
+    const reviewerA: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['Round 1 from A', 'Summary A']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const reviewerB: Reviewer = {
+      id: 'reviewer-2',
+      provider: createFailingProvider('broken', 'gemini boom'),
+      systemPrompt: 'You are reviewer B'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', ['Final conclusion']),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewerA, reviewerB],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, mode: 'discuss', onMessage }
+    )
+
+    const result = await orchestrator.run('123', 'Discuss this topic')
+
+    expect(result.messages).toHaveLength(1)
+    expect(result.messages[0].reviewerId).toBe('reviewer-1')
+    expect(result.summaries).toEqual([
+      { reviewerId: 'reviewer-1', summary: 'Summary A' },
+    ])
+    expect(result.finalConclusion).toBe('Final conclusion')
+    expect(onMessage).toHaveBeenCalledWith('reviewer-2', expect.stringContaining('gemini boom'))
   })
 })

@@ -231,10 +231,10 @@ async function runDiscussion(
   console.log(chalk.dim(`├─ Max rounds: ${maxRounds}`))
   console.log(chalk.dim(`└─ Convergence: ${checkConvergence ? 'enabled' : 'disabled'}`))
 
-  let rl: ReturnType<typeof createInterface> | null = null
-  if (options.interactive) {
-    rl = createInterface({ input: process.stdin, output: process.stdout })
-  }
+  // NOTE: Do NOT create a persistent readline here.
+  // A long-lived readline echoes keystrokes during spinner/thinking phases,
+  // causing buffered input to be consumed by the next rl.question() call
+  // ("duplicate input" bug). Instead, create readline on-demand in onInteractive.
 
   let currentReviewer = ''
   let currentRound = 1
@@ -250,6 +250,8 @@ async function runDiscussion(
     const statusParts = statuses.map(s => {
       if (s.status === 'done') {
         return chalk.green(`✓ ${s.reviewerId}`) + chalk.dim(` (${s.duration?.toFixed(1)}s)`)
+      } else if (s.status === 'failed') {
+        return chalk.red(`✖ ${s.reviewerId}`)
       } else if (s.status === 'thinking') {
         return chalk.yellow(`⋯ ${s.reviewerId}`)
       } else {
@@ -348,12 +350,20 @@ async function runDiscussion(
       currentRound = round + 1
     },
     onInteractive: options.interactive ? async () => {
-      // Ensure stdin is flowing (ora spinner may have paused it)
-      if (process.stdin.isPaused?.()) process.stdin.resume()
+      process.stdout.write(chalk.yellow('\nPress Enter to continue, type to interject, or q to end: '))
       return new Promise<string | null>((resolve) => {
-        rl!.question(chalk.yellow('\nPress Enter to continue, type to interject, or q to end: '), (answer) => {
+        if (process.stdin.isPaused?.()) process.stdin.resume()
+        // Ensure cooked mode so the terminal handles IME composition correctly;
+        // readline's raw mode causes CJK characters to be doubled.
+        if (process.stdin.isTTY && process.stdin.isRaw) {
+          process.stdin.setRawMode(false)
+        }
+        const onData = (data: Buffer) => {
+          process.stdin.removeListener('data', onData)
+          const answer = data.toString().replace(/\r?\n$/, '')
           resolve(answer || null)
-        })
+        }
+        process.stdin.on('data', onData)
       })
     } : undefined
   }
@@ -398,8 +408,6 @@ async function runDiscussion(
   if (result.convergedAtRound) {
     console.log(chalk.green(`\n  Converged at round ${result.convergedAtRound}`))
   }
-
-  rl?.close()
 
   return { result }
 }
@@ -566,17 +574,25 @@ async function interactiveFollowUp(
   spinner: ReturnType<typeof ora>,
   interruptState?: { interrupted: boolean }
 ): Promise<void> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const readLine = (): Promise<string> => {
+    process.stdout.write(chalk.yellow('\nAsk a follow-up question (or Enter to end): '))
+    return new Promise((resolve) => {
+      if (process.stdin.isPaused?.()) process.stdin.resume()
+      if (process.stdin.isTTY && process.stdin.isRaw) {
+        process.stdin.setRawMode(false)
+      }
+      const onData = (data: Buffer) => {
+        process.stdin.removeListener('data', onData)
+        resolve(data.toString().replace(/\r?\n$/, ''))
+      }
+      process.stdin.on('data', onData)
+    })
+  }
 
   while (true) {
-    // Ensure stdin is flowing (ora spinner may have paused it)
-    if (process.stdin.isPaused?.()) process.stdin.resume()
-    const answer = await new Promise<string>((resolve) => {
-      rl.question(chalk.yellow('\nAsk a follow-up question (or Enter to end): '), resolve)
-    })
+    const answer = await readLine()
 
     if (!answer.trim()) {
-      rl.close()
       session.status = 'completed'
       session.updatedAt = new Date()
       await stateManager.saveDiscussSession(session)

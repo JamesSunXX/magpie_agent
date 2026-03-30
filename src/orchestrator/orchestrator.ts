@@ -32,6 +32,7 @@ export class DebateOrchestrator {
   private gatheredContext: GatheredContext | null = null  // Store gathered context
   private taskPrompt: string = ''  // Original task prompt (contains PR number, etc.)
   private lastSeenIndex: Map<string, number> = new Map()  // Track what each reviewer has seen
+  private failedReviewerIds: Set<string> = new Set()
 
   constructor(
     reviewers: Reviewer[],
@@ -99,14 +100,31 @@ export class DebateOrchestrator {
     return usage
   }
 
+  private getActiveReviewers(): Reviewer[] {
+    return this.reviewers.filter((reviewer) => !this.failedReviewerIds.has(reviewer.id))
+  }
+
+  private noteReviewerFailure(reviewerId: string, error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error)
+    this.failedReviewerIds.add(reviewerId)
+    logger.warn(`[DebateOrchestrator] Reviewer ${reviewerId} failed: ${message}`)
+    this.options.onMessage?.(reviewerId, `[Error] ${message}`)
+    return message
+  }
+
   // Check if reviewers have converged (reached consensus)
   private async checkConvergence(): Promise<boolean> {
-    if (this.conversationHistory.length < this.reviewers.length) {
+    const activeReviewers = this.getActiveReviewers()
+    if (this.failedReviewerIds.size > 0 || activeReviewers.length === 0) {
+      return false
+    }
+
+    if (this.conversationHistory.length < activeReviewers.length) {
       return false // Need at least 1 complete round to check
     }
 
     // Count how many rounds have been completed
-    const roundsCompleted = Math.floor(this.conversationHistory.length / this.reviewers.length)
+    const roundsCompleted = Math.floor(this.conversationHistory.length / activeReviewers.length)
 
     // Round 1 is always independent reviews - reviewers haven't seen each other's opinions yet
     // True convergence requires at least one round of cross-examination
@@ -115,12 +133,12 @@ export class DebateOrchestrator {
     }
 
     // Get last round's messages
-    const lastRoundMessages = this.conversationHistory.slice(-this.reviewers.length)
+    const lastRoundMessages = this.conversationHistory.slice(-activeReviewers.length)
     const messagesText = lastRoundMessages
       .map(m => `[${m.reviewerId}]: ${m.content}`)
       .join('\n\n---\n\n')
 
-    const prompt = `You are a strict consensus judge. Analyze whether these ${this.reviewers.length} reviewers have reached TRUE CONSENSUS.
+    const prompt = `You are a strict consensus judge. Analyze whether these ${activeReviewers.length} reviewers have reached TRUE CONSENSUS.
 
 IMPORTANT: This is Round ${roundsCompleted}. Reviewers have now seen each other's opinions.
 
@@ -197,6 +215,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     this.conversationHistory = []
     this.tokenUsage.clear()
     this.lastSeenIndex.clear()
+    this.failedReviewerIds.clear()
     this.taskPrompt = prompt
     let convergedAtRound: number | undefined
 
@@ -208,7 +227,14 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       // Run debate rounds
       for (let round = 1; round <= this.options.maxRounds; round++) {
         this.checkInterrupt()
-        for (const reviewer of this.reviewers) {
+        const activeReviewers = this.getActiveReviewers()
+        if (activeReviewers.length === 0) {
+          throw new Error('No reviewers available to continue the debate')
+        }
+
+        let completedReviews = 0
+
+        for (const reviewer of activeReviewers) {
           // Check for user interruption in interactive mode
           if (this.options.interactive && this.options.onInteractive) {
             const userInput = await this.options.onInteractive()
@@ -225,24 +251,33 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           }
 
           const messages = this.buildMessages(reviewer.id)
-          const response = await this.chatWithOptionalOptions(
-            reviewer.provider,
-            messages,
-            reviewer.systemPrompt,
-            this.options.chatOptions?.reviewer
-          )
+          try {
+            const response = await this.chatWithOptionalOptions(
+              reviewer.provider,
+              messages,
+              reviewer.systemPrompt,
+              this.options.chatOptions?.reviewer
+            )
 
-          const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-          this.trackTokens(reviewer.id, inputText, response)
+            const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+            this.trackTokens(reviewer.id, inputText, response)
 
-          this.conversationHistory.push({
-            reviewerId: reviewer.id,
-            content: response,
-            timestamp: new Date()
-          })
-          this.markAsSeen(reviewer.id)
+            this.conversationHistory.push({
+              reviewerId: reviewer.id,
+              content: response,
+              timestamp: new Date()
+            })
+            this.markAsSeen(reviewer.id)
+            completedReviews += 1
 
-          this.options.onMessage?.(reviewer.id, response)
+            this.options.onMessage?.(reviewer.id, response)
+          } catch (error) {
+            this.noteReviewerFailure(reviewer.id, error)
+          }
+        }
+
+        if (completedReviews === 0) {
+          throw new Error(`All reviewers failed during round ${round}`)
         }
 
         // Check convergence if enabled
@@ -295,6 +330,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     this.conversationHistory = []
     this.tokenUsage.clear()
     this.lastSeenIndex.clear()
+    this.failedReviewerIds.clear()
     this.analysis = ''
     this.taskPrompt = prompt
     let convergedAtRound: number | undefined
@@ -400,13 +436,18 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         }
 
         // Build messages for all reviewers BEFORE any execution (same info for all)
-        const reviewerTasks = this.reviewers.map(reviewer => ({
+        const activeReviewers = this.getActiveReviewers()
+        if (activeReviewers.length === 0) {
+          throw new Error('No reviewers available to continue the debate')
+        }
+
+        const reviewerTasks = activeReviewers.map(reviewer => ({
           reviewer,
           messages: this.buildMessages(reviewer.id)
         }))
 
         // Initialize status tracking for parallel execution
-        const statuses: ReviewerStatus[] = this.reviewers.map(r => ({
+        const statuses: ReviewerStatus[] = activeReviewers.map(r => ({
           reviewerId: r.id,
           status: 'pending' as const
         }))
@@ -426,31 +467,51 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             this.options.onParallelStatus?.(round, statuses)
 
             logger.debug(`[Round ${round}] Calling ${reviewer.id} (${reviewer.provider.name})...`)
-            let fullResponse = ''
-            for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
-              fullResponse += chunk
-            }
+            try {
+              let fullResponse = ''
+              for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
+                fullResponse += chunk
+              }
 
-            logger.debug(`[Round ${round}] ${reviewer.id} (${reviewer.provider.name}) done in ${((Date.now() - statuses[index].startTime!) / 1000).toFixed(1)}s`)
-            // Mark as done
-            const endTime = Date.now()
-            const startTime = statuses[index].startTime!
-            statuses[index] = {
-              reviewerId: reviewer.id,
-              status: 'done',
-              startTime,
-              endTime,
-              duration: (endTime - startTime) / 1000
-            }
-            this.options.onParallelStatus?.(round, statuses)
+              logger.debug(`[Round ${round}] ${reviewer.id} (${reviewer.provider.name}) done in ${((Date.now() - statuses[index].startTime!) / 1000).toFixed(1)}s`)
+              // Mark as done
+              const endTime = Date.now()
+              const startTime = statuses[index].startTime!
+              statuses[index] = {
+                reviewerId: reviewer.id,
+                status: 'done',
+                startTime,
+                endTime,
+                duration: (endTime - startTime) / 1000
+              }
+              this.options.onParallelStatus?.(round, statuses)
 
-            const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-            return { reviewer, fullResponse, inputText }
+              const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+              return { reviewer, fullResponse, inputText, failed: false as const }
+            } catch (error) {
+              const endTime = Date.now()
+              const startTime = statuses[index].startTime!
+              statuses[index] = {
+                reviewerId: reviewer.id,
+                status: 'failed',
+                startTime,
+                endTime,
+                duration: (endTime - startTime) / 1000
+              }
+              this.options.onParallelStatus?.(round, statuses)
+              const message = this.noteReviewerFailure(reviewer.id, error)
+              return { reviewer, error: message, failed: true as const }
+            }
           })
         )
 
         // Display results and add to history (after all complete)
-        for (const { reviewer, fullResponse, inputText } of results) {
+        const successfulResults = results.filter((result) => !result.failed)
+        if (successfulResults.length === 0) {
+          throw new Error(`All reviewers failed during round ${round}`)
+        }
+
+        for (const { reviewer, fullResponse, inputText } of successfulResults) {
           this.trackTokens(reviewer.id, inputText, fullResponse)
           this.conversationHistory.push({
             reviewerId: reviewer.id,
@@ -512,11 +573,12 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
   }
 
   private buildMessages(currentReviewerId: string): Message[] {
-    const reviewer = this.reviewers.find(r => r.id === currentReviewerId)
+    const activeReviewers = this.getActiveReviewers()
+    const reviewer = activeReviewers.find(r => r.id === currentReviewerId)
     const hasSession = reviewer?.provider.sessionId !== undefined
     const lastSeen = this.lastSeenIndex.get(currentReviewerId) ?? -1
     const isFirstCall = lastSeen < 0
-    const otherReviewerIds = this.reviewers.filter(r => r.id !== currentReviewerId).map(r => r.id)
+    const otherReviewerIds = activeReviewers.filter(r => r.id !== currentReviewerId).map(r => r.id)
 
     // Round 1: Each reviewer gives independent opinion (no other reviewers' responses)
     // Round 2+: See all previous context
@@ -676,7 +738,7 @@ Previous rounds discussion:`
 
   /** Expose reviewers for post-review discussion */
   getReviewers(): Reviewer[] {
-    return this.reviewers
+    return this.getActiveReviewers()
   }
 
   /** Expose analyzer for post-review discussion */
@@ -796,7 +858,7 @@ Use reviewer IDs: ${reviewerIds}`
       ? `Please summarize your analysis. Include: (1) your core conclusions, (2) key risks or trade-offs you identified, (3) your recommended actions. Do not reveal your identity or role.${this.langSuffix}`
       : `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
 
-    for (const reviewer of this.reviewers) {
+    for (const reviewer of this.getActiveReviewers()) {
       const messages = this.buildMessages(reviewer.id)
       messages.push({ role: 'user', content: summaryPrompt })
 

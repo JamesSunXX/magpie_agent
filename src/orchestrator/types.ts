@@ -41,7 +41,7 @@ export interface DebateResult {
 
 export interface ReviewerStatus {
   reviewerId: string
-  status: 'pending' | 'thinking' | 'done'
+  status: 'pending' | 'thinking' | 'done' | 'failed'
   startTime?: number  // timestamp ms
   endTime?: number    // timestamp ms
   duration?: number   // seconds
