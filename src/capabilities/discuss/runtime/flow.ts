@@ -62,6 +62,22 @@ function formatTimeSince(date: Date): string {
   return `${days}d ago`
 }
 
+/** Read one line from stdin in cooked mode (IME-safe, no raw mode). */
+function readLineCooked(prompt: string): Promise<string> {
+  process.stdout.write(chalk.yellow(prompt))
+  return new Promise((resolve) => {
+    if (process.stdin.isPaused?.()) process.stdin.resume()
+    if (process.stdin.isTTY && process.stdin.isRaw) {
+      process.stdin.setRawMode(false)
+    }
+    const onData = (data: Buffer) => {
+      process.stdin.removeListener('data', onData)
+      resolve(data.toString().replace(/\r?\n$/, ''))
+    }
+    process.stdin.on('data', onData)
+  })
+}
+
 async function selectReviewers(availableIds: string[], rl?: ReturnType<typeof createInterface>): Promise<string[]> {
   // Use provided rl or create a temporary one
   const useExternalRl = !!rl
@@ -350,21 +366,7 @@ async function runDiscussion(
       currentRound = round + 1
     },
     onInteractive: options.interactive ? async () => {
-      process.stdout.write(chalk.yellow('\nPress Enter to continue, type to interject, or q to end: '))
-      return new Promise<string | null>((resolve) => {
-        if (process.stdin.isPaused?.()) process.stdin.resume()
-        // Ensure cooked mode so the terminal handles IME composition correctly;
-        // readline's raw mode causes CJK characters to be doubled.
-        if (process.stdin.isTTY && process.stdin.isRaw) {
-          process.stdin.setRawMode(false)
-        }
-        const onData = (data: Buffer) => {
-          process.stdin.removeListener('data', onData)
-          const answer = data.toString().replace(/\r?\n$/, '')
-          resolve(answer || null)
-        }
-        process.stdin.on('data', onData)
-      })
+      return (await readLineCooked('\nPress Enter to continue, type to interject, or q to end: ')) || null
     } : undefined
   }
 
@@ -540,6 +542,8 @@ export async function runDiscussFlow(input: RunDiscussFlowInput): Promise<Discus
         await interactiveFollowUp(session, selectedIds, config, options, stateManager, spinner, interruptState)
       }
 
+      // Release stdin so the process can exit
+      process.stdin.pause()
       console.log()
       return { exitCode: 0, summary: `Discussion completed for ${session.id}.` }
     } catch (error) {
@@ -574,23 +578,8 @@ async function interactiveFollowUp(
   spinner: ReturnType<typeof ora>,
   interruptState?: { interrupted: boolean }
 ): Promise<void> {
-  const readLine = (): Promise<string> => {
-    process.stdout.write(chalk.yellow('\nAsk a follow-up question (or Enter to end): '))
-    return new Promise((resolve) => {
-      if (process.stdin.isPaused?.()) process.stdin.resume()
-      if (process.stdin.isTTY && process.stdin.isRaw) {
-        process.stdin.setRawMode(false)
-      }
-      const onData = (data: Buffer) => {
-        process.stdin.removeListener('data', onData)
-        resolve(data.toString().replace(/\r?\n$/, ''))
-      }
-      process.stdin.on('data', onData)
-    })
-  }
-
   while (true) {
-    const answer = await readLine()
+    const answer = await readLineCooked('\nAsk a follow-up question (or Enter to end): ')
 
     if (!answer.trim()) {
       session.status = 'completed'
@@ -618,6 +607,9 @@ async function interactiveFollowUp(
     session.updatedAt = new Date()
     await stateManager.saveDiscussSession(session)
   }
+
+  // Allow process to exit by releasing stdin
+  process.stdin.pause()
 }
 
 async function handleListSessions(stateManager: StateManager, spinner: ReturnType<typeof ora>): Promise<void> {
@@ -732,6 +724,8 @@ async function handleResume(
     await interactiveFollowUp(session, validIds, config, options, stateManager, spinner, interruptState)
   }
 
+  // Allow process to exit by releasing stdin
+  process.stdin.pause()
   console.log()
 }
 

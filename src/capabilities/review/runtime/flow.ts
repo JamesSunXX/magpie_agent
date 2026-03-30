@@ -78,9 +78,9 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       }
 
       // Validate arguments (for non-repo review)
-      if (!options.local && !options.branch && !options.files && !pr) {
+      if (!options.local && !options.branch && !options.files && !options.commit && !pr) {
         spinner.fail('Error')
-        console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --files, or --repo'))
+        console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --commit, --files, or --repo'))
         commandExit(1)
       }
 
@@ -128,6 +128,22 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           prompt: reviewingLastCommit
             ? `Please review the following code changes from the last commit:\n\n\`\`\`diff\n${localDiff}\n\`\`\`\n\nAnalyze these changes and provide your feedback.`
             : `Please review the following local code changes (uncommitted diff):\n\n\`\`\`diff\n${localDiff}\n\`\`\`\n\nAnalyze these changes and provide your feedback.`
+        }
+      } else if (options.commit) {
+        spinner.text = 'Getting commit diff...'
+        const sha = options.commit
+        const commitDiff = filterDiff(execSync(`git diff ${sha}~1 ${sha}`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
+        if (!commitDiff.trim()) {
+          spinner.fail('No changes found in commit')
+          commandExit(1)
+        }
+        const commitMsg = execSync(`git log -1 --pretty=%s ${sha}`, { encoding: 'utf-8' }).trim()
+        const shortSha = sha.slice(0, 8)
+        spinner.succeed(`Reviewing commit ${shortSha}: "${commitMsg}" (${commitDiff.split('\n').length} lines)`)
+        target = {
+          type: 'commit',
+          label: `Commit ${shortSha}`,
+          prompt: `Please review the following code changes from commit ${sha} ("${commitMsg}"):\n\n\`\`\`diff\n${commitDiff}\n\`\`\`\n\nAnalyze these changes and provide your feedback.`
         }
       } else if (options.branch !== undefined) {
         const baseBranch = typeof options.branch === 'string' ? options.branch : 'main'
@@ -233,7 +249,7 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         }
       } else {
         spinner.fail('Error')
-        console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --files, or --repo'))
+        console.error(chalk.red('Error: Please specify a PR number or use --local, --branch, --commit, --files, or --repo'))
         commandExit(1)
       }
 

@@ -14,6 +14,7 @@ export interface ReviewCommandOptions extends Record<string, unknown> {
   converge?: boolean
   local?: boolean
   branch?: string | boolean
+  commit?: string
   files?: string[]
   gitRemote?: string
   reviewers?: string

@@ -13,7 +13,7 @@ dev:
 
 # Build the project
 build:
-	npm run build
+	npm run build &  npm link
 
 # Run tests in watch mode
 test:
