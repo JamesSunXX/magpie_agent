@@ -64,7 +64,8 @@ export class GeminiCliProvider implements AIProvider {
     return new Promise((resolve, reject) => {
       // Always use stream-json so session resume works (sessions created in
       // stream-json mode cannot be resumed with -o json).
-      const args = ['-y', '-o', 'stream-json', '-p', '-']
+      // -e "" disables extensions/MCP servers that can cause startup failures
+      const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
@@ -119,7 +120,8 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
-    const args = ['-y', '-o', 'stream-json', '-p', '-']
+    // -e "" disables extensions/MCP servers that can cause startup failures
+    const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
     }
