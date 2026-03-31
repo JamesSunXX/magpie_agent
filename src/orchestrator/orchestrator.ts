@@ -862,25 +862,33 @@ Use reviewer IDs: ${reviewerIds}`
       const messages = this.buildMessages(reviewer.id)
       messages.push({ role: 'user', content: summaryPrompt })
 
-      const summary = await this.chatWithOptionalOptions(
-        reviewer.provider,
-        messages,
-        reviewer.systemPrompt,
-        this.options.chatOptions?.reviewer
-      )
-      const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-      this.trackTokens(reviewer.id, inputText, summary)
+      try {
+        const summary = await this.chatWithOptionalOptions(
+          reviewer.provider,
+          messages,
+          reviewer.systemPrompt,
+          this.options.chatOptions?.reviewer
+        )
+        const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+        this.trackTokens(reviewer.id, inputText, summary)
 
-      summaries.push({
-        reviewerId: reviewer.id,
-        summary
-      })
+        summaries.push({
+          reviewerId: reviewer.id,
+          summary
+        })
+      } catch (error) {
+        this.noteReviewerFailure(reviewer.id, error)
+      }
     }
 
     return summaries
   }
 
   private async getFinalConclusion(summaries: DebateSummary[]): Promise<string> {
+    if (summaries.length === 0) {
+      return 'No summaries were collected — all reviewers failed during the summary phase.'
+    }
+
     const summaryText = summaries
       .map((s, i) => `Reviewer ${i + 1}:\n${s.summary}`)
       .join('\n\n---\n\n')
@@ -893,13 +901,29 @@ Use reviewer IDs: ${reviewerIds}`
 ${summaryText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.chatWithOptionalOptions(
-      this.summarizer.provider,
-      messages,
-      this.summarizer.systemPrompt,
-      this.options.chatOptions?.summarizer
-    )
-    this.trackTokens('summarizer', prompt + (this.summarizer.systemPrompt || ''), response)
-    return response
+
+    // Try summarizer first, fall back to any working reviewer
+    const fallbackProviders = [
+      { provider: this.summarizer.provider, systemPrompt: this.summarizer.systemPrompt, id: 'summarizer' },
+      ...this.getActiveReviewers().map(r => ({ provider: r.provider, systemPrompt: r.systemPrompt, id: r.id }))
+    ]
+
+    for (const { provider, systemPrompt, id } of fallbackProviders) {
+      try {
+        const response = await this.chatWithOptionalOptions(
+          provider,
+          messages,
+          systemPrompt,
+          this.options.chatOptions?.summarizer
+        )
+        this.trackTokens('summarizer', prompt + (systemPrompt || ''), response)
+        return response
+      } catch (error) {
+        logger.warn(`[DebateOrchestrator] ${id} failed during conclusion: ${error instanceof Error ? error.message : error}`)
+      }
+    }
+
+    // All providers failed — synthesize from collected summaries
+    return `Auto-generated conclusion (all providers failed):\n\n${summaryText}`
   }
 }

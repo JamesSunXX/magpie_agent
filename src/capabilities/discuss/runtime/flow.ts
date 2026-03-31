@@ -62,19 +62,15 @@ function formatTimeSince(date: Date): string {
   return `${days}d ago`
 }
 
-/** Read one line from stdin in cooked mode (IME-safe, no raw mode). */
-function readLineCooked(prompt: string): Promise<string> {
-  process.stdout.write(chalk.yellow(prompt))
+/** Read one line with full line-editing support (arrow keys, backspace, etc). */
+function readLinePrompt(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     if (process.stdin.isPaused?.()) process.stdin.resume()
-    if (process.stdin.isTTY && process.stdin.isRaw) {
-      process.stdin.setRawMode(false)
-    }
-    const onData = (data: Buffer) => {
-      process.stdin.removeListener('data', onData)
-      resolve(data.toString().replace(/\r?\n$/, ''))
-    }
-    process.stdin.on('data', onData)
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    rl.question(chalk.yellow(prompt), (answer) => {
+      rl.close()
+      resolve(answer)
+    })
   })
 }
 
@@ -366,7 +362,7 @@ async function runDiscussion(
       currentRound = round + 1
     },
     onInteractive: options.interactive ? async () => {
-      return (await readLineCooked('\nPress Enter to continue, type to interject, or q to end: ')) || null
+      return (await readLinePrompt('\nPress Enter to continue, type to interject, or q to end: ')) || null
     } : undefined
   }
 
@@ -579,7 +575,7 @@ async function interactiveFollowUp(
   interruptState?: { interrupted: boolean }
 ): Promise<void> {
   while (true) {
-    const answer = await readLineCooked('\nAsk a follow-up question (or Enter to end): ')
+    const answer = await readLinePrompt('\nAsk a follow-up question (or Enter to end): ')
 
     if (!answer.trim()) {
       session.status = 'completed'
@@ -680,10 +676,29 @@ async function handleResume(
   }
 
   const selectedIds = session.reviewerIds
-  // Validate reviewers still exist in config
+  // Allow overriding reviewers via --reviewers or --all
   const allReviewerIds = Object.keys(config.reviewers)
-  const validIds = selectedIds.filter(id => allReviewerIds.includes(id))
-  if (validIds.length < 2) {
+  let validIds: string[]
+
+  if (options.reviewers) {
+    validIds = options.reviewers.split(',').map((s: string) => s.trim())
+    const invalid = validIds.filter(id => !allReviewerIds.includes(id))
+    if (invalid.length > 0) {
+      spinner.fail(`Unknown reviewer(s): ${invalid.join(', ')}`)
+      console.log(chalk.dim(`  Available: ${allReviewerIds.join(', ')}`))
+      return
+    }
+    // Update session with new reviewers
+    session.reviewerIds = validIds
+  } else if (options.all) {
+    validIds = allReviewerIds
+    session.reviewerIds = validIds
+  } else {
+    // Validate original reviewers still exist in config
+    validIds = selectedIds.filter(id => allReviewerIds.includes(id))
+  }
+
+  if (validIds.length < 1) {
     spinner.fail('Not enough configured reviewers match this session')
     return
   }
