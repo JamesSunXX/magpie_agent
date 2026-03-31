@@ -62,7 +62,9 @@ export class GeminiCliProvider implements AIProvider {
 
   private runGemini(prompt: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args = ['-y', '-o', 'json', '-p', '-']
+      // Always use stream-json so session resume works (sessions created in
+      // stream-json mode cannot be resumed with -o json).
+      const args = ['-y', '-o', 'stream-json', '-p', '-']
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
@@ -90,17 +92,23 @@ export class GeminiCliProvider implements AIProvider {
         if (code !== 0) {
           reject(new Error(`Gemini CLI exited with code ${code}: ${error}`))
         } else {
-          try {
-            const json = JSON.parse(output.trim())
-            // Capture session_id from response
-            if (this.sessionEnabled && json.session_id) {
-              this.session.sessionId = json.session_id
+          // Parse NDJSON lines and collect assistant messages
+          let result = ''
+          for (const line of output.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+            try {
+              const event = JSON.parse(trimmed)
+              if (event.type === 'init' && event.session_id && this.sessionEnabled) {
+                this.session.sessionId = event.session_id
+              } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
+                result += event.content
+              }
+            } catch {
+              // ignore non-JSON lines
             }
-            resolve(json.response || '')
-          } catch {
-            // Fallback: treat as plain text if JSON parsing fails
-            resolve(output.trim())
           }
+          resolve(result)
         }
       })
 
@@ -128,6 +136,7 @@ export class GeminiCliProvider implements AIProvider {
     let resolveNext: ((value: { chunk: string | null }) => void) | null = null
     let done = false
     let error: Error | null = null
+    let stderrBuf = ''
     let lastActivity = Date.now()
     let lineBuf = ''  // Buffer for NDJSON line parsing
 
@@ -176,8 +185,9 @@ export class GeminiCliProvider implements AIProvider {
       }
     })
 
-    child.stderr.on('data', (_data) => {
-      lastActivity = Date.now()  // Activity on stderr also counts
+    child.stderr.on('data', (data) => {
+      lastActivity = Date.now()
+      stderrBuf += data.toString()
     })
 
     child.on('close', (code) => {
@@ -197,7 +207,7 @@ export class GeminiCliProvider implements AIProvider {
       }
       done = true
       if (code !== 0 && !error) {
-        error = new Error(`Gemini CLI exited with code ${code}`)
+        error = new Error(`Gemini CLI exited with code ${code}${stderrBuf ? ': ' + stderrBuf.slice(0, 500) : ''}`)
       }
       if (resolveNext) {
         resolveNext({ chunk: null })
