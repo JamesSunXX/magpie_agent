@@ -28,6 +28,13 @@ describe('CLI program', () => {
     ])
   })
 
+  it('registers stats as a top-level command', () => {
+    const program = createProgram()
+    const stats = program.commands.find((command) => command.name() === 'stats')
+
+    expect(stats).toBeTruthy()
+  })
+
   it('documents repo review as a valid mode without a PR argument', () => {
     const program = createProgram()
     const review = program.commands.find((command) => command.name() === 'review')
