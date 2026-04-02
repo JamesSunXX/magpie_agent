@@ -53,7 +53,7 @@ describe('capability runtime CLI commands', () => {
     getTypedCapability.mockReturnValue({ name: 'discuss' })
     const { discussCommand } = await import('../../src/cli/commands/discuss.js')
 
-    await discussCommand.parseAsync(['node', 'discuss', 'topic', '--rounds', '2', '--reviewers', 'claude'], {
+    await discussCommand.parseAsync(['node', 'discuss', 'topic', '--rounds', '2', '--reviewers', 'claude', '--plan-report'], {
       from: 'node',
     })
 
@@ -65,6 +65,7 @@ describe('capability runtime CLI commands', () => {
         options: expect.objectContaining({
           rounds: '2',
           reviewers: 'claude',
+          planReport: true,
         }),
       }),
       expect.any(Object)

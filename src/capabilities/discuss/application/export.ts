@@ -12,10 +12,23 @@ export interface ExportDiscussSessionInput {
   cwd: string
 }
 
+export interface WriteDiscussArtifactsInput {
+  session: DiscussSession
+  discussionResult: unknown
+  options: DiscussOptions
+  config: MagpieConfigV2
+  cwd: string
+}
+
 export interface DiscussExportResult {
   kind: 'plan' | 'discussion'
   outputFile: string
   sessionId: string
+}
+
+export interface DiscussArtifactWriteResult {
+  discussionOutputFile?: string
+  planOutputFile?: string
 }
 
 const DISCUSS_PLAN_REPORT_SYSTEM_PROMPT = `You convert a completed discussion into an actionable implementation plan report.
@@ -26,15 +39,11 @@ Only include claims that are supported by the discussion content.
 If a detail is still unclear or disputed, mark it explicitly as unresolved.`
 
 export function validateDiscussExportOptions(options: DiscussOptions): string | undefined {
-  if (options.planReport && !options.export) {
-    return '--plan-report requires --export <id>'
-  }
-
-  if (options.planReport && options.conclusion) {
+  if (options.planReport && options.export && options.conclusion) {
     return '--plan-report cannot be combined with --conclusion'
   }
 
-  if (options.planReport && options.format === 'json') {
+  if (options.planReport && options.export && options.format === 'json') {
     return '--plan-report currently supports markdown output only'
   }
 
@@ -130,6 +139,14 @@ async function generateDiscussPlanReport(
   )
 }
 
+function renderDiscussionOutput(discussionResult: unknown, session: DiscussSession, options: DiscussOptions): string {
+  if (options.format === 'json') {
+    return JSON.stringify(discussionResult, null, 2)
+  }
+
+  return formatDiscussMarkdown(session)
+}
+
 function resolveOutputFile(session: DiscussSession, options: DiscussOptions): string {
   if (options.output) {
     return options.output
@@ -142,6 +159,12 @@ function resolveOutputFile(session: DiscussSession, options: DiscussOptions): st
   return `discuss-${session.id}.md`
 }
 
+function resolvePlanOutputFile(session: DiscussSession, options: DiscussOptions): string {
+  return options.export && options.output
+    ? options.output
+    : `discuss-plan-${session.id}.md`
+}
+
 function renderStandardDiscussExport(session: DiscussSession, options: DiscussOptions): string {
   if (options.format === 'json') {
     return JSON.stringify(session, null, 2)
@@ -150,17 +173,40 @@ function renderStandardDiscussExport(session: DiscussSession, options: DiscussOp
   return options.conclusion ? formatDiscussConclusion(session) : formatDiscussMarkdown(session)
 }
 
+export async function writeDiscussArtifacts(input: WriteDiscussArtifactsInput): Promise<DiscussArtifactWriteResult> {
+  const output: DiscussArtifactWriteResult = {}
+
+  if (input.options.output) {
+    writeFileSync(input.options.output, renderDiscussionOutput(input.discussionResult, input.session, input.options), 'utf-8')
+    output.discussionOutputFile = input.options.output
+  }
+
+  if (input.options.planReport) {
+    const planOutputFile = resolvePlanOutputFile(input.session, input.options)
+    const planContent = await generateDiscussPlanReport(input.session, input.config, input.cwd)
+    writeFileSync(planOutputFile, planContent, 'utf-8')
+    output.planOutputFile = planOutputFile
+  }
+
+  return output
+}
+
 export async function exportDiscussSession(input: ExportDiscussSessionInput): Promise<DiscussExportResult> {
   const validationError = validateDiscussExportOptions(input.options)
   if (validationError) {
     throw new Error(validationError)
   }
+  if (!input.options.export) {
+    throw new Error('--plan-report requires --export <id>')
+  }
 
   const stateManager = new StateManager(input.cwd)
   await stateManager.initDiscussions()
   const sessions = await stateManager.listDiscussSessions()
-  const session = resolveMatchedSession(sessions, input.options.export!)
-  const outputFile = resolveOutputFile(session, input.options)
+  const session = resolveMatchedSession(sessions, input.options.export)
+  const outputFile = input.options.planReport
+    ? resolvePlanOutputFile(session, input.options)
+    : resolveOutputFile(session, input.options)
 
   const content = input.options.planReport
     ? await generateDiscussPlanReport(session, loadConfig(input.options.config), input.cwd)

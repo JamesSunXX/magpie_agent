@@ -214,6 +214,7 @@ magpie discuss [topic] [options]
 ```bash
 magpie discuss "Should we keep legacy commands?"
 magpie discuss ./notes/topic.md --devil-advocate
+magpie discuss "Should we migrate now?" --plan-report
 magpie discuss --list
 magpie discuss --resume <id>
 magpie discuss --export <id> --plan-report
@@ -232,7 +233,7 @@ magpie discuss --export <id> --plan-report
 - `--resume <id>`
 - `--export <id>`
 - `--conclusion`
-- `--plan-report`：导出可实施计划报告，会额外调用一次模型，仅支持 Markdown
+- `--plan-report`：讨论结束后自动生成可实施计划报告；导出时也可单独生成，会额外调用一次模型，计划报告仅支持 Markdown
 
 ### `trd`
 

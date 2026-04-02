@@ -7,9 +7,12 @@ const createDefaultCapabilityRegistry = vi.fn()
 
 vi.mock('../../src/capabilities/discuss/application/export.js', () => ({
   exportDiscussSession,
-  validateDiscussExportOptions: vi.fn((options: { export?: string; planReport?: boolean }) => {
-    if (options.planReport && !options.export) {
-      return '--plan-report requires --export <id>'
+  validateDiscussExportOptions: vi.fn((options: { export?: string; planReport?: boolean; format?: string; conclusion?: boolean }) => {
+    if (options.planReport && options.export && options.format === 'json') {
+      return '--plan-report currently supports markdown output only'
+    }
+    if (options.planReport && options.export && options.conclusion) {
+      return '--plan-report cannot be combined with --conclusion'
     }
     return undefined
   }),
@@ -41,19 +44,23 @@ describe('discuss export command', () => {
     })
   })
 
-  it('prints an error when --plan-report is used without --export', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  it('passes --plan-report through to the normal discuss runtime when not exporting', async () => {
     const { discussCommand } = await import('../../src/cli/commands/discuss.js')
 
     await discussCommand.parseAsync(['node', 'discuss', 'topic', '--plan-report'], {
       from: 'node',
     })
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('--plan-report requires --export <id>'))
-    expect(runCapability).not.toHaveBeenCalled()
-    expect(process.exitCode).toBe(1)
-
-    errorSpy.mockRestore()
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'discuss' },
+      expect.objectContaining({
+        topic: 'topic',
+        options: expect.objectContaining({
+          planReport: true,
+        }),
+      }),
+      expect.any(Object)
+    )
   })
 
   it('exports a plan report and prints a Plan artifact line', async () => {

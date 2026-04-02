@@ -5,6 +5,7 @@ import type { AIProvider } from '../../../src/providers/types.js'
 import {
   buildDiscussPlanReportPrompt,
   exportDiscussSession,
+  writeDiscussArtifacts,
   validateDiscussExportOptions,
 } from '../../../src/capabilities/discuss/application/export.js'
 import { loadConfig } from '../../../src/platform/config/loader.js'
@@ -89,6 +90,22 @@ const session: DiscussSession = {
   ],
 }
 
+const config: MagpieConfigV2 = {
+  providers: {},
+  defaults: {},
+  reviewers: {},
+  summarizer: {
+    model: 'mock',
+    prompt: 'summarize',
+  },
+  analyzer: {
+    model: 'mock',
+    prompt: 'analyze',
+  },
+  capabilities: {},
+  integrations: {},
+} as MagpieConfigV2
+
 describe('discuss export helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -102,27 +119,7 @@ describe('discuss export helpers', () => {
       chatStream: vi.fn(),
       setCwd,
     } as unknown as AIProvider)
-    vi.mocked(loadConfig).mockReturnValue({
-      providers: {},
-      defaults: {},
-      reviewers: {},
-      summarizer: {
-        model: 'mock',
-        prompt: 'summarize',
-      },
-      analyzer: {
-        model: 'mock',
-        prompt: 'analyze',
-      },
-      capabilities: {},
-      integrations: {},
-    } as MagpieConfigV2)
-  })
-
-  it('rejects plan report mode without export id', () => {
-    expect(validateDiscussExportOptions({
-      planReport: true,
-    })).toBe('--plan-report requires --export <id>')
+    vi.mocked(loadConfig).mockReturnValue(config)
   })
 
   it('rejects json plan report exports', () => {
@@ -181,6 +178,13 @@ describe('discuss export helpers', () => {
       outputFile: 'discuss-plan-disc-1234.md',
       sessionId: 'disc-1234',
     })
+  })
+
+  it('allows --plan-report with json format during a normal discussion run', () => {
+    expect(validateDiscussExportOptions({
+      planReport: true,
+      format: 'json',
+    })).toBeUndefined()
   })
 
   it('writes a standard markdown export without extra model calls', async () => {
@@ -262,5 +266,26 @@ describe('discuss export helpers', () => {
       },
       cwd: '/repo',
     })).rejects.toThrow('Multiple sessions match "disc-1234"')
+  })
+
+  it('writes both the discussion output and the automatic plan report when requested', async () => {
+    const artifactResult = await writeDiscussArtifacts({
+      session,
+      discussionResult: { hello: 'world' },
+      options: {
+        output: '/tmp/discussion.json',
+        format: 'json',
+        planReport: true,
+      },
+      config,
+      cwd: '/repo',
+    })
+
+    expect(writeFileSync).toHaveBeenNthCalledWith(1, '/tmp/discussion.json', JSON.stringify({ hello: 'world' }, null, 2), 'utf-8')
+    expect(writeFileSync).toHaveBeenNthCalledWith(2, 'discuss-plan-disc-1234.md', '# Plan Report\n\n## Background\n\n...', 'utf-8')
+    expect(artifactResult).toEqual({
+      discussionOutputFile: '/tmp/discussion.json',
+      planOutputFile: 'discuss-plan-disc-1234.md',
+    })
   })
 })

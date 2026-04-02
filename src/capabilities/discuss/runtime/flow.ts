@@ -1,7 +1,7 @@
 import chalk from 'chalk'
 import ora from 'ora'
 import crypto from 'crypto'
-import { readFileSync, existsSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import type { MagpieConfigV2 } from '../../../platform/config/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import type { DebateResult, OrchestratorOptions, Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
@@ -14,6 +14,7 @@ import TerminalRenderer from 'marked-terminal'
 import { loadProjectContext } from '../../../utils/context-loader.js'
 import { runDebateSession } from '../../../core/debate/runner.js'
 import { CommandExitError, commandExit, runInCommandContext } from '../../../core/capability/command-context.js'
+import { writeDiscussArtifacts } from '../application/export.js'
 import type { DiscussFlowResult, DiscussOptions, RunDiscussFlowInput } from '../types.js'
 
 marked.setOptions({
@@ -523,19 +524,24 @@ export async function runDiscussFlow(input: RunDiscussFlowInput): Promise<Discus
       console.log(chalk.dim(`\n  Session saved: ${session.id}`))
       console.log(chalk.dim(`  Resume with: magpie discuss --resume ${session.id} "follow-up question"`))
 
-      // Handle output file
-      if (options.output) {
-        if (options.format === 'json') {
-          writeFileSync(options.output, JSON.stringify(result, null, 2))
-        } else {
-          writeFileSync(options.output, formatDiscussMarkdown(session))
-        }
-        console.log(chalk.green(`\n  Output saved to: ${options.output}`))
-      }
-
       // Interactive: ask for follow-up
       if (options.interactive) {
         await interactiveFollowUp(session, selectedIds, config, options, stateManager, spinner, interruptState)
+      }
+
+      const artifacts = await writeDiscussArtifacts({
+        session,
+        discussionResult: result,
+        options,
+        config,
+        cwd: process.cwd(),
+      })
+      if (artifacts.discussionOutputFile) {
+        console.log(chalk.green(`\n  Output saved to: ${artifacts.discussionOutputFile}`))
+      }
+      if (artifacts.planOutputFile) {
+        console.log(chalk.green(`\n  Plan report saved to: ${artifacts.planOutputFile}`))
+        console.log(`Plan: ${artifacts.planOutputFile}`)
       }
 
       // Release stdin so the process can exit
@@ -725,18 +731,37 @@ async function handleResume(
     await stateManager.saveDiscussSession(session)
 
     console.log(chalk.dim(`\n  Session updated: ${session.id}`))
-
-    if (options.output) {
-      if (options.format === 'json') {
-        writeFileSync(options.output, JSON.stringify(session, null, 2))
-      } else {
-        writeFileSync(options.output, formatDiscussMarkdown(session))
-      }
-      console.log(chalk.green(`\n  Output saved to: ${options.output}`))
+    const artifacts = await writeDiscussArtifacts({
+      session,
+      discussionResult: result,
+      options,
+      config,
+      cwd: process.cwd(),
+    })
+    if (artifacts.discussionOutputFile) {
+      console.log(chalk.green(`\n  Output saved to: ${artifacts.discussionOutputFile}`))
+    }
+    if (artifacts.planOutputFile) {
+      console.log(chalk.green(`\n  Plan report saved to: ${artifacts.planOutputFile}`))
+      console.log(`Plan: ${artifacts.planOutputFile}`)
     }
   } else {
     // Interactive mode: ask for follow-up
     await interactiveFollowUp(session, validIds, config, options, stateManager, spinner, interruptState)
+    const artifacts = await writeDiscussArtifacts({
+      session,
+      discussionResult: session,
+      options,
+      config,
+      cwd: process.cwd(),
+    })
+    if (artifacts.discussionOutputFile) {
+      console.log(chalk.green(`\n  Output saved to: ${artifacts.discussionOutputFile}`))
+    }
+    if (artifacts.planOutputFile) {
+      console.log(chalk.green(`\n  Plan report saved to: ${artifacts.planOutputFile}`))
+      console.log(`Plan: ${artifacts.planOutputFile}`)
+    }
   }
 
   // Allow process to exit by releasing stdin
