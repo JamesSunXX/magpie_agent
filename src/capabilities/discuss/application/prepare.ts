@@ -17,6 +17,7 @@ function normalizeDiscussOptions(input: DiscussCapabilityInput): DiscussOptions 
     list: source.list,
     resume: source.resume,
     config: source.config,
+    planReport: source.planReport,
   }
 }
 

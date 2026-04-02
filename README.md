@@ -216,6 +216,7 @@ magpie discuss "Should we keep legacy commands?"
 magpie discuss ./notes/topic.md --devil-advocate
 magpie discuss --list
 magpie discuss --resume <id>
+magpie discuss --export <id> --plan-report
 ```
 
 重要参数：
@@ -229,6 +230,9 @@ magpie discuss --resume <id>
 - `-d, --devil-advocate`
 - `--list`
 - `--resume <id>`
+- `--export <id>`
+- `--conclusion`
+- `--plan-report`：导出可实施计划报告，会额外调用一次模型，仅支持 Markdown
 
 ### `trd`
 

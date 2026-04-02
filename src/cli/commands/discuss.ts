@@ -1,12 +1,10 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { writeFileSync } from 'fs'
 import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
-import { StateManager } from '../../core/state/index.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
-import { formatDiscussMarkdown, formatDiscussConclusion } from '../../capabilities/discuss/runtime/flow.js'
+import { exportDiscussSession, validateDiscussExportOptions } from '../../capabilities/discuss/application/export.js'
 import type {
   DiscussCapabilityInput,
   DiscussOptions,
@@ -31,41 +29,34 @@ export const discussCommand = new Command('discuss')
   .option('--resume <id>', 'Resume a discuss session')
   .option('--export <id>', 'Export a discuss session to file')
   .option('--conclusion', 'Export only the final conclusion (use with --export)')
+  .option('--plan-report', 'Generate an actionable markdown plan report when exporting (makes an additional AI call)')
   .action(async (topic: string | undefined, options: DiscussOptions) => {
-    // Handle --export: pure local operation, no AI calls
+    const validationError = validateDiscussExportOptions(options)
+    if (validationError) {
+      console.error(chalk.red(`Error: ${validationError}`))
+      process.exitCode = 1
+      return
+    }
+
     if (options.export) {
       try {
-        const stateManager = new StateManager(process.cwd())
-        await stateManager.initDiscussions()
-        const sessions = await stateManager.listDiscussSessions()
-        const match = sessions.filter(s => s.id.startsWith(options.export!) || s.id === options.export)
-
-        if (match.length === 0) {
-          console.error(chalk.red(`No session found matching "${options.export}"`))
-          console.error(chalk.dim('  Use magpie discuss --list to see available sessions'))
-          process.exitCode = 1
-          return
-        }
-        if (match.length > 1) {
-          console.error(chalk.red(`Multiple sessions match "${options.export}"`))
-          match.forEach(s => console.error(chalk.dim(`  - ${s.id} ${s.title}`)))
-          process.exitCode = 1
-          return
-        }
-
-        const session = match[0]
-        const outputFile = options.output || `discuss-${session.id}.md`
-        const format = options.format || 'markdown'
-
-        if (format === 'json') {
-          writeFileSync(outputFile, JSON.stringify(session, null, 2))
+        const result = await exportDiscussSession({
+          options,
+          cwd: process.cwd(),
+        })
+        if (result.kind === 'plan') {
+          console.log(chalk.green(`Exported plan report ${result.sessionId} to ${result.outputFile}`))
+          console.log(`Plan: ${result.outputFile}`)
         } else {
-          writeFileSync(outputFile, options.conclusion ? formatDiscussConclusion(session) : formatDiscussMarkdown(session))
+          console.log(chalk.green(`Exported session ${result.sessionId} to ${result.outputFile}`))
         }
-        console.log(chalk.green(`Exported session ${session.id} to ${outputFile}`))
         return
       } catch (error) {
-        console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`))
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(chalk.red(`Error: ${message}`))
+        if (message.startsWith('No session found matching')) {
+          console.error(chalk.dim('  Use magpie discuss --list to see available sessions'))
+        }
         process.exitCode = 1
         return
       }
