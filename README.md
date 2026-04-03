@@ -66,7 +66,20 @@ reviewers:
 ```
 
 如果不写 `agent`，Magpie 会先尝试使用该配置项名称（例如 `backend`），找不到时回退到 `kiro_default`。
-每次调用前，Magpie 会检查 `agents/kiro-config`，仅在版本或内容变化时才同步到 `~/.kiro`，然后用解析出的 agent 启动 Kiro。
+如果仓库里有 `agents/kiro-config`，Magpie 会在调用前检查它，并在版本或内容变化时同步到 `~/.kiro`。如果仓库里没有这套项目配置，Magpie 会直接复用当前机器上已经存在的 Kiro agent。
+
+### CLI provider 超时控制
+
+对于 `codex` 和 `kiro` 这类 CLI provider，建议配置超时，避免长时间无结果的挂起：
+
+```bash
+MAGPIE_CODEX_TIMEOUT_MS=120000 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --no-wait-human
+```
+
+说明：
+
+- `MAGPIE_CODEX_TIMEOUT_MS`：`codex` 单次调用超时（毫秒），`0` 表示不启用超时
+- `MAGPIE_KIRO_TIMEOUT_MS`：`kiro` 单次调用超时（毫秒），`0` 表示不启用超时
 
 ## 安装
 

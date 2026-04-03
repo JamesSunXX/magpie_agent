@@ -55,3 +55,11 @@
 - Never commit API keys or `.env` secrets.
 - Configure providers via `~/.magpie/config.yaml` and environment variables.
 - Use the `mock` provider for safe local workflow testing when real model calls are unnecessary.
+
+## Project Basic Skills
+- Baseline skill file: `skills/project-baseline/SKILL.md`
+- Default autonomous loop mode in this project:
+  - use `codex` as loop model
+  - run with `--no-wait-human`
+  - set `MAGPIE_CODEX_TIMEOUT_MS` (recommended `120000`) to avoid indefinite hangs
+  - monitor execution in real time and report status changes

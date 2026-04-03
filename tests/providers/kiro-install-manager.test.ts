@@ -5,7 +5,9 @@ import {
   ensureKiroInstall,
   getKiroHome,
   getKiroInstallMetadataPath,
+  hasKiroAgent,
   readExpectedKiroSourceVersion,
+  resolveInstalledKiroAgent,
 } from '../../src/providers/kiro-install.js'
 
 vi.mock('child_process', () => ({
@@ -131,5 +133,61 @@ describe('kiro install manager', () => {
 
     expect(getKiroHome()).toBe('/tmp/override-home')
     expect(getKiroInstallMetadataPath()).toBe('/tmp/override-home/.magpie/kiro-install.json')
+  })
+
+  it('detects installed agents from markdown files in either agent directory name', () => {
+    mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+      const p = String(path)
+      return p === '/tmp/kiro-home/agent/architect.md'
+    })
+
+    expect(hasKiroAgent('/tmp/kiro-home', 'architect')).toBe(true)
+  })
+
+  it('resolves installed agents from workspace or global kiro directories', () => {
+    process.env.KIRO_HOME = '/tmp/kiro-home'
+    mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+      const p = String(path)
+      return p === '/repo/.kiro/agents/architect.md'
+        || p === '/tmp/kiro-home/agents/architect.json'
+    })
+
+    expect(resolveInstalledKiroAgent({
+      cwd: '/repo',
+      desiredAgent: 'architect',
+    })).toBe('architect')
+  })
+
+  it('skips reinstall when the desired agent already exists as markdown', () => {
+    const home = '/tmp/kiro-home'
+    process.env.KIRO_HOME = home
+    const metadataPath = `${home}/.magpie/kiro-install.json`
+
+    mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+      const p = String(path)
+      if (p === `${home}/agents`) return true
+      if (p === `${home}/prompts`) return true
+      if (p === `${home}/skills`) return true
+      if (p === `${home}/hooks`) return true
+      if (p === metadataPath) return true
+      if (p === `${home}/agents/architect.md`) return true
+      return false
+    })
+    mockReadFileSync.mockReturnValue(JSON.stringify({ sourceVersion: 'v4' }) as never)
+    mockExecFileSync.mockImplementation((_cmd: string, args: readonly string[]) => {
+      if (args[0] === '-lc') return 'v4\n' as never
+      throw new Error('install should not be called')
+    })
+
+    const result = ensureKiroInstall({
+      sourceDir: '/repo/agents/kiro-config',
+      desiredAgent: 'architect',
+    })
+
+    expect(result).toEqual({
+      selectedAgent: 'architect',
+      installed: false,
+    })
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1)
   })
 })

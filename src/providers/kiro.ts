@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
-import { ensureKiroInstall } from './kiro-install.js'
+import { ensureKiroInstall, resolveInstalledKiroAgent } from './kiro-install.js'
 
 export class KiroProvider implements AIProvider {
     name = 'kiro'
@@ -44,8 +44,10 @@ export class KiroProvider implements AIProvider {
     async resolveAgent(): Promise<string> {
         const sourceDir = join(this.cwd, 'agents', 'kiro-config')
         if (!existsSync(sourceDir)) {
-            const bindingHint = this.logicalName ? ` (binding: ${this.logicalName})` : ''
-            throw new Error(`Kiro config source not found: ${sourceDir}${bindingHint}`)
+            return resolveInstalledKiroAgent({
+                cwd: this.cwd,
+                desiredAgent: this.desiredAgent,
+            })
         }
 
         return ensureKiroInstall({
