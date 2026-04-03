@@ -57,7 +57,7 @@
 - Use the `mock` provider for safe local workflow testing when real model calls are unnecessary.
 
 ## Project Basic Skills
-- Baseline skill file: `skills/project-baseline/SKILL.md`
+- Baseline skill file: `~/.codex/skills/project-baseline/SKILL.md`
 - Default autonomous loop mode in this project:
   - use `codex` as loop model
   - run with `--no-wait-human`
