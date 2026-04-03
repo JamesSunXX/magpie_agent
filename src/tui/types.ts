@@ -4,13 +4,44 @@ export type ReviewMode = 'local' | 'branch' | 'files' | 'repo'
 
 export type FieldType = 'text' | 'select' | 'toggle'
 
+export type TaskFieldId =
+  | 'mode'
+  | 'branchBase'
+  | 'files'
+  | 'path'
+  | 'ignore'
+  | 'reviewers'
+  | 'all'
+  | 'quick'
+  | 'deep'
+  | 'format'
+  | 'output'
+  | 'pr'
+  | 'prdPath'
+  | 'questionsOutput'
+  | 'autoAcceptDomains'
+  | 'domainOverviewOnly'
+  | 'domainsFile'
+  | 'goal'
+  | 'planningItem'
+  | 'waitHuman'
+  | 'dryRun'
+  | 'maxIterations'
+  | 'issue'
+  | 'apply'
+  | 'verifyCommand'
+
+export type TaskValue = string | boolean | undefined
+
+export type TaskValues = Partial<Record<TaskFieldId, TaskValue>>
+
 export interface FieldOption {
   label: string
   value: string
 }
 
-export interface TaskField {
-  id: string
+export interface TaskField<TId extends TaskFieldId = TaskFieldId> {
+  id: TId
   label: string
   type: FieldType
   description?: string
@@ -18,7 +49,13 @@ export interface TaskField {
   advanced?: boolean
   placeholder?: string
   options?: FieldOption[]
-  visibleWhen?: (values: Record<string, string | boolean | undefined>) => boolean
+  visibleWhen?: (values: TaskValues) => boolean
+}
+
+export interface BuiltCommand {
+  argv: string[]
+  display: string
+  summary: string
 }
 
 export interface TaskDefinition {
@@ -26,19 +63,14 @@ export interface TaskDefinition {
   title: string
   description: string
   fields: TaskField[]
-  defaults: Record<string, string | boolean | undefined>
+  defaults: TaskValues
+  buildCommand: (values: TaskValues) => BuiltCommand
 }
 
 export interface TaskDraft {
   taskId: TaskId
-  values: Record<string, string | boolean | undefined>
+  values: TaskValues
   showAdvanced: boolean
-}
-
-export interface BuiltCommand {
-  argv: string[]
-  display: string
-  summary: string
 }
 
 export interface SessionCard {

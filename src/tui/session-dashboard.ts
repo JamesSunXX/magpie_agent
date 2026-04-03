@@ -60,19 +60,18 @@ function toArtifactPaths(artifacts: Record<string, string> | undefined): string[
 async function readJsonFiles<T>(dir: string): Promise<T[]> {
   try {
     const entries = await readdir(dir)
-    const results = await Promise.all(entries.filter((entry) => entry.endsWith('.json')).map(async (entry) => {
+    return Promise.all(entries.filter((entry) => entry.endsWith('.json')).map(async (entry) => {
       const filePath = join(dir, entry)
       return JSON.parse(await readFile(filePath, 'utf-8')) as T
     }))
-    return results
   } catch {
     return []
   }
 }
 
-async function loadWorkflowSessions(magpieHomeDir: string): Promise<SessionCard[]> {
+async function loadWorkflowSessions(magpieHomeDir: string): Promise<WorkflowSessionFile[]> {
   const baseDir = join(magpieHomeDir, 'workflow-sessions')
-  const cards: SessionCard[] = []
+  const sessions: WorkflowSessionFile[] = []
 
   try {
     const capabilityDirs = await readdir(baseDir)
@@ -84,15 +83,7 @@ async function loadWorkflowSessions(magpieHomeDir: string): Promise<SessionCard[
         const filePath = join(capabilityDir, sessionDir, 'session.json')
 
         try {
-          const raw = JSON.parse(await readFile(filePath, 'utf-8')) as WorkflowSessionFile
-          cards.push({
-            id: raw.id,
-            capability: raw.capability,
-            title: raw.title,
-            status: raw.status,
-            updatedAt: new Date(raw.updatedAt),
-            artifactPaths: toArtifactPaths(raw.artifacts),
-          })
+          sessions.push(JSON.parse(await readFile(filePath, 'utf-8')) as WorkflowSessionFile)
         } catch {
           // Ignore malformed workflow sessions.
         }
@@ -102,7 +93,7 @@ async function loadWorkflowSessions(magpieHomeDir: string): Promise<SessionCard[
     return []
   }
 
-  return cards
+  return sessions
 }
 
 function isContinuable(card: SessionCard): boolean {
@@ -131,6 +122,68 @@ function normalizeSessionTitle(title: string | undefined, fallback: string): str
   return preferred || fallback
 }
 
+function mapReviewSession(session: ReviewSessionFile): SessionCard {
+  return withResumeCommand({
+    id: session.id,
+    capability: 'review',
+    title: 'Repository review',
+    status: session.status,
+    updatedAt: new Date(session.updatedAt),
+    artifactPaths: [],
+  })
+}
+
+function mapDiscussSession(session: DiscussSessionFile): SessionCard {
+  return withResumeCommand({
+    id: session.id,
+    capability: 'discuss',
+    title: normalizeSessionTitle(session.title, 'Discussion'),
+    status: session.status,
+    updatedAt: new Date(session.updatedAt),
+    artifactPaths: [],
+  })
+}
+
+function mapTrdSession(session: TrdSessionFile): SessionCard {
+  return withResumeCommand({
+    id: session.id,
+    capability: 'trd',
+    title: normalizeSessionTitle(session.title || session.prdPath, session.prdPath),
+    status: session.stage === 'completed' ? 'completed' : 'paused',
+    updatedAt: new Date(session.updatedAt),
+    artifactPaths: toArtifactPaths(session.artifacts),
+  })
+}
+
+function mapLoopSession(session: LoopSessionFile): SessionCard {
+  return withResumeCommand({
+    id: session.id,
+    capability: 'loop',
+    title: normalizeSessionTitle(session.title, 'Loop run'),
+    status: session.status,
+    updatedAt: new Date(session.updatedAt),
+    artifactPaths: toArtifactPaths(session.artifacts),
+  })
+}
+
+function mapWorkflowSession(session: WorkflowSessionFile): SessionCard {
+  return {
+    id: session.id,
+    capability: session.capability,
+    title: normalizeSessionTitle(session.title, session.capability),
+    status: session.status,
+    updatedAt: new Date(session.updatedAt),
+    artifactPaths: toArtifactPaths(session.artifacts),
+  }
+}
+
+function groupCards(cards: SessionCard[]): DashboardSessions {
+  return {
+    continue: cards.filter(isContinuable),
+    recent: cards.filter((card) => !isContinuable(card)),
+  }
+}
+
 export async function loadSessionDashboard(options: SessionDashboardOptions): Promise<DashboardSessions> {
   const magpieHomeDir = options.magpieHomeDir || getMagpieHomeDir()
   const reviewDir = join(options.cwd, '.magpie', 'sessions')
@@ -147,48 +200,14 @@ export async function loadSessionDashboard(options: SessionDashboardOptions): Pr
   ])
 
   const cards = [
-    ...reviewSessions.map((session) => withResumeCommand({
-      id: session.id,
-      capability: 'review',
-      title: 'Repository review',
-      status: session.status,
-      updatedAt: new Date(session.updatedAt),
-      artifactPaths: [],
-    })),
-    ...discussSessions.map((session) => withResumeCommand({
-      id: session.id,
-      capability: 'discuss',
-      title: normalizeSessionTitle(session.title, 'Discussion'),
-      status: session.status,
-      updatedAt: new Date(session.updatedAt),
-      artifactPaths: [],
-    })),
-    ...trdSessions.map((session) => withResumeCommand({
-      id: session.id,
-      capability: 'trd',
-      title: normalizeSessionTitle(session.title || session.prdPath, session.prdPath),
-      status: session.stage === 'completed' ? 'completed' : 'paused',
-      updatedAt: new Date(session.updatedAt),
-      artifactPaths: toArtifactPaths(session.artifacts),
-    })),
-    ...loopSessions.map((session) => withResumeCommand({
-      id: session.id,
-      capability: 'loop',
-      title: normalizeSessionTitle(session.title, 'Loop run'),
-      status: session.status,
-      updatedAt: new Date(session.updatedAt),
-      artifactPaths: toArtifactPaths(session.artifacts),
-    })),
-    ...workflowSessions.map((session) => ({
-      ...session,
-      title: normalizeSessionTitle(session.title, session.capability),
-    })),
+    ...reviewSessions.map(mapReviewSession),
+    ...discussSessions.map(mapDiscussSession),
+    ...trdSessions.map(mapTrdSession),
+    ...loopSessions.map(mapLoopSession),
+    ...workflowSessions.map(mapWorkflowSession),
   ].sort(sortByUpdatedAtDesc)
 
-  return {
-    continue: cards.filter(isContinuable),
-    recent: cards.filter((card) => !isContinuable(card)),
-  }
+  return groupCards(cards)
 }
 
 export async function loadDashboardSessions(cwd: string): Promise<DashboardSessions> {

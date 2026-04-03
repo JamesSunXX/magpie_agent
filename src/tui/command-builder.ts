@@ -1,171 +1,9 @@
-import type { BuiltCommand, SessionCard, TaskDraft, TaskId } from './types.js'
+import { getTaskDefinition } from './tasks.js'
+import { buildCommandDisplay } from './task-command-utils.js'
+import type { BuiltCommand, SessionCard, TaskDraft, TaskId, TaskValues } from './types.js'
 
-function shellQuote(value: string): string {
-  if (!/[^\w./:-]/.test(value)) {
-    return value
-  }
-
-  return `"${value.replace(/(["\\$`])/g, '\\$1')}"`
-}
-
-function displayCommand(argv: string[]): string {
-  return ['magpie', ...argv].map(shellQuote).join(' ')
-}
-
-function maybePushBoolean(argv: string[], flag: string, value: string | boolean | undefined): void {
-  if (value === true) {
-    argv.push(flag)
-  }
-}
-
-function maybePushText(argv: string[], flag: string, value: string | boolean | undefined): void {
-  if (typeof value === 'string' && value.trim()) {
-    argv.push(flag, value.trim())
-  }
-}
-
-function maybePushDelimitedValues(
-  argv: string[],
-  flag: string,
-  value: string | boolean | undefined
-): void {
-  if (typeof value !== 'string') {
-    return
-  }
-
-  const entries = value.split(',').map((item) => item.trim()).filter(Boolean)
-  if (entries.length > 0) {
-    argv.push(flag, ...entries)
-  }
-}
-
-function appendReviewOptions(argv: string[], values: Record<string, string | boolean | undefined>): void {
-  const hasExplicitReviewers = typeof values.reviewers === 'string' && values.reviewers.trim().length > 0
-  const useAllReviewers = values.all === true
-
-  if (!hasExplicitReviewers && !useAllReviewers) {
-    argv.push('--all')
-  }
-
-  maybePushText(argv, '--reviewers', values.reviewers)
-  maybePushBoolean(argv, '--all', values.all)
-  maybePushBoolean(argv, '--quick', values.quick)
-  maybePushBoolean(argv, '--deep', values.deep)
-
-  if (values.format === 'json') {
-    argv.push('--format', 'json')
-  }
-
-  maybePushText(argv, '--output', values.output)
-}
-
-export function buildTaskCommand(
-  taskId: TaskId,
-  values: Record<string, string | boolean | undefined>
-): BuiltCommand {
-  switch (taskId) {
-    case 'change-review': {
-      const argv = ['review']
-      const mode = typeof values.mode === 'string' ? values.mode : 'local'
-
-      if (mode === 'local') {
-        argv.push('--local')
-      } else if (mode === 'branch') {
-        argv.push('--branch')
-        if (typeof values.branchBase === 'string' && values.branchBase.trim()) {
-          argv.push(values.branchBase.trim())
-        }
-      } else if (mode === 'files') {
-        maybePushDelimitedValues(argv, '--files', values.files)
-      } else if (mode === 'repo') {
-        argv.push('--repo')
-        maybePushText(argv, '--path', values.path)
-        maybePushDelimitedValues(argv, '--ignore', values.ignore)
-
-        // TUI runs cannot answer follow-up prompts, so repo reviews default to deep mode.
-        if (values.quick !== true && values.deep !== true) {
-          argv.push('--deep')
-        }
-      }
-
-      appendReviewOptions(argv, values)
-
-      const summaryByMode: Record<string, string> = {
-        local: 'Review local changes',
-        branch: `Review the current branch against ${typeof values.branchBase === 'string' && values.branchBase.trim() ? values.branchBase.trim() : 'the default base branch'}`,
-        files: 'Review selected files',
-        repo: 'Review the repository scope',
-      }
-
-      return {
-        argv,
-        display: displayCommand(argv),
-        summary: summaryByMode[mode] || 'Review code changes',
-      }
-    }
-    case 'pr-review': {
-      const pr = typeof values.pr === 'string' ? values.pr.trim() : ''
-      const argv = ['review', pr]
-
-      appendReviewOptions(argv, values)
-
-      return {
-        argv,
-        display: displayCommand(argv),
-        summary: `Review PR ${pr}`,
-      }
-    }
-    case 'trd-generation': {
-      const prdPath = typeof values.prdPath === 'string' ? values.prdPath.trim() : ''
-      const argv = ['trd', prdPath]
-
-      maybePushText(argv, '--reviewers', values.reviewers)
-      maybePushBoolean(argv, '--all', values.all)
-      maybePushText(argv, '--output', values.output)
-      maybePushText(argv, '--questions-output', values.questionsOutput)
-      maybePushBoolean(argv, '--auto-accept-domains', values.autoAcceptDomains)
-      maybePushBoolean(argv, '--domain-overview-only', values.domainOverviewOnly)
-      maybePushText(argv, '--domains-file', values.domainsFile)
-
-      return {
-        argv,
-        display: displayCommand(argv),
-        summary: `Generate a TRD from ${prdPath}`,
-      }
-    }
-    case 'loop-run': {
-      const goal = typeof values.goal === 'string' ? values.goal.trim() : ''
-      const prdPath = typeof values.prdPath === 'string' ? values.prdPath.trim() : ''
-      const argv = ['loop', 'run', goal, '--prd', prdPath]
-
-      maybePushText(argv, '--planning-item', values.planningItem)
-      if (values.waitHuman === false) {
-        argv.push('--no-wait-human')
-      }
-      maybePushBoolean(argv, '--dry-run', values.dryRun)
-      maybePushText(argv, '--max-iterations', values.maxIterations)
-
-      return {
-        argv,
-        display: displayCommand(argv),
-        summary: `Run the goal loop for "${goal}"`,
-      }
-    }
-    case 'issue-fix': {
-      const issue = typeof values.issue === 'string' ? values.issue.trim() : ''
-      const argv = ['workflow', 'issue-fix', issue]
-
-      maybePushBoolean(argv, '--apply', values.apply)
-      maybePushText(argv, '--verify-command', values.verifyCommand)
-      maybePushText(argv, '--planning-item', values.planningItem)
-
-      return {
-        argv,
-        display: displayCommand(argv),
-        summary: `Run the issue-fix workflow for "${issue}"`,
-      }
-    }
-  }
+export function buildTaskCommand(taskId: TaskId, values: TaskValues): BuiltCommand {
+  return getTaskDefinition(taskId).buildCommand(values)
 }
 
 export function buildCommandFromDraft(draft: TaskDraft): BuiltCommand {
@@ -199,11 +37,9 @@ export function buildResumeCommand(card: Pick<SessionCard, 'capability' | 'id' |
 
   return {
     argv,
-    display: displayCommand(argv),
+    display: buildCommandDisplay(argv),
     summary: `Resume ${card.capability} session ${card.id}`,
   }
 }
 
-export function buildCommandDisplay(argv: string[]): string {
-  return displayCommand(argv)
-}
+export { buildCommandDisplay }

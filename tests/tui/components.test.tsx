@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { CommandPreview } from '../../src/tui/components/command-preview.js'
 import { Section } from '../../src/tui/components/common.js'
-import { Dashboard } from '../../src/tui/components/dashboard.js'
+import { Dashboard, getVisibleSessionRows } from '../../src/tui/components/dashboard.js'
 import { RunView } from '../../src/tui/components/run-view.js'
 import { TaskWizard } from '../../src/tui/components/task-wizard.js'
 import { getTaskDefinition } from '../../src/tui/tasks.js'
@@ -148,6 +148,26 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('2 more below')
     expect(normalizedText(element)).toContain('Complete delivery flow item 9')
     expect(normalizedText(element)).not.toContain('Complete delivery flow item 2 Loop')
+  })
+
+  it('precomputes visible session rows with stable selection state', () => {
+    const rows = getVisibleSessionRows(
+      Array.from({ length: 6 }, (_, index) => ({
+        id: `recent-${index + 1}`,
+        capability: 'loop' as const,
+        title: `Session ${index + 1}`,
+        status: 'completed',
+        updatedAt: new Date(`2026-03-19T11:${String(index).padStart(2, '0')}:00.000Z`),
+        resumeCommand: ['loop', 'resume', `recent-${index + 1}`],
+        artifactPaths: [],
+      })),
+      4,
+      4
+    )
+
+    expect(rows.hiddenAbove).toBe(2)
+    expect(rows.rows.map((row) => row.absoluteIndex)).toEqual([2, 3, 4, 5])
+    expect(rows.rows.filter((row) => row.selected).map((row) => row.card.id)).toEqual(['recent-5'])
   })
 
   it('renders wizard fields and advanced status', () => {

@@ -56,9 +56,32 @@ function getSectionWindow<T>(items: T[], selectedIndex: number | undefined, maxV
   }
 }
 
+export function getVisibleSessionRows(cards: SessionCard[], selectedIndex: number | undefined, maxVisible: number): {
+  hiddenAbove: number
+  hiddenBelow: number
+  total: number
+  rows: Array<{
+    absoluteIndex: number
+    selected: boolean
+    card: SessionCard
+  }>
+} {
+  const window = getSectionWindow(cards, selectedIndex, maxVisible)
+
+  return {
+    hiddenAbove: window.hiddenAbove,
+    hiddenBelow: window.hiddenBelow,
+    total: window.total,
+    rows: window.visibleItems.map((card, index) => ({
+      absoluteIndex: window.hiddenAbove + index,
+      selected: selectedIndex === window.hiddenAbove + index,
+      card,
+    })),
+  }
+}
+
 function renderSessionRows(props: {
   cards: SessionCard[]
-  selectedBaseIndex: number
   selectedLocalIndex: number | undefined
   maxVisible: number
   emptyText: string
@@ -68,28 +91,27 @@ function renderSessionRows(props: {
     return <Text color="gray">{props.emptyText}</Text>
   }
 
-  const window = getSectionWindow(props.cards, props.selectedLocalIndex, props.maxVisible)
+  const visibleRows = getVisibleSessionRows(props.cards, props.selectedLocalIndex, props.maxVisible)
 
   return (
     <Box flexDirection="column">
-      {window.total > window.visibleItems.length ? (
-        <Text color="gray">Showing {window.visibleItems.length} of {window.total} {props.summaryLabel}</Text>
+      {visibleRows.total > visibleRows.rows.length ? (
+        <Text color="gray">Showing {visibleRows.rows.length} of {visibleRows.total} {props.summaryLabel}</Text>
       ) : null}
-      {window.hiddenAbove > 0 ? <Text color="gray">… {window.hiddenAbove} more above</Text> : null}
-      {window.visibleItems.map((card, index) => {
-        const actualIndex = props.selectedBaseIndex + window.hiddenAbove + index
+      {visibleRows.hiddenAbove > 0 ? <Text color="gray">… {visibleRows.hiddenAbove} more above</Text> : null}
+      {visibleRows.rows.map((row) => {
         return (
           <Text
-            key={card.capability + card.id}
-            color={actualIndex === props.selectedBaseIndex + props.selectedLocalIndex! ? 'greenBright' : undefined}
+            key={row.card.capability + row.card.id}
+            color={row.selected ? 'greenBright' : undefined}
           >
-            {actualIndex === props.selectedBaseIndex + props.selectedLocalIndex! ? '› ' : '  '}
-            {truncateText(card.title, TITLE_MAX_LENGTH)}
-            <Text color="gray">  {formatCapability(card.capability)} · {card.id}</Text>
+            {row.selected ? '› ' : '  '}
+            {truncateText(row.card.title, TITLE_MAX_LENGTH)}
+            <Text color="gray">  {formatCapability(row.card.capability)} · {row.card.id}</Text>
           </Text>
         )
       })}
-      {window.hiddenBelow > 0 ? <Text color="gray">… {window.hiddenBelow} more below</Text> : null}
+      {visibleRows.hiddenBelow > 0 ? <Text color="gray">… {visibleRows.hiddenBelow} more below</Text> : null}
     </Box>
   )
 }
@@ -103,10 +125,10 @@ export function Dashboard(props: {
     && props.selectedIndex < TASKS.length + props.sessions.continue.length
     ? props.selectedIndex - TASKS.length
     : undefined
-  const recentBaseIndex = TASKS.length + props.sessions.continue.length
-  const recentSelectedIndex = props.selectedIndex >= recentBaseIndex
-    && props.selectedIndex < recentBaseIndex + props.sessions.recent.length
-    ? props.selectedIndex - recentBaseIndex
+  const recentStartIndex = TASKS.length + props.sessions.continue.length
+  const recentSelectedIndex = props.selectedIndex >= recentStartIndex
+    && props.selectedIndex < recentStartIndex + props.sessions.recent.length
+    ? props.selectedIndex - recentStartIndex
     : undefined
 
   return (
@@ -127,7 +149,6 @@ export function Dashboard(props: {
       <Section title="Continue">
         {renderSessionRows({
           cards: props.sessions.continue,
-          selectedBaseIndex: TASKS.length,
           selectedLocalIndex: continueSelectedIndex,
           maxVisible: MAX_VISIBLE_CONTINUE,
           emptyText: 'No unfinished sessions.',
@@ -138,7 +159,6 @@ export function Dashboard(props: {
       <Section title="Recent">
         {renderSessionRows({
           cards: props.sessions.recent,
-          selectedBaseIndex: recentBaseIndex,
           selectedLocalIndex: recentSelectedIndex,
           maxVisible: MAX_VISIBLE_RECENT,
           emptyText: 'No completed sessions yet.',

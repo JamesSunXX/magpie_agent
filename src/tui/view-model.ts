@@ -1,5 +1,5 @@
 import { createTaskDraft, getTaskDefinition } from './tasks.js'
-import type { AppAction, AppState, RunState, TaskDefinition, TaskDraft, TaskField } from './types.js'
+import type { AppAction, AppState, RunState, TaskDefinition, TaskDraft, TaskField, TaskValues } from './types.js'
 
 function createRunState(command: AppState['command']): RunState | undefined {
   if (!command) {
@@ -83,7 +83,7 @@ export function reduceAppState(state: AppState, action: AppAction): AppState {
 
 export function getVisibleWizardFields(
   taskOrDraft: TaskDefinition | TaskDraft,
-  valuesOverride?: Record<string, string | boolean | undefined>
+  valuesOverride?: TaskValues
 ): TaskField[] {
   const task = 'fields' in taskOrDraft ? taskOrDraft : getTaskDefinition(taskOrDraft.taskId)
   const values = valuesOverride || ('values' in taskOrDraft ? taskOrDraft.values : task.defaults)
