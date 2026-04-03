@@ -16,7 +16,7 @@ describe('docs-sync workflow', () => {
     writeFileSync(join(dir, 'src', 'feature.ts'), 'export function feature() { return "new-behavior" }\n', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  docs_sync:\n    enabled: true\n    reviewer_model: mock\n    docs_patterns: [README.md, docs]\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  docs_sync:\n    enabled: true\n    reviewer_model: mock\n    reviewer_agent: code-reviewer\n    docs_patterns: [README.md, docs]\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(docsSyncCapability, {

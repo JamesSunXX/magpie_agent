@@ -3,7 +3,7 @@ import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import { createOperationsRouter } from '../../../../platform/integrations/operations/factory.js'
-import { createProvider } from '../../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
   persistWorkflowSession,
@@ -40,7 +40,11 @@ export async function executePostMergeRegression(
       }
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), 'utf-8')
 
-  const evaluator = createProvider(runtime.evaluator_model || config.analyzer.model, config)
+  const evaluator = createConfiguredProvider({
+    logicalName: 'capabilities.post_merge_regression.evaluator',
+    model: runtime.evaluator_model || config.analyzer.model,
+    agent: runtime.evaluator_agent,
+  }, config)
   evaluator.setCwd?.(ctx.cwd)
   const prompt = `You are summarizing a post-merge regression run.\n\n${evidence.runs.map((result) => `Command: ${result.command}\nPassed: ${result.passed}\nOutput:\n${result.output}`).join('\n\n')}`
   const summary = await evaluator.chat([{ role: 'user', content: prompt }])

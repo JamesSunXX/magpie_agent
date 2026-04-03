@@ -30,7 +30,7 @@ describe('issue-fix workflow', () => {
     writeFileSync(join(dir, 'src', 'sum.ts'), 'export const sum = (a: number, b: number) => a + b\n', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  issue_fix:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    auto_commit: false\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  issue_fix:\n    enabled: true\n    planner_model: mock\n    planner_agent: architect\n    executor_model: mock\n    executor_agent: implementer\n    auto_commit: false\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const previousMagpieHome = process.env.MAGPIE_HOME
     process.env.MAGPIE_HOME = magpieHome
@@ -42,6 +42,7 @@ describe('issue-fix workflow', () => {
         apply: false,
       }, ctx)
 
+      expect(result.result.status).toBe('completed')
       expect(result.result.session?.artifacts.planPath).toContain(magpieHome)
       expect(result.result.session?.artifacts.executionPath).toContain(magpieHome)
     } finally {

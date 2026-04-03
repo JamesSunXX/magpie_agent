@@ -7,7 +7,7 @@ import {
   buildPlanningContextBlock,
   extractPlanningItemKey,
 } from '../../../../platform/integrations/planning/index.js'
-import { createProvider } from '../../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import {
   generateWorkflowId,
   persistWorkflowSession,
@@ -41,8 +41,16 @@ export async function executeIssueFix(
   const plannerModel = runtime.planner_model || config.analyzer.model
   const executorModel = runtime.executor_model || 'codex'
   log.debug(`[issue-fix] planner=${plannerModel} executor=${executorModel}`)
-  const planner = createProvider(plannerModel, config)
-  const executor = createProvider(executorModel, config)
+  const planner = createConfiguredProvider({
+    logicalName: 'capabilities.issue_fix.planner',
+    model: plannerModel,
+    agent: runtime.planner_agent,
+  }, config)
+  const executor = createConfiguredProvider({
+    logicalName: 'capabilities.issue_fix.executor',
+    model: executorModel,
+    agent: runtime.executor_agent,
+  }, config)
   planner.setCwd?.(ctx.cwd)
   executor.setCwd?.(ctx.cwd)
 

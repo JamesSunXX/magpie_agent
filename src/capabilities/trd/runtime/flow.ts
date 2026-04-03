@@ -11,7 +11,7 @@ import { StateManager } from '../../../core/state/index.js'
 import type { TrdSession } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import { getMagpieHomeDir } from '../../../platform/paths.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { ChatImageInput } from '../../../platform/providers/index.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
 import { runDebateSession } from '../../../core/debate/runner.js'
@@ -405,7 +405,11 @@ async function generateDomainOverview(
   images: ChatImageInput[],
 ): Promise<DomainOverview> {
   const analyzerModel = config.analyzer.model
-  const analyzer = createProvider(analyzerModel, config)
+  const analyzer = createConfiguredProvider({
+    logicalName: 'analyzer',
+    model: analyzerModel,
+    agent: config.analyzer.agent,
+  }, config)
   const digest = buildPrdDigestText(parsedPrd, defaults.maxChars)
   const prompt = buildDomainOverviewPrompt(digest)
   const response = await analyzer.chat(
@@ -436,19 +440,31 @@ async function generateDomainPartials(
     try {
       const reviewers: Reviewer[] = reviewerIds.map((id) => ({
         id,
-        provider: createProvider(config.reviewers[id].model, config),
+        provider: createConfiguredProvider({
+          logicalName: `reviewers.${id}`,
+          model: config.reviewers[id].model,
+          agent: config.reviewers[id].agent,
+        }, config),
         systemPrompt: withProjectContext(DOMAIN_REVIEWER_PROMPT, config.reviewers[id].model, config),
       }))
 
       const analyzer: Reviewer = {
         id: 'analyzer',
-        provider: createProvider(config.analyzer.model, config),
+        provider: createConfiguredProvider({
+          logicalName: 'analyzer',
+          model: config.analyzer.model,
+          agent: config.analyzer.agent,
+        }, config),
         systemPrompt: withProjectContext(DOMAIN_REVIEWER_PROMPT, config.analyzer.model, config),
       }
 
       const summarizer: Reviewer = {
         id: 'summarizer',
-        provider: createProvider(config.summarizer.model, config),
+        provider: createConfiguredProvider({
+          logicalName: 'summarizer',
+          model: config.summarizer.model,
+          agent: config.summarizer.agent,
+        }, config),
         systemPrompt: withProjectContext(DOMAIN_SUMMARIZER_PROMPT, config.summarizer.model, config),
       }
 
@@ -508,7 +524,11 @@ async function synthesizeTrd(
     .flatMap(bundle => bundle.requirements.map(req => `${req.id} -> ${bundle.domain.id}`))
     .join('\n')
   const prompt = `${buildIntegrationPrompt(overview, partials, traceabilityRows)}${followUp ? `\n\n补充修订要求：${followUp}` : ''}`
-  const summarizer = createProvider(config.summarizer.model, config)
+  const summarizer = createConfiguredProvider({
+    logicalName: 'summarizer',
+    model: config.summarizer.model,
+    agent: config.summarizer.agent,
+  }, config)
   const response = await summarizer.chat(
     [{ role: 'user', content: prompt }],
     withProjectContext(INTEGRATION_SUMMARIZER_PROMPT, config.summarizer.model, config),

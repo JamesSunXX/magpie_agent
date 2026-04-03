@@ -62,6 +62,43 @@ integrations:
       expect(config.defaults.max_rounds).toBe(3)
       expect(config.reviewers['test-reviewer'].model).toBe('claude-sonnet-4-20250514')
     })
+
+    it('accepts optional kiro agent fields in config entries', () => {
+      const configPath = join(testDir, 'kiro-agent-config.yaml')
+      writeFileSync(configPath, `
+providers:
+  kiro:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  backend:
+    model: kiro
+    agent: go-reviewer
+    prompt: Backend review
+summarizer:
+  model: kiro
+  agent: code-reviewer
+  prompt: Summary prompt
+analyzer:
+  model: kiro
+  agent: architect
+  prompt: Analyze prompt
+capabilities:
+  review:
+    enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+      const config = loadConfig(configPath)
+      expect(config.reviewers.backend.agent).toBe('go-reviewer')
+      expect(config.summarizer.agent).toBe('code-reviewer')
+      expect(config.analyzer.agent).toBe('architect')
+    })
   })
 
   describe('getConfigPath', () => {

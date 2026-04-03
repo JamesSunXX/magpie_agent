@@ -11,7 +11,7 @@ import type { RepoStats } from '../../../core/repo/index.js'
 import { MarkdownReporter } from '../../../core/reporting/index.js'
 import { StateManager } from '../../../core/state/index.js'
 import type { ReviewSession, FeatureAnalysis, FeatureReviewResult } from '../../../core/state/index.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import { FeatureAnalyzer } from '../../../feature-analyzer/index.js'
 import { FeaturePlanner } from '../../../planner/feature-planner.js'
 import { FOCUS_OPTIONS } from '../runtime/utils.js'
@@ -177,7 +177,11 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
   }
 
   if (!analysis) {
-    const analyzerProvider = createProvider(config.summarizer.model, config)
+    const analyzerProvider = createConfiguredProvider({
+      logicalName: 'summarizer',
+      model: config.summarizer.model,
+      agent: config.summarizer.agent,
+    }, config)
     const analyzer = new FeatureAnalyzer({ provider: analyzerProvider as any })
     analysis = await analyzer.analyze(files)
     await stateManager.saveFeatureAnalysis(analysis)
@@ -336,13 +340,21 @@ export async function executeFeatureReview(
   // Create reviewers
   const reviewers = Object.entries(config.reviewers).map(([id, cfg]) => ({
     id,
-    provider: createProvider(cfg.model, config),
+    provider: createConfiguredProvider({
+      logicalName: `reviewers.${id}`,
+      model: cfg.model,
+      agent: cfg.agent,
+    }, config),
     systemPrompt: cfg.prompt
   }))
 
   const summarizer = {
     id: 'summarizer',
-    provider: createProvider(config.summarizer.model, config),
+    provider: createConfiguredProvider({
+      logicalName: 'summarizer',
+      model: config.summarizer.model,
+      agent: config.summarizer.agent,
+    }, config),
     systemPrompt: config.summarizer.prompt
   }
 

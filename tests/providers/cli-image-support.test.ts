@@ -139,6 +139,8 @@ describe('CLI providers image passthrough', () => {
 
   it('injects image references into kiro prompt', async () => {
     const provider = new KiroProvider()
+    const resolveAgent = vi.fn().mockResolvedValue('kiro_default')
+    ;(provider as unknown as { resolveAgent: () => Promise<string> }).resolveAgent = resolveAgent
     const result = await provider.chat(
       [{ role: 'user', content: '请结合图片评审方案' }],
       undefined,
@@ -153,9 +155,27 @@ describe('CLI providers image passthrough', () => {
     expect(result).toBe('Kiro response')
     expect(spawnCalls).toHaveLength(1)
     expect(spawnCalls[0].cmd).toBe('kiro-cli')
+    expect(spawnCalls[0].args).toContain('--agent')
+    expect(spawnCalls[0].args).toContain('kiro_default')
     const kiroPromptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1]
     expect(kiroPromptArg).toContain('@{/tmp/infra.png}')
     expect(kiroPromptArg).toContain('@{https://example.com/flow2.png}')
     expect(kiroPromptArg).toContain('基础架构图: /tmp/infra.png')
+    expect(resolveAgent).toHaveBeenCalled()
+  })
+
+  it('passes the resolved kiro agent to the CLI', async () => {
+    const provider = new KiroProvider({
+      apiKey: '',
+      model: 'kiro',
+      logicalName: 'reviewers.go-review',
+      agent: 'go-reviewer',
+    })
+    ;(provider as unknown as { resolveAgent: () => Promise<string> }).resolveAgent = vi.fn().mockResolvedValue('go-reviewer')
+
+    await provider.chat([{ role: 'user', content: '检查参数' }])
+
+    expect(spawnCalls[0].args).toContain('--agent')
+    expect(spawnCalls[0].args).toContain('go-reviewer')
   })
 })

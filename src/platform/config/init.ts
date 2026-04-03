@@ -177,7 +177,10 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
 
   let reviewersSection = '# Reviewer configurations\nreviewers:'
   for (const reviewer of selectedReviewers) {
-    reviewersSection += `\n  ${reviewer.id}:\n    model: ${reviewer.model}\n    prompt: |\n      ${REVIEW_PROMPT}`
+    const reviewerAgentLine = reviewer.model === 'kiro'
+      ? `\n    # agent: ${reviewer.id}`
+      : ''
+    reviewersSection += `\n  ${reviewer.id}:\n    model: ${reviewer.model}${reviewerAgentLine}\n    prompt: |\n      ${REVIEW_PROMPT}`
   }
 
   const analyzerModel = selectedReviewers[0]?.model || 'claude-code'

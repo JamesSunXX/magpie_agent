@@ -9,7 +9,7 @@ import {
   validateDiscussExportOptions,
 } from '../../../src/capabilities/discuss/application/export.js'
 import { loadConfig } from '../../../src/platform/config/loader.js'
-import { createProvider } from '../../../src/platform/providers/index.js'
+import { createConfiguredProvider } from '../../../src/platform/providers/index.js'
 import { StateManager } from '../../../src/core/state/index.js'
 import { formatDiscussConclusion, formatDiscussMarkdown } from '../../../src/capabilities/discuss/runtime/flow.js'
 
@@ -36,7 +36,7 @@ vi.mock('../../../src/platform/config/loader.js', () => ({
 }))
 
 vi.mock('../../../src/platform/providers/index.js', () => ({
-  createProvider: vi.fn(),
+  createConfiguredProvider: vi.fn(),
 }))
 
 vi.mock('../../../src/capabilities/discuss/runtime/flow.js', () => ({
@@ -113,7 +113,7 @@ describe('discuss export helpers', () => {
 
     listDiscussSessions.mockResolvedValue([session])
     chat.mockResolvedValue('# Plan Report\n\n## Background\n\n...')
-    vi.mocked(createProvider).mockReturnValue({
+    vi.mocked(createConfiguredProvider).mockReturnValue({
       name: 'mock',
       chat,
       chatStream: vi.fn(),
@@ -161,7 +161,11 @@ describe('discuss export helpers', () => {
     expect(StateManager).toHaveBeenCalledWith('/repo')
     expect(initDiscussions).toHaveBeenCalled()
     expect(vi.mocked(loadConfig)).toHaveBeenCalledWith(undefined)
-    expect(vi.mocked(createProvider)).toHaveBeenCalledWith('mock', expect.any(Object))
+    expect(vi.mocked(createConfiguredProvider)).toHaveBeenCalledWith({
+      logicalName: 'summarizer',
+      model: 'mock',
+      agent: undefined,
+    }, expect.any(Object))
     expect(setCwd).toHaveBeenCalledWith('/repo')
     expect(chat).toHaveBeenCalledWith(
       expect.arrayContaining([

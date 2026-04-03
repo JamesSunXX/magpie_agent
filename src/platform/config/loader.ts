@@ -33,6 +33,14 @@ function validateReviewerConfig(name: string, rc: ReviewerConfig | undefined): v
   if (!rc.prompt || typeof rc.prompt !== 'string') {
     throw new Error(`Config error: ${name} is missing a "prompt" field`)
   }
+  validateOptionalAgent(name, rc.agent)
+}
+
+function validateOptionalAgent(name: string, agent: string | undefined): void {
+  if (agent === undefined) return
+  if (typeof agent !== 'string' || agent.trim().length === 0) {
+    throw new Error(`Config error: ${name}.agent must be a non-empty string`)
+  }
 }
 
 function validateTrdConfig(trd: TrdConfig, reviewers: Record<string, ReviewerConfig>): void {
@@ -86,6 +94,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
 
   validateReviewerConfig('summarizer', config.summarizer)
   validateReviewerConfig('analyzer', config.analyzer)
+  validateOptionalAgent('contextGatherer', config.contextGatherer?.agent)
 
   for (const [name, provider] of Object.entries(config.providers || {})) {
     if (provider && 'api_key' in provider && !provider.api_key) {

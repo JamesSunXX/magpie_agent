@@ -38,11 +38,13 @@ afterEach(() => {
 describe('KiroProvider timeout', () => {
   it('times out non-stream chat when kiro-cli hangs', async () => {
     process.env.MAGPIE_KIRO_TIMEOUT_MS = '80'
-    const provider = new KiroProvider()
+    const provider = new KiroProvider() as unknown as { chat: KiroProvider['chat']; resolveAgent: () => Promise<string> }
+    provider.resolveAgent = vi.fn().mockResolvedValue('kiro_default')
     const promise = provider.chat([{ role: 'user', content: 'timeout-check' }])
 
     await expect(promise).rejects.toThrow('kiro-cli timed out')
     expect(killSpy).toHaveBeenCalledWith('SIGTERM')
+    expect(provider.resolveAgent).toHaveBeenCalled()
   })
 
   it('falls back to default timeout when env value is negative', () => {
@@ -50,5 +52,20 @@ describe('KiroProvider timeout', () => {
     const provider = new KiroProvider() as unknown as { timeout: number }
 
     expect(provider.timeout).toBe(15 * 60 * 1000)
+  })
+
+  it('falls back to kiro_default when requested agent is unavailable', async () => {
+    process.env.MAGPIE_KIRO_TIMEOUT_MS = '80'
+    const provider = new KiroProvider({
+      apiKey: '',
+      model: 'kiro',
+      logicalName: 'reviewers.unknown',
+      agent: 'missing-agent',
+    }) as unknown as { resolveAgent: () => Promise<string>; chat: KiroProvider['chat'] }
+
+    provider.resolveAgent = vi.fn().mockResolvedValue('kiro_default')
+    await expect(provider.chat([{ role: 'user', content: 'fallback-check' }])).rejects.toThrow('kiro-cli timed out')
+
+    expect(provider.resolveAgent).toHaveBeenCalled()
   })
 })

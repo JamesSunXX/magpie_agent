@@ -1,5 +1,6 @@
 export * from '../../providers/types.js'
 export * from '../../providers/factory.js'
+export * from '../../providers/configured-provider.js'
 
 export * from './api/anthropic.js'
 export * from './api/openai.js'

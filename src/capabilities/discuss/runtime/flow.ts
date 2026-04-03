@@ -7,7 +7,7 @@ import { loadConfig } from '../../../platform/config/loader.js'
 import type { DebateResult, OrchestratorOptions, Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
 import { StateManager } from '../../../core/state/index.js'
 import type { DiscussRound, DiscussSession } from '../../../core/state/index.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
@@ -200,7 +200,11 @@ async function runDiscussion(
 ): Promise<{ result: DebateResult }> {
   const reviewers: Reviewer[] = selectedIds.map(id => ({
     id,
-    provider: createProvider(config.reviewers[id].model, config),
+    provider: createConfiguredProvider({
+      logicalName: `reviewers.${id}`,
+      model: config.reviewers[id].model,
+      agent: config.reviewers[id].agent,
+    }, config),
     systemPrompt: buildSystemPromptWithContext(DISCUSS_REVIEWER_PROMPT, config.reviewers[id].model)
   }))
 
@@ -209,7 +213,10 @@ async function runDiscussion(
     const daModel = config.summarizer.model
     reviewers.push({
       id: 'devil-advocate',
-      provider: createProvider(daModel, config),
+      provider: createConfiguredProvider({
+        logicalName: 'reviewers.devil-advocate',
+        model: daModel,
+      }, config),
       systemPrompt: buildSystemPromptWithContext(DEVIL_ADVOCATE_PROMPT, daModel)
     })
   }
@@ -220,13 +227,21 @@ async function runDiscussion(
 
   const summarizer: Reviewer = {
     id: 'summarizer',
-    provider: createProvider(config.summarizer.model, config),
+    provider: createConfiguredProvider({
+      logicalName: 'summarizer',
+      model: config.summarizer.model,
+      agent: config.summarizer.agent,
+    }, config),
     systemPrompt: buildSystemPromptWithContext(DISCUSS_SUMMARIZER_PROMPT, config.summarizer.model)
   }
 
   const analyzer: Reviewer = {
     id: 'analyzer',
-    provider: createProvider(config.analyzer.model, config),
+    provider: createConfiguredProvider({
+      logicalName: 'analyzer',
+      model: config.analyzer.model,
+      agent: config.analyzer.agent,
+    }, config),
     systemPrompt: buildSystemPromptWithContext(DISCUSS_ANALYZER_PROMPT, config.analyzer.model)
   }
 

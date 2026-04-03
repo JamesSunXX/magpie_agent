@@ -3,7 +3,7 @@ import ora from 'ora'
 import { execSync } from 'child_process'
 import type { Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import { DebateOrchestrator } from '../domain/debate-orchestrator.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
@@ -299,7 +299,11 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       // Create reviewers
       const reviewers: Reviewer[] = selectedIds.map(id => ({
         id,
-        provider: createProvider(config.reviewers[id].model, config),
+        provider: createConfiguredProvider({
+          logicalName: `reviewers.${id}`,
+          model: config.reviewers[id].model,
+          agent: config.reviewers[id].agent,
+        }, config),
         systemPrompt: config.reviewers[id].prompt
       }))
 
@@ -310,14 +314,22 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       // Create summarizer
       const summarizer: Reviewer = {
         id: 'summarizer',
-        provider: createProvider(soloModel || config.summarizer.model, config),
+        provider: createConfiguredProvider({
+          logicalName: 'summarizer',
+          model: soloModel || config.summarizer.model,
+          agent: config.summarizer.agent,
+        }, config),
         systemPrompt: config.summarizer.prompt
       }
 
       // Create analyzer
       const analyzer: Reviewer = {
         id: 'analyzer',
-        provider: createProvider(soloModel || config.analyzer.model, config),
+        provider: createConfiguredProvider({
+          logicalName: 'analyzer',
+          model: soloModel || config.analyzer.model,
+          agent: config.analyzer.agent,
+        }, config),
         systemPrompt: config.analyzer.prompt
       }
 
@@ -328,7 +340,11 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       if (contextEnabled) {
         const contextModel = soloModel || config.contextGatherer?.model || config.analyzer.model
         contextGatherer = new ContextGatherer({
-          provider: createProvider(contextModel, config),
+          provider: createConfiguredProvider({
+            logicalName: 'contextGatherer',
+            model: contextModel,
+            agent: config.contextGatherer?.agent,
+          }, config),
           language: config.defaults.language,
           options: {
             callChain: config.contextGatherer?.callChain,

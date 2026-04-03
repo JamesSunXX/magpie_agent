@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { createProvider, getProviderForModel } from '../../src/providers/factory.js'
 import type { MagpieConfig } from '../../src/config/types.js'
+import { createConfiguredProvider } from '../../src/providers/configured-provider.js'
 
 describe('Provider Factory', () => {
   const mockConfig: MagpieConfig = {
@@ -94,6 +95,16 @@ describe('Provider Factory', () => {
     it('should work without base_url (backwards compatible)', () => {
       const provider = createProvider('claude-sonnet-4-20250514', mockConfig)
       expect(provider.name).toBe('anthropic')
+    })
+
+    it('creates a configured kiro provider with logical binding metadata', () => {
+      const provider = createConfiguredProvider({
+        logicalName: 'reviewers.backend',
+        model: 'kiro',
+        agent: 'go-reviewer',
+      }, mockConfig)
+
+      expect(provider.name).toBe('kiro')
     })
   })
 })

@@ -3,7 +3,7 @@ import { StateManager } from '../../../core/state/index.js'
 import type { DiscussSession } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import type { MagpieConfigV2 } from '../../../platform/config/types.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import { formatDiscussConclusion, formatDiscussMarkdown } from '../runtime/flow.js'
 import type { DiscussOptions } from '../types.js'
 
@@ -125,7 +125,11 @@ async function generateDiscussPlanReport(
   config: MagpieConfigV2,
   cwd?: string
 ): Promise<string> {
-  const provider = createProvider(config.summarizer.model, config)
+  const provider = createConfiguredProvider({
+    logicalName: 'summarizer',
+    model: config.summarizer.model,
+    agent: config.summarizer.agent,
+  }, config)
   provider.setCwd?.(cwd ?? process.cwd())
 
   return provider.chat(

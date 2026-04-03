@@ -1,5 +1,5 @@
 // src/providers/factory.ts
-import type { AIProvider } from './types.js'
+import type { AIProvider, ProviderOptions } from './types.js'
 import type { MagpieConfig } from '../config/types.js'
 import { AnthropicProvider } from './anthropic.js'
 import { OpenAIProvider } from './openai.js'
@@ -46,7 +46,7 @@ export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'go
   throw new Error(`Unknown model: ${model}`)
 }
 
-export function createProvider(model: string, config: MagpieConfig): AIProvider {
+export function createProvider(model: string, config: MagpieConfig, options?: Partial<ProviderOptions>): AIProvider {
   // Global mock mode: override all models to MockProvider
   if (config.mock) {
     return new MockProvider()
@@ -76,7 +76,12 @@ export function createProvider(model: string, config: MagpieConfig): AIProvider 
 
   // Kiro CLI doesn't need API key config (uses AWS subscription)
   if (providerName === 'kiro') {
-    return new KiroProvider()
+    return new KiroProvider({
+      apiKey: '',
+      model,
+      logicalName: options?.logicalName,
+      agent: options?.agent,
+    })
   }
 
   // Mock provider for debug mode — no API key needed

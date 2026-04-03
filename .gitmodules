@@ -1,0 +1,3 @@
+[submodule "agents/kiro-config"]
+	path = agents/kiro-config
+	url = http://git.allsaints.top/go-server/ai/kiro-config.git

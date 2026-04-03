@@ -6,6 +6,7 @@ import type { MagpieConfigV2 } from '../../platform/config/types.js'
 export interface ConfiguredReviewer {
   id: string
   model: string
+  agent?: string
 }
 
 export function listConfiguredReviewers(config: MagpieConfigV2, model?: string): ConfiguredReviewer[] {
@@ -19,6 +20,7 @@ export function listConfiguredReviewers(config: MagpieConfigV2, model?: string):
     .map(([id, reviewer]) => ({
       id,
       model: reviewer.model,
+      agent: reviewer.agent,
     }))
 }
 
@@ -52,9 +54,9 @@ const listReviewersCommand = new Command('list')
 
       const title = options.model ? ` Reviewers (model=${options.model}) ` : ' Configured Reviewers '
       console.log(chalk.bgBlue.white.bold(title))
-      console.log(chalk.dim(`  ${'ID'.padEnd(20)} MODEL`))
+      console.log(chalk.dim(`  ${'ID'.padEnd(20)} ${'MODEL'.padEnd(16)} AGENT`))
       for (const reviewer of reviewers) {
-        console.log(`  ${chalk.cyan(reviewer.id.padEnd(20))} ${reviewer.model}`)
+        console.log(`  ${chalk.cyan(reviewer.id.padEnd(20))} ${reviewer.model.padEnd(16)} ${reviewer.agent || '-'}`)
       }
       console.log(chalk.dim(`\n  Total: ${reviewers.length}`))
     } catch (error) {

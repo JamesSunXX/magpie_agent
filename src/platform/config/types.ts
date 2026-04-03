@@ -6,6 +6,7 @@ export interface ProviderConfig {
 export interface ReviewerConfig {
   model: string
   prompt: string
+  agent?: string
 }
 
 export interface DefaultsConfig {
@@ -18,6 +19,7 @@ export interface DefaultsConfig {
 
 export interface ContextGathererConfigOptions {
   enabled: boolean
+  agent?: string
   callChain?: {
     maxDepth?: number
     maxFilesToAnalyze?: number
@@ -77,7 +79,9 @@ export interface LoopHumanConfirmationConfig {
 export interface LoopConfig {
   enabled?: boolean
   planner_model?: string
+  planner_agent?: string
   executor_model?: string
+  executor_agent?: string
   stages?: LoopStageName[]
   confidence_threshold?: number
   retries_per_stage?: number
@@ -215,6 +219,7 @@ export interface DiscussConfig {
 export interface UnitTestEvalConfig {
   enabled?: boolean
   provider?: string
+  provider_agent?: string
   max_files?: number
   min_coverage?: number
   output_format?: 'markdown' | 'json'
@@ -223,7 +228,9 @@ export interface UnitTestEvalConfig {
 export interface IssueFixConfig {
   enabled?: boolean
   planner_model?: string
+  planner_agent?: string
   executor_model?: string
+  executor_agent?: string
   verify_command?: string
   auto_commit?: boolean
 }
@@ -231,12 +238,14 @@ export interface IssueFixConfig {
 export interface DocsSyncConfig {
   enabled?: boolean
   reviewer_model?: string
+  reviewer_agent?: string
   docs_patterns?: string[]
 }
 
 export interface PostMergeRegressionConfig {
   enabled?: boolean
   evaluator_model?: string
+  evaluator_agent?: string
   commands?: string[]
 }
 

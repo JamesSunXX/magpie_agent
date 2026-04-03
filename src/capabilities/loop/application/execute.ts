@@ -13,7 +13,7 @@ import type {
 import { StateManager } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import { getMagpieHomeDir } from '../../../platform/paths.js'
-import { createProvider } from '../../../platform/providers/index.js'
+import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopConfig, LoopStageName } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
@@ -42,7 +42,9 @@ const DEFAULT_STAGES: LoopStageName[] = [
 
 interface LoopRuntimeConfig {
   plannerModel: string
+  plannerAgent?: string
   executorModel: string
+  executorAgent?: string
   stages: LoopStageName[]
   confidenceThreshold: number
   retriesPerStage: number
@@ -79,7 +81,9 @@ function generateId(): string {
 function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
   return {
     plannerModel: config?.planner_model || 'claude-code',
+    plannerAgent: config?.planner_agent,
     executorModel: config?.executor_model || 'codex',
+    executorAgent: config?.executor_agent,
     stages: config?.stages && config.stages.length > 0 ? config.stages : DEFAULT_STAGES,
     confidenceThreshold: config?.confidence_threshold ?? 0.78,
     retriesPerStage: config?.retries_per_stage ?? 2,
@@ -759,8 +763,16 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(`${prepared.goal}\n${prepared.prdPath}`)
 
-  const planner = createProvider(loopRuntime.plannerModel, config)
-  const executor = createProvider(loopRuntime.executorModel, config)
+  const planner = createConfiguredProvider({
+    logicalName: 'capabilities.loop.planner',
+    model: loopRuntime.plannerModel,
+    agent: loopRuntime.plannerAgent,
+  }, config)
+  const executor = createConfiguredProvider({
+    logicalName: 'capabilities.loop.executor',
+    model: loopRuntime.executorModel,
+    agent: loopRuntime.executorAgent,
+  }, config)
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
@@ -894,8 +906,16 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(`${session.goal}\n${session.prdPath}`)
 
-  const planner = createProvider(loopRuntime.plannerModel, config)
-  const executor = createProvider(loopRuntime.executorModel, config)
+  const planner = createConfiguredProvider({
+    logicalName: 'capabilities.loop.planner',
+    model: loopRuntime.plannerModel,
+    agent: loopRuntime.plannerAgent,
+  }, config)
+  const executor = createConfiguredProvider({
+    logicalName: 'capabilities.loop.executor',
+    model: loopRuntime.executorModel,
+    agent: loopRuntime.executorAgent,
+  }, config)
   const planningContext = await planningRouter.createPlanContext({
     itemKey: planningItemKey,
     title: session.goal,

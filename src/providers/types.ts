@@ -35,6 +35,8 @@ export interface ProviderOptions {
   apiKey: string
   model: string
   baseURL?: string
+  logicalName?: string
+  agent?: string
 }
 
 // Helper to generate session IDs

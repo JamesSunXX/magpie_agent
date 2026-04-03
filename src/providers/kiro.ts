@@ -1,18 +1,25 @@
 import { spawn } from 'child_process'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
+import { ensureKiroInstall } from './kiro-install.js'
 
 export class KiroProvider implements AIProvider {
     name = 'kiro'
     private cwd: string
     private timeout: number  // ms, 0 = no timeout
+    private readonly logicalName?: string
+    private readonly desiredAgent?: string
     private session = new CliSessionHelper()
 
     get sessionId() { return this.session.sessionId }
 
-    constructor(_options?: ProviderOptions) {
+    constructor(options?: ProviderOptions) {
         // No API key needed for Kiro CLI (uses AWS subscription)
         this.cwd = process.cwd()
+        this.logicalName = options?.logicalName
+        this.desiredAgent = options?.agent
         const envTimeout = process.env.MAGPIE_KIRO_TIMEOUT_MS
         const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
         if (Number.isFinite(parsedTimeout) && parsedTimeout >= 0) {
@@ -32,6 +39,19 @@ export class KiroProvider implements AIProvider {
 
     endSession(): void {
         this.session.end()
+    }
+
+    async resolveAgent(): Promise<string> {
+        const sourceDir = join(this.cwd, 'agents', 'kiro-config')
+        if (!existsSync(sourceDir)) {
+            const bindingHint = this.logicalName ? ` (binding: ${this.logicalName})` : ''
+            throw new Error(`Kiro config source not found: ${sourceDir}${bindingHint}`)
+        }
+
+        return ensureKiroInstall({
+            sourceDir,
+            desiredAgent: this.desiredAgent
+        }).selectedAgent
     }
 
     async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
@@ -70,10 +90,13 @@ export class KiroProvider implements AIProvider {
         return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
     }
 
-    private runKiro(prompt: string): Promise<string> {
+    private async runKiro(prompt: string): Promise<string> {
+        const agent = await this.resolveAgent()
+
         return new Promise((resolve, reject) => {
             // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
             const args = ['chat', '--no-interactive', '--trust-all-tools']
+            args.push('--agent', agent)
             if (this.session.sessionId && !this.session.isFirstMessage) {
                 args.push('--resume')
             }
@@ -130,8 +153,11 @@ export class KiroProvider implements AIProvider {
     }
 
     private async *runKiroStream(prompt: string): AsyncGenerator<string, void, unknown> {
+        const agent = await this.resolveAgent()
+
         // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
         const args = ['chat', '--no-interactive', '--trust-all-tools']
+        args.push('--agent', agent)
         if (this.session.sessionId && !this.session.isFirstMessage) {
             args.push('--resume')
         }
