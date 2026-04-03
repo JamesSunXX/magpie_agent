@@ -24,6 +24,8 @@ function formatCapability(capability: SessionCard['capability']): string {
       return 'Loop'
     case 'issue-fix':
       return 'Issue Fix'
+    case 'harness':
+      return 'Harness'
     case 'docs-sync':
       return 'Docs Sync'
     case 'post-merge-regression':

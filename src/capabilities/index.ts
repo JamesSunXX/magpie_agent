@@ -1,6 +1,7 @@
 import { createCapabilityRegistry } from '../core/capability/registry.js'
 import { discussCapability } from './discuss/index.js'
 import { docsSyncCapability } from './workflows/docs-sync/index.js'
+import { harnessCapability } from './workflows/harness/index.js'
 import { issueFixCapability } from './workflows/issue-fix/index.js'
 import { loopCapability } from './loop/index.js'
 import { postMergeRegressionCapability } from './workflows/post-merge-regression/index.js'
@@ -16,6 +17,7 @@ export { statsCapability } from './stats/index.js'
 export { issueFixCapability } from './workflows/issue-fix/index.js'
 export { docsSyncCapability } from './workflows/docs-sync/index.js'
 export { postMergeRegressionCapability } from './workflows/post-merge-regression/index.js'
+export { harnessCapability } from './workflows/harness/index.js'
 export { unitTestEvalCapability } from './quality/unit-test-eval/index.js'
 export { loopCapability } from './loop/index.js'
 
@@ -28,6 +30,7 @@ export function createDefaultCapabilityRegistry() {
     issueFixCapability,
     docsSyncCapability,
     postMergeRegressionCapability,
+    harnessCapability,
     unitTestEvalCapability,
     loopCapability,
   ])

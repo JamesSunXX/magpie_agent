@@ -6,6 +6,7 @@ export type CapabilityName =
   | 'trd'
   | 'stats'
   | 'issue-fix'
+  | 'harness'
   | 'docs-sync'
   | 'post-merge-regression'
   | 'quality/unit-test-eval'

@@ -5,7 +5,7 @@ import { getMagpieHomeDir } from '../../../platform/paths.js'
 
 export interface WorkflowSession {
   id: string
-  capability: 'issue-fix' | 'docs-sync' | 'post-merge-regression'
+  capability: 'issue-fix' | 'docs-sync' | 'post-merge-regression' | 'harness'
   title: string
   createdAt: Date
   updatedAt: Date

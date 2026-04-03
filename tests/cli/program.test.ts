@@ -16,7 +16,7 @@ describe('CLI program', () => {
     expect(reviewers?.commands.some((subcommand) => subcommand.name() === 'list')).toBe(true)
   })
 
-  it('registers workflow command with issue-fix, docs-sync, and post-merge-regression subcommands', () => {
+  it('registers workflow command with issue-fix, docs-sync, harness, and post-merge-regression subcommands', () => {
     const program = createProgram()
     const workflow = program.commands.find((command) => command.name() === 'workflow')
 
@@ -24,6 +24,7 @@ describe('CLI program', () => {
     expect(workflow?.commands.map((subcommand) => subcommand.name())).toEqual([
       'issue-fix',
       'docs-sync',
+      'harness',
       'post-merge-regression',
     ])
   })

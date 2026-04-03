@@ -75,7 +75,7 @@ export interface TaskDraft {
 
 export interface SessionCard {
   id: string
-  capability: 'review' | 'discuss' | 'trd' | 'loop' | 'issue-fix' | 'docs-sync' | 'post-merge-regression'
+  capability: 'review' | 'discuss' | 'trd' | 'loop' | 'issue-fix' | 'docs-sync' | 'post-merge-regression' | 'harness'
   title: string
   status: string
   updatedAt: Date
