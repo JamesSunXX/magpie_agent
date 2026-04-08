@@ -5,6 +5,7 @@ import { AnthropicProvider } from './anthropic.js'
 import { OpenAIProvider } from './openai.js'
 import { ClaudeCodeProvider } from './claude-code.js'
 import { CodexCliProvider } from './codex.js'
+import { ClawProvider } from './claw.js'
 import { GeminiCliProvider } from './gemini-cli.js'
 import { GeminiProvider } from './gemini.js'
 import { QwenCodeProvider } from './qwen-code.js'
@@ -12,12 +13,15 @@ import { KiroProvider } from './kiro.js'
 import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
 
-export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
+export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex' | 'claw' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
   if (model === 'claude-code') {
     return 'claude-code'
   }
   if (model === 'codex') {
     return 'codex'
+  }
+  if (model === 'claw') {
+    return 'claw'
   }
   if (model === 'gemini-cli') {
     return 'gemini-cli'
@@ -62,6 +66,11 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
   // Codex CLI doesn't need API key config
   if (providerName === 'codex') {
     return new CodexCliProvider()
+  }
+
+  // Claw CLI doesn't need API key config
+  if (providerName === 'claw') {
+    return new ClawProvider()
   }
 
   // Gemini CLI doesn't need API key config (uses Google account)

@@ -271,6 +271,7 @@ export interface MagpieConfigV2 {
     google?: ProviderConfig
     'claude-code'?: { enabled: boolean }
     codex?: { enabled: boolean }
+    claw?: { enabled: boolean }
     'qwen-code'?: { enabled: boolean }
     kiro?: { enabled: boolean }
     minimax?: ProviderConfig

@@ -294,6 +294,11 @@ sequenceDiagram
     GPM-->>Factory: "codex"
     Factory-->>Caller: new CodexCliProvider()
 
+    Caller->>Factory: createProvider("claw", config)
+    Factory->>GPM: getProviderForModel("claw")
+    GPM-->>Factory: "claw"
+    Factory-->>Caller: new ClawProvider()
+
     Caller->>Factory: createProvider("kiro", config)
     Factory->>GPM: getProviderForModel("kiro")
     GPM-->>Factory: "kiro"
@@ -340,6 +345,7 @@ graph TB
         PF[Provider Factory]
         CC[ClaudeCodeProvider]
         CX[CodexCliProvider]
+        CLAW[ClawProvider]
         GC[GeminiCliProvider]
         KP[KiroProvider]
         QC[QwenCodeProvider]
@@ -358,6 +364,7 @@ graph TB
     subgraph "外部工具"
         CLAUDE[claude CLI]
         CODEX[codex CLI]
+        CLAWCLI[claw CLI]
         GEMINI[gemini CLI]
         KIRO[kiro CLI]
         QWEN[qwen CLI]
@@ -372,9 +379,10 @@ graph TB
     RO --> FA & PL
     DO --> CG & IP
     DO & RO --> PF
-    PF --> CC & CX & GC & KP & QC & AP & OP & GP
+    PF --> CC & CX & CLAW & GC & KP & QC & AP & OP & GP
     CC --> CLAUDE
     CX --> CODEX
+    CLAW --> CLAWCLI
     GC --> GEMINI
     KP --> KIRO
     QC --> QWEN

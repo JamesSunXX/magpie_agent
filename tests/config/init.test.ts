@@ -1,6 +1,6 @@
 // tests/config/init.test.ts
 import { describe, it, expect, afterEach } from 'vitest'
-import { initConfig, generateConfig } from '../../src/platform/config/init.js'
+import { initConfig, generateConfig, AVAILABLE_REVIEWERS } from '../../src/platform/config/init.js'
 import { existsSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -163,5 +163,11 @@ describe('Config Init', () => {
     expect(content).toContain('password: "jira-password"')
     expect(content).not.toContain('email: ')
     expect(content).not.toContain('api_token: ')
+  })
+
+  it('exposes claw as an interactive reviewer option', () => {
+    const claw = AVAILABLE_REVIEWERS.find((reviewer) => reviewer.id === 'claw')
+    expect(claw?.model).toBe('claw')
+    expect(claw?.needsApiKey).toBe(false)
   })
 })

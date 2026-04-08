@@ -40,6 +40,10 @@ describe('Provider Factory', () => {
     it('should return codex for codex model', () => {
       expect(getProviderForModel('codex')).toBe('codex')
     })
+
+    it('should return claw for claw model', () => {
+      expect(getProviderForModel('claw')).toBe('claw')
+    })
   })
 
   describe('createProvider', () => {
@@ -75,6 +79,11 @@ describe('Provider Factory', () => {
     it('should create codex provider', () => {
       const provider = createProvider('codex', mockConfig)
       expect(provider.name).toBe('codex')
+    })
+
+    it('should create claw provider', () => {
+      const provider = createProvider('claw', mockConfig)
+      expect(provider.name).toBe('claw')
     })
 
     it('should pass base_url through to API providers', () => {

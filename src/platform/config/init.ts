@@ -60,6 +60,7 @@ export interface InitConfigResult {
 export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
   { id: 'claude-code', name: 'Claude Code', model: 'claude-code', description: 'Uses your Claude Code subscription (no API key needed)', needsApiKey: false },
   { id: 'codex', name: 'Codex CLI', model: 'codex', description: 'Uses your OpenAI Codex CLI subscription (no API key needed)', needsApiKey: false },
+  { id: 'claw', name: 'Claw CLI', model: 'claw', description: 'Uses your Claw CLI subscription (no API key needed)', needsApiKey: false },
   { id: 'gemini-cli', name: 'Gemini CLI', model: 'gemini-cli', description: 'Uses your Gemini CLI (Google account, no API key needed)', needsApiKey: false },
   { id: 'kiro', name: 'Kiro CLI', model: 'kiro', description: 'Uses your Kiro CLI subscription (AWS, no API key needed)', needsApiKey: false },
   { id: 'claude-api', name: 'Claude Sonnet 4.5', model: 'claude-sonnet-4-5-20250514', description: 'Uses Anthropic API (requires ANTHROPIC_API_KEY)', needsApiKey: true, provider: 'anthropic' },
