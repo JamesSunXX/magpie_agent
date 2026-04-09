@@ -158,6 +158,16 @@ describe('kiro install manager', () => {
     })).toBe('architect')
   })
 
+  it('keeps built-in kiro planner agent even when it is not installed as a file', () => {
+    process.env.KIRO_HOME = '/tmp/kiro-home'
+    mockExistsSync.mockReturnValue(false)
+
+    expect(resolveInstalledKiroAgent({
+      cwd: '/repo',
+      desiredAgent: 'kiro_planner',
+    })).toBe('kiro_planner')
+  })
+
   it('skips reinstall when the desired agent already exists as markdown', () => {
     const home = '/tmp/kiro-home'
     process.env.KIRO_HOME = home

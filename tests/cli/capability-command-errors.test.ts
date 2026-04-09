@@ -76,4 +76,17 @@ describe('capability-backed CLI command errors', () => {
     expect(process.exitCode).toBe(1)
     errorSpy.mockRestore()
   })
+
+  it('prints a deterministic error and sets exit code for workflow harness', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(['node', 'workflow', 'harness', 'ship fix', '--prd', '/tmp/prd.md'], {
+      from: 'node',
+    })
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('harness failed: bad config'))
+    expect(process.exitCode).toBe(1)
+    errorSpy.mockRestore()
+  })
 })

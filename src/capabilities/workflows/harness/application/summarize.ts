@@ -6,9 +6,8 @@ export async function summarizeHarness(
   _ctx: CapabilityContext
 ): Promise<HarnessSummary> {
   return {
-    summary: result.status === 'completed'
-      ? 'Harness workflow completed.'
-      : 'Harness workflow failed.',
+    summary: result.session?.summary
+      ?? (result.status === 'completed' ? 'Harness workflow completed.' : 'Harness workflow failed.'),
     details: result.session,
   }
 }

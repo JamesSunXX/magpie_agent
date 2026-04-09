@@ -6,6 +6,7 @@ import { join, resolve } from 'path'
 const MANAGED_DIRS = ['agents', 'prompts', 'skills', 'hooks'] as const
 const AGENT_DIR_CANDIDATES = ['agents', 'agent'] as const
 const AGENT_FILE_EXTENSIONS = ['json', 'md'] as const
+const BUILT_IN_AGENTS = new Set(['kiro_default', 'kiro_help', 'kiro_planner'])
 
 export interface EnsureKiroInstallInput {
   sourceDir: string
@@ -40,6 +41,10 @@ export interface ResolveInstalledKiroAgentInput {
 export function resolveInstalledKiroAgent(input: ResolveInstalledKiroAgentInput): string {
   if (!input.desiredAgent) {
     return 'kiro_default'
+  }
+
+  if (BUILT_IN_AGENTS.has(input.desiredAgent)) {
+    return input.desiredAgent
   }
 
   const searchRoots = [

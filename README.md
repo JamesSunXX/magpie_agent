@@ -365,7 +365,7 @@ magpie loop list
 - 默认人工确认文件：`human_confirmation.md`
 - 默认验证命令：
   - `unit_test`: `npm run test:run`
-  - `mock_test`: `npm run test:run -- tests/mock`
+  - `mock_test`: 默认跳过；如果项目有单独的 mock 检查，再在配置里显式填写
   - `integration_test`: `npm run test:run -- tests/integration`
 
 ### `workflow`

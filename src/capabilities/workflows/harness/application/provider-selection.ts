@@ -4,6 +4,7 @@ import type { MagpieConfigV2 } from '../../../../platform/config/types.js'
 const CLAUDE_MODEL = 'claude-code'
 const KIRO_MODEL = 'kiro'
 const CLAUDE_PROBE_RESPONSE = 'MAGPIE_CLAUDE_OK'
+const DEFAULT_PROVIDER_CHECK_TIMEOUT_MS = 10_000
 
 interface ModelBinding {
   path: string
@@ -42,10 +43,16 @@ export interface HarnessProviderSelectionResult {
 }
 
 function runCommand(cwd: string, file: string, args: string[]): string {
+  const rawTimeout = process.env.MAGPIE_HARNESS_PROVIDER_CHECK_TIMEOUT_MS
+  const parsedTimeout = rawTimeout ? Number(rawTimeout) : Number.NaN
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout >= 0
+    ? Math.floor(parsedTimeout)
+    : DEFAULT_PROVIDER_CHECK_TIMEOUT_MS
   return execFileSync(file, args, {
     cwd,
     encoding: 'utf-8',
     stdio: 'pipe',
+    timeout: timeoutMs,
   }).trim()
 }
 
@@ -57,6 +64,11 @@ function normalizeCommandError(error: unknown): string {
     .filter(Boolean)
 
   return parts.join('\n') || 'Unknown command failure'
+}
+
+function isTimeoutFailure(reason: string | undefined): boolean {
+  if (!reason) return false
+  return /ETIMEDOUT|timed out/i.test(reason)
 }
 
 function collectModelBindings(config: MagpieConfigV2, reviewerIds: string[]): ModelBinding[] {
@@ -241,6 +253,11 @@ export function selectHarnessProviders(
   }
 
   if (record.claudeAuth.ok && record.claudeProbe.ok) {
+    record.decision = 'keep_claude'
+    return { record }
+  }
+
+  if (record.claudeAuth.ok && isTimeoutFailure(record.claudeProbe.reason)) {
     record.decision = 'keep_claude'
     return { record }
   }

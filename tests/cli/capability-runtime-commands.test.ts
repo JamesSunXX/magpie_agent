@@ -57,6 +57,41 @@ describe('capability runtime CLI commands', () => {
     logSpy.mockRestore()
   })
 
+  it('sets a failing exit code when workflow harness returns failed status', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    process.exitCode = 0
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'Harness workflow failed.',
+        details: {
+          id: 'harness-2',
+          artifacts: {
+            harnessConfigPath: '/tmp/harness.config.yaml',
+            roundsPath: '/tmp/rounds.json',
+            providerSelectionPath: '/tmp/provider-selection.json',
+            loopSessionId: 'loop-2',
+          },
+        },
+      },
+      result: { status: 'failed' },
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(process.exitCode).toBe(1)
+    expect(logSpy).toHaveBeenCalledWith('Harness workflow failed.')
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Harness failed:'))
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
   it('dispatches workflow issue-fix through capability runtime', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     getTypedCapability.mockReturnValue({ name: 'issue-fix' })
