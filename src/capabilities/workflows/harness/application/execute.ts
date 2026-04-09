@@ -19,6 +19,7 @@ import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2 } from '../../../../platform/config/types.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
 import type { HarnessCycle, HarnessPreparedInput, HarnessResult } from '../types.js'
+import { selectHarnessProviders } from './provider-selection.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
 
@@ -276,11 +277,37 @@ export async function executeHarness(
   const sessionDir = sessionDirFor('harness', sessionId)
   const roundsPath = join(sessionDir, 'rounds.json')
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
+  const providerSelectionPath = join(sessionDir, 'provider-selection.json')
 
   await mkdir(sessionDir, { recursive: true })
 
   const { config: harnessConfig, reviewerIds } = applyHarnessConfigOverrides(config, prepared.models)
+  const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
+  await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
+
+  if (providerSelection.record.decision === 'fallback_failed') {
+    const failedSession = {
+      id: sessionId,
+      capability: 'harness' as const,
+      title: prepared.goal.slice(0, 80),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      status: 'failed' as const,
+      summary: `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim(),
+      artifacts: {
+        harnessConfigPath,
+        roundsPath,
+        providerSelectionPath,
+      },
+    }
+    await persistWorkflowSession(failedSession)
+
+    return {
+      status: 'failed',
+      session: failedSession,
+    }
+  }
 
   const harnessCtx = createCapabilityContext({
     cwd: ctx.cwd,
@@ -306,6 +333,7 @@ export async function executeHarness(
       artifacts: {
         harnessConfigPath,
         roundsPath,
+        providerSelectionPath,
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
       },
     }
@@ -352,6 +380,7 @@ export async function executeHarness(
     artifacts: {
       harnessConfigPath,
       roundsPath,
+      providerSelectionPath,
       ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
     },
   }

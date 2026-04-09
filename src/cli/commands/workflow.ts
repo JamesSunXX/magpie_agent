@@ -105,6 +105,7 @@ workflowCommand
       console.log(`Session: ${output.details.id}`)
       console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
       console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
+      console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
       if (output.details.artifacts.loopSessionId) {
         console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
       }

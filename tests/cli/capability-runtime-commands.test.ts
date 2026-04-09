@@ -26,6 +26,142 @@ describe('capability runtime CLI commands', () => {
     })
   })
 
+  it('prints provider selection artifact for workflow harness', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'done',
+        details: {
+          id: 'harness-1',
+          artifacts: {
+            harnessConfigPath: '/tmp/harness.config.yaml',
+            roundsPath: '/tmp/rounds.json',
+            providerSelectionPath: '/tmp/provider-selection.json',
+            loopSessionId: 'loop-1',
+          },
+        },
+      },
+      result: { status: 'completed' },
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'harness')
+    expect(logSpy).toHaveBeenCalledWith('Provider selection: /tmp/provider-selection.json')
+    logSpy.mockRestore()
+  })
+
+  it('dispatches workflow issue-fix through capability runtime', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'issue-fix' })
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'issue-fix done',
+        details: {
+          id: 'issue-fix-1',
+          artifacts: {
+            planPath: '/tmp/plan.md',
+            executionPath: '/tmp/execution.md',
+          },
+        },
+      },
+      result: { status: 'completed' },
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'issue-fix', 'broken loop', '--apply', '--verify-command', 'npm run test:run'],
+      { from: 'node' }
+    )
+
+    expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'issue-fix')
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'issue-fix' },
+      expect.objectContaining({
+        issue: 'broken loop',
+        apply: true,
+        verifyCommand: 'npm run test:run',
+      }),
+      expect.any(Object)
+    )
+    expect(logSpy).toHaveBeenCalledWith('Plan: /tmp/plan.md')
+    expect(logSpy).toHaveBeenCalledWith('Execution: /tmp/execution.md')
+    logSpy.mockRestore()
+  })
+
+  it('dispatches workflow docs-sync through capability runtime', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'docs-sync' })
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'docs-sync done',
+        details: {
+          id: 'docs-sync-1',
+          artifacts: {
+            reportPath: '/tmp/docs-report.md',
+          },
+        },
+      },
+      result: { status: 'completed' },
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'docs-sync', '--apply'],
+      { from: 'node' }
+    )
+
+    expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'docs-sync')
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'docs-sync' },
+      { apply: true },
+      expect.any(Object)
+    )
+    expect(logSpy).toHaveBeenCalledWith('Report: /tmp/docs-report.md')
+    logSpy.mockRestore()
+  })
+
+  it('dispatches workflow post-merge-regression through capability runtime', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'post-merge-regression' })
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'post-merge done',
+        details: {
+          id: 'post-merge-1',
+          artifacts: {
+            reportPath: '/tmp/regression-report.md',
+          },
+        },
+      },
+      result: { status: 'completed' },
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'post-merge-regression', '--command', 'npm run test:run', 'npm run build'],
+      { from: 'node' }
+    )
+
+    expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'post-merge-regression')
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'post-merge-regression' },
+      { commands: ['npm run test:run', 'npm run build'] },
+      expect.any(Object)
+    )
+    expect(logSpy).toHaveBeenCalledWith('Report: /tmp/regression-report.md')
+    logSpy.mockRestore()
+  })
+
   it('dispatches review through capability runtime', async () => {
     getTypedCapability.mockReturnValue({ name: 'review' })
     const { reviewCommand } = await import('../../src/cli/commands/review.js')

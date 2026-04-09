@@ -120,6 +120,7 @@ describe('stats capability', () => {
       sessionId: 'stats-test',
       metadata: { format: 'json' },
     })
+    ctx.now = new Date('2026-04-09T00:00:00.000Z')
 
     const res = await runCapability(statsCapability, { since: 30, format: 'json' }, ctx)
 

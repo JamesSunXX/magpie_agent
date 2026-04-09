@@ -35,6 +35,7 @@ export interface HarnessResult {
     artifacts: WorkflowSession['artifacts'] & {
       harnessConfigPath: string
       roundsPath: string
+      providerSelectionPath: string
       loopSessionId?: string
     }
   }
@@ -44,4 +45,3 @@ export interface HarnessSummary {
   summary: string
   details?: HarnessResult['session']
 }
-
