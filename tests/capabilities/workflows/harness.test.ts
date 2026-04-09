@@ -892,7 +892,7 @@ describe('reportHarness logging levels', () => {
     infoSpy.mockRestore()
   })
 
-  it('logs at info level when details is undefined', async () => {
+  it('logs at info level when details is undefined and summary is not failure', async () => {
     const ctx = createCapabilityContext({ cwd: '/tmp' })
     const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
 
@@ -900,5 +900,95 @@ describe('reportHarness logging levels', () => {
 
     expect(infoSpy).toHaveBeenCalledWith('[harness]', 'Harness workflow completed.')
     infoSpy.mockRestore()
+  })
+
+  it('logs at error level when details is undefined but summary indicates failure', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
+
+    await reportHarness({ summary: 'Harness workflow failed.' }, ctx)
+
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', 'Harness workflow failed.')
+    expect(infoSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+    infoSpy.mockRestore()
+  })
+})
+
+describe('summarizeHarness', () => {
+  it('returns session summary when result has a session', async () => {
+    const { summarizeHarness } = await import('../../../src/capabilities/workflows/harness/application/summarize.js')
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const result = {
+      status: 'failed' as const,
+      session: { id: 's1', status: 'failed', summary: 'Harness failed during loop.' } as never,
+    }
+    const output = await summarizeHarness(result, ctx)
+    expect(output.summary).toBe('Harness failed during loop.')
+    expect(output.details).toBe(result.session)
+  })
+
+  it('returns fallback failure summary when session is undefined', async () => {
+    const { summarizeHarness } = await import('../../../src/capabilities/workflows/harness/application/summarize.js')
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const output = await summarizeHarness({ status: 'failed' }, ctx)
+    expect(output.summary).toBe('Harness workflow failed.')
+    expect(output.details).toBeUndefined()
+  })
+
+  it('returns fallback completed summary when session is undefined', async () => {
+    const { summarizeHarness } = await import('../../../src/capabilities/workflows/harness/application/summarize.js')
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const output = await summarizeHarness({ status: 'completed' }, ctx)
+    expect(output.summary).toBe('Harness workflow completed.')
+    expect(output.details).toBeUndefined()
+  })
+})
+
+describe('prepareHarnessInput', () => {
+  it('applies default values when optional fields are omitted', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const prepared = await prepareHarnessInput({ goal: 'ship it', prdPath: '/tmp/prd.md' }, ctx)
+    expect(prepared.maxCycles).toBe(3)
+    expect(prepared.reviewRounds).toBe(3)
+    expect(prepared.models).toEqual(['gemini-cli', 'kiro'])
+    expect(prepared.preparedAt).toBeInstanceOf(Date)
+  })
+
+  it('respects explicit values', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const prepared = await prepareHarnessInput({
+      goal: 'ship it',
+      prdPath: '/tmp/prd.md',
+      maxCycles: 5,
+      reviewRounds: 2,
+      models: ['codex'],
+    }, ctx)
+    expect(prepared.maxCycles).toBe(5)
+    expect(prepared.reviewRounds).toBe(2)
+    expect(prepared.models).toEqual(['codex'])
+  })
+
+  it('clamps maxCycles and reviewRounds to at least 1', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const prepared = await prepareHarnessInput({
+      goal: 'g',
+      prdPath: '/tmp/prd.md',
+      maxCycles: -1,
+      reviewRounds: 0,
+    }, ctx)
+    expect(prepared.maxCycles).toBe(1)
+    expect(prepared.reviewRounds).toBe(1)
+  })
+
+  it('falls back to default models when given empty array', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const prepared = await prepareHarnessInput({
+      goal: 'g',
+      prdPath: '/tmp/prd.md',
+      models: [],
+    }, ctx)
+    expect(prepared.models).toEqual(['gemini-cli', 'kiro'])
   })
 })

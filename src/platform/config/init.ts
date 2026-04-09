@@ -341,7 +341,6 @@ capabilities:
       poll_interval_sec: 8
     commands:
       unit_test: "npm run test:run"
-      mock_test: "npm run test:run -- tests/mock"
       integration_test: "npm run test:run -- tests/integration"
 
 # Integrations

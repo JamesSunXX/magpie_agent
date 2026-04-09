@@ -56,7 +56,7 @@ interface LoopRuntimeConfig {
   gatePolicy: 'exception_or_low_confidence' | 'always' | 'manual_only'
   commands: {
     unitTest: string
-    mockTest: string
+    mockTest?: string
     integrationTest: string
   }
 }
@@ -95,7 +95,7 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     gatePolicy: config?.human_confirmation?.gate_policy || 'exception_or_low_confidence',
     commands: {
       unitTest: config?.commands?.unit_test || 'npm run test:run',
-      mockTest: config?.commands?.mock_test || 'npm run test:run -- tests/mock',
+      mockTest: config?.commands?.mock_test?.trim() || undefined,
       integrationTest: config?.commands?.integration_test || 'npm run test:run -- tests/integration',
     },
   }
@@ -187,6 +187,26 @@ function runCommand(cwd: string, command: string): { passed: boolean; output: st
       passed: false,
       output: [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim(),
     }
+  }
+}
+
+function runOptionalCommand(
+  cwd: string,
+  command: string | undefined,
+  skippedMessage: string
+): { passed: boolean; output: string; commandLabel: string } {
+  if (!command) {
+    return {
+      passed: true,
+      output: skippedMessage,
+      commandLabel: '(skipped)',
+    }
+  }
+
+  const result = runCommand(cwd, command)
+  return {
+    ...result,
+    commandLabel: command,
   }
 }
 
@@ -459,11 +479,11 @@ async function runSingleStage(
 
     if (stage === 'unit_mock_test') {
       const unit = runCommand(runCwd, runtime.commands.unitTest)
-      const mock = runCommand(runCwd, runtime.commands.mockTest)
+      const mock = runOptionalCommand(runCwd, runtime.commands.mockTest, 'Skipped: no mock test command configured.')
       stageSucceeded = unit.passed && mock.passed
       testOutput = [
         `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-        `## Mock Test (${runtime.commands.mockTest})\n${mock.output}`,
+        `## Mock Test (${mock.commandLabel})\n${mock.output}`,
       ].join('\n\n')
     }
 
@@ -596,11 +616,11 @@ async function runSingleStage(
 
       if (stage === 'unit_mock_test') {
         const unit = runCommand(runCwd, runtime.commands.unitTest)
-        const mock = runCommand(runCwd, runtime.commands.mockTest)
+        const mock = runOptionalCommand(runCwd, runtime.commands.mockTest, 'Skipped: no mock test command configured.')
         finalSucceeded = unit.passed && mock.passed
         finalTestOutput = [
           `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-          `## Mock Test (${runtime.commands.mockTest})\n${mock.output}`,
+          `## Mock Test (${mock.commandLabel})\n${mock.output}`,
         ].join('\n\n')
       } else if (stage === 'integration_test') {
         const integration = runCommand(runCwd, runtime.commands.integrationTest)
