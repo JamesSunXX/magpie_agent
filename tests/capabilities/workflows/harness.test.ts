@@ -876,6 +876,31 @@ describe('reportHarness logging levels', () => {
     infoSpy.mockRestore()
   })
 
+  it('logs session ID and artifact paths on failure when details are present', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+
+    await reportHarness({
+      summary: 'Harness failed during loop development stage.',
+      details: {
+        id: 'harness-abc',
+        status: 'failed',
+        artifacts: {
+          harnessConfigPath: '/tmp/harness.config.yaml',
+          roundsPath: '/tmp/rounds.json',
+          providerSelectionPath: '/tmp/provider-selection.json',
+        },
+      } as never,
+    }, ctx)
+
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', 'Harness failed during loop development stage.')
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', 'Session: harness-abc')
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', expect.stringContaining('/tmp/harness.config.yaml'))
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', expect.stringContaining('/tmp/rounds.json'))
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', expect.stringContaining('/tmp/provider-selection.json'))
+    errorSpy.mockRestore()
+  })
+
   it('logs at info level when details.status is completed', async () => {
     const ctx = createCapabilityContext({ cwd: '/tmp' })
     const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})

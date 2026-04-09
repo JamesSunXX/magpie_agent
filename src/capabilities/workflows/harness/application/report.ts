@@ -6,6 +6,13 @@ export async function reportHarness(output: HarnessSummary, ctx: CapabilityConte
     || (!output.details && /fail/i.test(output.summary))
   if (failed) {
     ctx.logger.error('[harness]', output.summary)
+    if (output.details) {
+      ctx.logger.error('[harness]', `Session: ${output.details.id}`)
+      const a = output.details.artifacts
+      if (a) {
+        ctx.logger.error('[harness]', `Artifacts: config=${a.harnessConfigPath} rounds=${a.roundsPath} provider-selection=${a.providerSelectionPath}`)
+      }
+    }
   } else {
     ctx.logger.info('[harness]', output.summary)
   }
