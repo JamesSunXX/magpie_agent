@@ -713,6 +713,91 @@ describe('harness workflow', () => {
     }
   })
 
+  it('fails when loop returns non-completed status', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-fail-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'failed', session: { id: 'loop-fail-1' } },
+          output: {} as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: {} as never }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      expect(result.session?.summary).toContain('loop')
+      expect(result.session?.artifacts.loopSessionId).toBe('loop-fail-1')
+      // review should never have been called
+      const calledNames = runCapabilityMock.mock.calls.map(([m]) => m.name)
+      expect(calledNames).not.toContain('review')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('persists failed session when cycle throws unexpected error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-cycle-throw-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-cycle-throw' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        throw new Error('disk full')
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: {} as never }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        maxCycles: 1,
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      expect(result.session?.summary).toContain('disk full')
+      expect(result.session?.artifacts.loopSessionId).toBe('loop-cycle-throw')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('fails before loop starts when fallback is required but kiro is unavailable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-kiro-missing-'))
     const magpieHome = join(dir, '.magpie-home')

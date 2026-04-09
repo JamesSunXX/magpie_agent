@@ -349,22 +349,43 @@ export async function executeHarness(
   const cycles: HarnessCycle[] = []
   let approved = false
 
-  for (let cycle = 1; cycle <= prepared.maxCycles; cycle++) {
-    const cycleRun = await runCycle(
-      cycle,
-      resolve(ctx.cwd),
-      harnessConfigPath,
-      reviewerIds,
-      prepared.reviewRounds,
-      testCommand,
-      sessionDir,
-    )
-    cycles.push(cycleRun.cycleResult)
-    await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
-    if (cycleRun.approved) {
-      approved = true
-      break
+  try {
+    for (let cycle = 1; cycle <= prepared.maxCycles; cycle++) {
+      const cycleRun = await runCycle(
+        cycle,
+        resolve(ctx.cwd),
+        harnessConfigPath,
+        reviewerIds,
+        prepared.reviewRounds,
+        testCommand,
+        sessionDir,
+      )
+      cycles.push(cycleRun.cycleResult)
+      await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
+      if (cycleRun.approved) {
+        approved = true
+        break
+      }
     }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const failedSession = {
+      id: sessionId,
+      capability: 'harness' as const,
+      title: prepared.goal.slice(0, 80),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      status: 'failed' as const,
+      summary: `Harness failed during review cycle: ${message}`,
+      artifacts: {
+        harnessConfigPath,
+        roundsPath,
+        providerSelectionPath,
+        ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+      },
+    }
+    await persistWorkflowSession(failedSession)
+    return { status: 'failed', session: failedSession }
   }
 
   const completedSession = {
