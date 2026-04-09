@@ -59,6 +59,7 @@ describe('capability runtime CLI commands', () => {
 
   it('sets a failing exit code when workflow harness returns failed status', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     process.exitCode = 0
     getTypedCapability.mockReturnValue({ name: 'harness' })
     runCapability.mockResolvedValue({
@@ -86,7 +87,9 @@ describe('capability runtime CLI commands', () => {
 
     expect(process.exitCode).toBe(1)
     expect(logSpy).toHaveBeenCalledWith('Harness workflow failed.')
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Harness failed:'))
     logSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 
   it('dispatches workflow issue-fix through capability runtime', async () => {

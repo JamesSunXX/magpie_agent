@@ -18,6 +18,7 @@ import { createCapabilityContext } from '../../../src/core/capability/context.js
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { executeHarness } from '../../../src/capabilities/workflows/harness/application/execute.js'
 import { prepareHarnessInput } from '../../../src/capabilities/workflows/harness/application/prepare.js'
+import { reportHarness } from '../../../src/capabilities/workflows/harness/application/report.js'
 
 vi.mock('../../../src/core/capability/runner.js', () => ({
   runCapability: vi.fn(),
@@ -855,5 +856,49 @@ describe('harness workflow', () => {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME
     }
+  })
+})
+
+describe('reportHarness logging levels', () => {
+  it('logs at error level when details.status is failed', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
+
+    await reportHarness({
+      summary: 'Harness workflow failed.',
+      details: { status: 'failed' } as never,
+    }, ctx)
+
+    expect(errorSpy).toHaveBeenCalledWith('[harness]', 'Harness workflow failed.')
+    expect(infoSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+    infoSpy.mockRestore()
+  })
+
+  it('logs at info level when details.status is completed', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
+
+    await reportHarness({
+      summary: 'Harness approved after 1 cycle(s).',
+      details: { status: 'completed' } as never,
+    }, ctx)
+
+    expect(infoSpy).toHaveBeenCalledWith('[harness]', 'Harness approved after 1 cycle(s).')
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+    infoSpy.mockRestore()
+  })
+
+  it('logs at info level when details is undefined', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
+
+    await reportHarness({ summary: 'Harness workflow completed.' }, ctx)
+
+    expect(infoSpy).toHaveBeenCalledWith('[harness]', 'Harness workflow completed.')
+    infoSpy.mockRestore()
   })
 })
