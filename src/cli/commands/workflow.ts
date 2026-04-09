@@ -85,30 +85,40 @@ workflowCommand
   .option('--test-command <command>', 'Override unit test command used by harness')
   .option('--models <models...>', 'Model list for adversarial confirmation (default: gemini-cli kiro)')
   .action(async (goal: string, options) => {
-    const registry = createDefaultCapabilityRegistry()
-    const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
-      registry,
-      'harness'
-    )
-    const ctx = createCapabilityContext({ cwd: process.cwd(), configPath: options.config })
-    const { output } = await runCapability(capability, {
-      goal,
-      prdPath: options.prd,
-      maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
-      reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
-      testCommand: options.testCommand,
-      models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
-    }, ctx)
+    try {
+      const registry = createDefaultCapabilityRegistry()
+      const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
+        registry,
+        'harness'
+      )
+      const ctx = createCapabilityContext({ cwd: process.cwd(), configPath: options.config })
+      const { output, result } = await runCapability(capability, {
+        goal,
+        prdPath: options.prd,
+        maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
+        reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
+        testCommand: options.testCommand,
+        models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
+      }, ctx)
 
-    console.log(output.summary)
-    if (output.details) {
-      console.log(`Session: ${output.details.id}`)
-      console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
-      console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
-      console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
-      if (output.details.artifacts.loopSessionId) {
-        console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
+      console.log(output.summary)
+      if (output.details) {
+        console.log(`Session: ${output.details.id}`)
+        console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
+        console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
+        console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
+        if (output.details.artifacts.loopSessionId) {
+          console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
+        }
       }
+
+      if (result.status === 'failed') {
+        console.error(`Harness failed: ${output.summary}`)
+        process.exitCode = 1
+      }
+    } catch (error) {
+      console.error(`harness failed: ${error instanceof Error ? error.message : error}`)
+      process.exitCode = 1
     }
   })
 

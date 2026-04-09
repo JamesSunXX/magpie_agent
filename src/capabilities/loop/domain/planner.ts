@@ -14,6 +14,8 @@ interface PlanJson {
   }>
 }
 
+const DEFAULT_PLANNER_TIMEOUT_MS = 60_000
+
 function defaultTasks(goal: string, stages: LoopStageName[]): LoopTask[] {
   return stages.map((stage, idx) => ({
     id: `task-${idx + 1}`,
@@ -51,6 +53,31 @@ function normalizeTasks(goal: string, stages: LoopStageName[], parsed: PlanJson 
   return tasks.length > 0 ? tasks : defaultTasks(goal, stages)
 }
 
+function getPlannerTimeoutMs(): number {
+  const raw = process.env.MAGPIE_LOOP_PLANNER_TIMEOUT_MS
+  const value = raw ? Number(raw) : Number.NaN
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_PLANNER_TIMEOUT_MS
+}
+
+async function withPlannerTimeout<T>(work: Promise<T>): Promise<T> {
+  const timeoutMs = getPlannerTimeoutMs()
+  if (timeoutMs === 0) {
+    return work
+  }
+
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Loop planner timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export async function generateLoopPlan(
   planner: AIProvider,
   goal: string,
@@ -82,7 +109,13 @@ Return ONLY JSON:
 \`\`\``
 
   const messages: Message[] = [{ role: 'user', content: prompt }]
-  const response = await planner.chat(messages)
-  const parsed = extractJsonBlock<PlanJson>(response)
-  return normalizeTasks(goal, stages, parsed)
+  try {
+    const response = await withPlannerTimeout(
+      planner.chat(messages, undefined, { disableTools: true })
+    )
+    const parsed = extractJsonBlock<PlanJson>(response)
+    return normalizeTasks(goal, stages, parsed)
+  } catch {
+    return defaultTasks(goal, stages)
+  }
 }

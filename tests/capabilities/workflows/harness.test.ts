@@ -122,6 +122,24 @@ function mockClaudeProbeFailure(): void {
   })
 }
 
+function mockClaudeProbeTimeout(): void {
+  execFileSyncMock.mockImplementation((file: string, args?: string[]) => {
+    if (file === 'claude' && Array.isArray(args) && args[0] === 'auth' && args[1] === 'status') {
+      return JSON.stringify({
+        loggedIn: true,
+        subscriptionType: 'pro',
+      })
+    }
+    if (file === 'claude') {
+      throw new Error('spawnSync claude ETIMEDOUT')
+    }
+    if (file === 'kiro-cli') {
+      return 'kiro ok'
+    }
+    throw new Error(`Unexpected command: ${file} ${Array.isArray(args) ? args.join(' ') : ''}`)
+  })
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf-8')) as T
 }
@@ -508,6 +526,98 @@ describe('harness workflow', () => {
       expect(selection.decision).toBe('fallback_to_kiro')
       expect(selection.claudeProbe.ok).toBe(false)
       expect(selection.claudeProbe.reason).toContain('429')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('keeps claude when the probe only times out', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-probe-timeout-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath, {
+      loopPlannerModel: 'claude-code',
+      loopExecutorModel: 'claude-code',
+      issueFixPlannerModel: 'claude-code',
+      issueFixExecutorModel: 'claude-code',
+    })
+    mockClaudeProbeTimeout()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-probe-timeout' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        models: ['claude-code', 'claude-code'],
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      const selection = readJson<{
+        decision: string
+        replacements: string[]
+        claudeProbe: { ok: boolean; reason?: string }
+      }>(result.session!.artifacts.providerSelectionPath)
+      expect(selection.decision).toBe('keep_claude')
+      expect(selection.replacements).toEqual([])
+      expect(selection.claudeProbe.ok).toBe(false)
+      expect(selection.claudeProbe.reason).toContain('ETIMEDOUT')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

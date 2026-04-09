@@ -14,7 +14,13 @@ export class ClaudeCodeProvider implements AIProvider {
     // No API key needed for Claude Code CLI
     // Use current working directory so claude can access the repo
     this.cwd = process.cwd()
-    this.timeout = 15 * 60 * 1000  // 15 minutes default
+    const envTimeout = process.env.MAGPIE_CLAUDE_TIMEOUT_MS
+    const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
+    if (Number.isFinite(parsedTimeout) && parsedTimeout >= 0) {
+      this.timeout = Math.floor(parsedTimeout)
+    } else {
+      this.timeout = 15 * 60 * 1000  // 15 minutes default
+    }
   }
 
   setCwd(cwd: string) {
@@ -57,6 +63,11 @@ export class ClaudeCodeProvider implements AIProvider {
     return `${prompt}\n\n请直接读取并分析以下图片路径/URL：\n${lines.join('\n')}`
   }
 
+  private getTimeoutCheckInterval(): number {
+    if (this.timeout <= 0) return 0
+    return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
+  }
+
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
     return new Promise((resolve, reject) => {
       // Build args based on session state
@@ -85,16 +96,32 @@ export class ClaudeCodeProvider implements AIProvider {
 
       let output = ''
       let error = ''
+      let settled = false
+      let lastActivity = Date.now()
+      const checkInterval = this.getTimeoutCheckInterval()
+      const timeoutChecker = this.timeout > 0 ? setInterval(() => {
+        if (Date.now() - lastActivity > this.timeout && !settled) {
+          if (timeoutChecker) clearInterval(timeoutChecker)
+          child.kill('SIGTERM')
+          settled = true
+          reject(new Error(`Claude CLI timed out after ${this.timeout / 1000}s of inactivity`))
+        }
+      }, checkInterval) : null
 
       child.stdout.on('data', (data) => {
+        lastActivity = Date.now()
         output += data.toString()
       })
 
       child.stderr.on('data', (data) => {
+        lastActivity = Date.now()
         error += data.toString()
       })
 
       child.on('close', (code) => {
+        if (timeoutChecker) clearInterval(timeoutChecker)
+        if (settled) return
+        settled = true
         if (code !== 0) {
           reject(new Error(`Claude CLI exited with code ${code}: ${error}`))
         } else {
@@ -103,6 +130,9 @@ export class ClaudeCodeProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        if (timeoutChecker) clearInterval(timeoutChecker)
+        if (settled) return
+        settled = true
         reject(new Error(`Failed to run claude CLI: ${err.message}`))
       })
 
@@ -139,6 +169,7 @@ export class ClaudeCodeProvider implements AIProvider {
     let lastActivity = Date.now()
 
     // Timeout checker - kill if no activity for too long
+    const checkInterval = this.getTimeoutCheckInterval()
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
       if (Date.now() - lastActivity > this.timeout) {
         child.kill('SIGTERM')
@@ -148,7 +179,7 @@ export class ClaudeCodeProvider implements AIProvider {
           resolveNext({ chunk: null })
         }
       }
-    }, 10000) : null  // Check every 10s
+    }, checkInterval) : null
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()

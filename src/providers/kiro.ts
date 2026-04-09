@@ -43,7 +43,8 @@ export class KiroProvider implements AIProvider {
 
     async resolveAgent(): Promise<string> {
         const sourceDir = join(this.cwd, 'agents', 'kiro-config')
-        if (!existsSync(sourceDir)) {
+        const installScript = join(sourceDir, 'install.sh')
+        if (!existsSync(sourceDir) || !existsSync(installScript)) {
             return resolveInstalledKiroAgent({
                 cwd: this.cwd,
                 desiredAgent: this.desiredAgent,

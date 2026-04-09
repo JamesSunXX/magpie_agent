@@ -25,6 +25,26 @@ describe('resolveProviderBinding', () => {
     })
   })
 
+  it('maps kiro planner and executor bindings to built-in agents', () => {
+    expect(resolveProviderBinding({
+      logicalName: 'capabilities.loop.planner',
+      model: 'kiro',
+    })).toEqual({
+      logicalName: 'capabilities.loop.planner',
+      model: 'kiro',
+      agent: 'kiro_planner',
+    })
+
+    expect(resolveProviderBinding({
+      logicalName: 'capabilities.loop.executor',
+      model: 'kiro',
+    })).toEqual({
+      logicalName: 'capabilities.loop.executor',
+      model: 'kiro',
+      agent: 'dev',
+    })
+  })
+
   it('does not carry agent metadata for non-kiro models', () => {
     expect(resolveProviderBinding({
       logicalName: 'analyzer',

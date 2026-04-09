@@ -24,10 +24,15 @@ export function resolveProviderBinding(input: ProviderBindingInput): ProviderBin
   }
 
   const fallbackAgent = input.logicalName.split('.').pop()
+  const derivedAgent = (() => {
+    if (fallbackAgent === 'planner') return 'kiro_planner'
+    if (fallbackAgent === 'executor') return 'dev'
+    return fallbackAgent
+  })()
   return {
     logicalName: input.logicalName,
     model: input.model,
-    agent: input.agent || fallbackAgent,
+    agent: input.agent || derivedAgent,
   }
 }
 

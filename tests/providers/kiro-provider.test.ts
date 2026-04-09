@@ -64,4 +64,24 @@ describe('KiroProvider agent resolution', () => {
       desiredAgent: 'architect',
     })
   })
+
+  it('falls back to installed kiro agents when managed source is incomplete', async () => {
+    mockExistsSync.mockImplementation((path: string) => path === '/repo/agents/kiro-config')
+    mockResolveInstalledKiroAgent.mockReturnValue('architect')
+
+    const provider = new KiroProvider({
+      apiKey: '',
+      model: 'kiro',
+      logicalName: 'reviewers.kiro:architect',
+      agent: 'architect',
+    })
+    provider.setCwd('/repo')
+
+    await expect(provider.resolveAgent()).resolves.toBe('architect')
+    expect(mockEnsureKiroInstall).not.toHaveBeenCalled()
+    expect(mockResolveInstalledKiroAgent).toHaveBeenCalledWith({
+      cwd: '/repo',
+      desiredAgent: 'architect',
+    })
+  })
 })
