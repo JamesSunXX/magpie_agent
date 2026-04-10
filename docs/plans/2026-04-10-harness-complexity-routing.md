@@ -160,3 +160,33 @@ magpie discuss ./docs/plans/2026-04-10-harness-complexity-routing.md \
   --reviewers route-gemini,route-codex,route-architect \
   --plan-report
 ```
+
+## 当前进展（2026-04-10）
+
+这份文档里的“复杂度分级与模型路由”方案目前还没有完整落地，但它依赖的 `harness` 运行底座已经先做了一步，方便后续把路由能力接进去。
+
+已经落地的内容：
+
+- 新增 `magpie harness submit|status|attach|list`
+- `harness` 运行过程会持续落盘会话状态和事件记录，不再只有最终结果
+- 可以在任务运行中查看状态，或用 `attach` 接回日志输出
+- TUI 已避免把暂时无法恢复的 `harness` 任务错误显示为可继续任务
+- `harness attach` 已兼容事件日志最后一行写了一半的情况，避免直接中断
+
+这些改动的意义：
+
+- 先把“任务如何持续运行、如何看见进度、如何接回现场”补齐
+- 让后续的复杂度判断、自动 reviewer pool、分档执行工具选择有稳定挂载点
+- 也让之后写 `routing-decision.json`、记录升档过程、展示当前 tier 变得更直接
+
+当前还没有落地的内容：
+
+- 启动前自动复杂度判断
+- 按 `simple / standard / complex` 自动选择工具、模型和 agent
+- review 结果驱动的自动升档
+- `discuss` / `loop` / `issue-fix` 与统一路由策略打通
+
+建议把后续实现拆成两段：
+
+1. 先接入 `harness` 启动阶段的复杂度判断和 `routing-decision.json`
+2. 再把 reviewer pool、执行工具切换和升档逻辑接进多轮循环
