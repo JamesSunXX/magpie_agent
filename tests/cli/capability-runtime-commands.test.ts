@@ -38,6 +38,7 @@ describe('capability runtime CLI commands', () => {
             harnessConfigPath: '/tmp/harness.config.yaml',
             roundsPath: '/tmp/rounds.json',
             providerSelectionPath: '/tmp/provider-selection.json',
+            routingDecisionPath: '/tmp/routing-decision.json',
             loopSessionId: 'loop-1',
           },
         },
@@ -54,6 +55,7 @@ describe('capability runtime CLI commands', () => {
 
     expect(getTypedCapability).toHaveBeenCalledWith({ registry: true }, 'harness')
     expect(logSpy).toHaveBeenCalledWith('Provider selection: /tmp/provider-selection.json')
+    expect(logSpy).toHaveBeenCalledWith('Routing: /tmp/routing-decision.json')
     logSpy.mockRestore()
   })
 
@@ -71,6 +73,7 @@ describe('capability runtime CLI commands', () => {
             harnessConfigPath: '/tmp/harness.config.yaml',
             roundsPath: '/tmp/rounds.json',
             providerSelectionPath: '/tmp/provider-selection.json',
+            routingDecisionPath: '/tmp/routing-decision.json',
             loopSessionId: 'loop-2',
           },
         },
@@ -103,6 +106,7 @@ describe('capability runtime CLI commands', () => {
           artifacts: {
             planPath: '/tmp/plan.md',
             executionPath: '/tmp/execution.md',
+            routingDecisionPath: '/tmp/routing.json',
           },
         },
       },
@@ -128,7 +132,46 @@ describe('capability runtime CLI commands', () => {
     )
     expect(logSpy).toHaveBeenCalledWith('Plan: /tmp/plan.md')
     expect(logSpy).toHaveBeenCalledWith('Execution: /tmp/execution.md')
+    expect(logSpy).toHaveBeenCalledWith('Routing: /tmp/routing.json')
     logSpy.mockRestore()
+  })
+
+  it('forwards explicit complexity overrides to workflow and discuss capabilities', async () => {
+    getTypedCapability.mockReturnValue({ name: 'issue-fix' })
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'issue-fix', 'broken loop', '--complexity', 'complex'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'issue-fix' },
+      expect.objectContaining({ complexity: 'complex' }),
+      expect.any(Object)
+    )
+
+    vi.clearAllMocks()
+    createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
+    runCapability.mockResolvedValue({
+      output: { summary: 'done' },
+      result: { payload: { exitCode: 0 } },
+    })
+    getTypedCapability.mockReturnValue({ name: 'discuss' })
+
+    const { discussCommand } = await import('../../src/cli/commands/discuss.js')
+    await discussCommand.parseAsync(
+      ['node', 'discuss', 'topic', '--complexity', 'standard'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'discuss' },
+      expect.objectContaining({
+        options: expect.objectContaining({ complexity: 'standard' }),
+      }),
+      expect.any(Object)
+    )
   })
 
   it('dispatches workflow docs-sync through capability runtime', async () => {

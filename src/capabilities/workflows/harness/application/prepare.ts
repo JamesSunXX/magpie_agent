@@ -14,12 +14,13 @@ export async function prepareHarnessInput(
   input: HarnessInput,
   _ctx: CapabilityContext
 ): Promise<HarnessPreparedInput> {
+  const modelsExplicit = Array.isArray(input.models) && input.models.length > 0
   return {
     ...input,
     preparedAt: new Date(),
     maxCycles: Number.isFinite(input.maxCycles) ? Math.max(1, input.maxCycles as number) : 3,
     reviewRounds: Number.isFinite(input.reviewRounds) ? Math.max(1, input.reviewRounds as number) : 3,
     models: normalizeModels(input.models),
+    modelsExplicit,
   }
 }
-

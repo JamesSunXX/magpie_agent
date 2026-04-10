@@ -1,4 +1,4 @@
-import type { MagpieConfigV2 } from '../../platform/config/types.js'
+import type { ComplexityTier, MagpieConfigV2, RoutingDecision } from '../../platform/config/types.js'
 
 export interface DiscussCapabilityInput {
   topic: string
@@ -17,6 +17,7 @@ export interface DiscussCapabilityInput {
   export?: string
   conclusion?: boolean
   planReport?: boolean
+  complexity?: ComplexityTier
 }
 
 export interface DiscussOptions extends Record<string, unknown> {
@@ -34,6 +35,7 @@ export interface DiscussOptions extends Record<string, unknown> {
   export?: string
   conclusion?: boolean
   planReport?: boolean
+  complexity?: ComplexityTier
 }
 
 export interface RunDiscussFlowInput {
@@ -51,6 +53,7 @@ export interface DiscussPreparedInput extends Omit<DiscussCapabilityInput, 'conf
   options: DiscussOptions
   preparedAt: Date
   config: MagpieConfigV2
+  routingDecision?: RoutingDecision
 }
 
 export interface DiscussExecutionResult {

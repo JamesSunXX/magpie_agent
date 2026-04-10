@@ -25,6 +25,7 @@ workflowCommand
   .option('--verify-command <command>', 'Override verification command')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .option('--planning-project <key>', 'Override planning project key for remote context lookup')
+  .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .action(async (issue: string, options) => {
     try {
       const registry = createDefaultCapabilityRegistry()
@@ -39,6 +40,7 @@ workflowCommand
         verifyCommand: options.verifyCommand,
         planningItemKey: options.planningItem,
         planningProjectKey: options.planningProject,
+        complexity: options.complexity,
       }, ctx)
 
       console.log(output.summary)
@@ -46,6 +48,9 @@ workflowCommand
         console.log(`Session: ${output.details.id}`)
         console.log(`Plan: ${output.details.artifacts.planPath}`)
         console.log(`Execution: ${output.details.artifacts.executionPath}`)
+        if (output.details.artifacts.routingDecisionPath) {
+          console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
+        }
       }
     } catch (error) {
       console.error('issue-fix failed:', error instanceof Error ? error.message : error)
@@ -84,6 +89,7 @@ workflowCommand
   .option('--review-rounds <number>', 'Review debate rounds per cycle', (v) => Number.parseInt(v, 10))
   .option('--test-command <command>', 'Override unit test command used by harness')
   .option('--models <models...>', 'Model list for adversarial confirmation (default: gemini-cli kiro)')
+  .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .action(async (goal: string, options) => {
     try {
       const registry = createDefaultCapabilityRegistry()
@@ -99,6 +105,7 @@ workflowCommand
         reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
         testCommand: options.testCommand,
         models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
+        complexity: options.complexity,
       }, ctx)
 
       console.log(output.summary)
@@ -107,6 +114,7 @@ workflowCommand
         console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
         console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
         console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
+        console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
         if (output.details.artifacts.loopSessionId) {
           console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
         }

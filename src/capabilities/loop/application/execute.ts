@@ -1,9 +1,10 @@
 import { randomBytes } from 'crypto'
-import { appendFile, mkdir, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { createRoutingDecision, isRoutingEnabled } from '../../routing/index.js'
 import type {
   HumanConfirmationItem,
   LoopSession,
@@ -798,6 +799,20 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
+    ? createRoutingDecision({
+      goal: prepared.goal,
+      prdContent: await readFile(prepared.prdPath, 'utf-8').catch(() => ''),
+      overrideTier: prepared.complexity,
+      config,
+    })
+    : undefined
+  if (routingDecision) {
+    loopRuntime.plannerModel = routingDecision.planning.model
+    loopRuntime.plannerAgent = routingDecision.planning.agent
+    loopRuntime.executorModel = routingDecision.execution.model
+    loopRuntime.executorAgent = routingDecision.execution.agent
+  }
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
@@ -824,9 +839,13 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const sessionDir = join(getMagpieHomeDir(), 'loop-sessions', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
+  const routingDecisionPath = join(sessionDir, 'routing-decision.json')
   const humanConfirmationPath = resolve(ctx.cwd, loopRuntime.humanConfirmationFile)
 
   await mkdir(sessionDir, { recursive: true })
+  if (routingDecision) {
+    await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
+  }
 
   const planningContext = await planningRouter.createPlanContext({
     itemKey: planningItemKey,
@@ -882,11 +901,13 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     stageResults: [],
     humanConfirmations: [],
     branchName,
+    routingTier: routingDecision?.tier,
     artifacts: {
       sessionDir,
       eventsPath,
       planPath,
       humanConfirmationPath,
+      ...(routingDecision ? { routingDecisionPath } : {}),
     },
   }
 
@@ -957,6 +978,24 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const routingDecision = isRoutingEnabled(config)
+    ? createRoutingDecision({
+      goal: session.goal,
+      prdContent: await readFile(session.prdPath, 'utf-8').catch(() => ''),
+      overrideTier: prepared.complexity || session.routingTier,
+      config,
+    })
+    : undefined
+  if (routingDecision) {
+    loopRuntime.plannerModel = routingDecision.planning.model
+    loopRuntime.plannerAgent = routingDecision.planning.agent
+    loopRuntime.executorModel = routingDecision.execution.model
+    loopRuntime.executorAgent = routingDecision.execution.agent
+    session.routingTier = routingDecision.tier
+    if (session.artifacts.routingDecisionPath) {
+      await writeFile(session.artifacts.routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
+    }
+  }
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }

@@ -9,6 +9,66 @@ export interface ReviewerConfig {
   agent?: string
 }
 
+export type ComplexityTier = 'simple' | 'standard' | 'complex'
+
+export interface ModelRouteBinding {
+  model: string
+  agent?: string
+}
+
+export interface RoutingSignalBreakdown {
+  textLengthScore: number
+  taskCountScore: number
+  dependencyScore: number
+  stageScore: number
+  keywordScore: number
+  subsystemScore: number
+  rolloutScore: number
+}
+
+export interface StageRoutePolicy {
+  planning?: Partial<Record<ComplexityTier, ModelRouteBinding>>
+  execution?: Partial<Record<ComplexityTier, ModelRouteBinding>>
+}
+
+export interface ReviewerPoolPolicy extends Partial<Record<ComplexityTier, string[]>> {}
+
+export interface RoutingFallbackChain {
+  planning?: Partial<Record<ComplexityTier, ModelRouteBinding[]>>
+  execution?: Partial<Record<ComplexityTier, ModelRouteBinding[]>>
+}
+
+export interface RoutingThresholds {
+  simple_max?: number
+  standard_max?: number
+  complex_min?: number
+}
+
+export interface RoutingConfig {
+  enabled?: boolean
+  strategy?: 'rules_first'
+  default_tier?: ComplexityTier
+  allow_runtime_escalation?: boolean
+  fallback_chain?: RoutingFallbackChain
+  thresholds?: RoutingThresholds
+  stage_policies?: StageRoutePolicy
+  reviewer_pools?: ReviewerPoolPolicy
+  high_risk_keywords?: string[]
+}
+
+export interface RoutingDecision {
+  schemaVersion: number
+  tier: ComplexityTier
+  score: number
+  reasons: string[]
+  signals: RoutingSignalBreakdown
+  planning: ModelRouteBinding
+  execution: ModelRouteBinding
+  reviewerIds: string[]
+  escalationTrail: string[]
+  fallbackTrail: string[]
+}
+
 export interface DefaultsConfig {
   max_rounds: number
   output_format: 'markdown' | 'json'
@@ -258,6 +318,7 @@ export interface CapabilitiesConfig {
   review?: ReviewConfig
   discuss?: DiscussConfig
   trd?: TrdConfig
+  routing?: RoutingConfig
   issue_fix?: IssueFixConfig
   docs_sync?: DocsSyncConfig
   post_merge_regression?: PostMergeRegressionConfig
@@ -273,6 +334,7 @@ export interface MagpieConfigV2 {
     'claude-code'?: { enabled: boolean }
     codex?: { enabled: boolean }
     claw?: { enabled: boolean }
+    'gemini-cli'?: { enabled: boolean }
     'qwen-code'?: { enabled: boolean }
     kiro?: { enabled: boolean }
     minimax?: ProviderConfig

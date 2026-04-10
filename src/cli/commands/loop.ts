@@ -9,6 +9,7 @@ import type {
   LoopPreparedInput,
   LoopSummaryOutput,
 } from '../../capabilities/loop/types.js'
+import type { ComplexityTier } from '../../config/types.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -17,6 +18,7 @@ interface SharedLoopOptions {
   maxIterations?: number
   planningItem?: string
   planningProject?: string
+  complexity?: ComplexityTier
 }
 
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
@@ -70,6 +72,7 @@ loopCommand
   .option('--wait-human', 'Wait for human confirmation (default)', true)
   .option('--no-wait-human', 'Do not wait for human confirmation; pause and exit')
   .option('--dry-run', 'Do not execute mutating stage actions')
+  .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .option('--max-iterations <number>', 'Maximum iterations when waiting for human decision', (v) => Number.parseInt(v, 10))
@@ -83,6 +86,7 @@ loopCommand
       waitHuman: options.waitHuman,
       dryRun: options.dryRun,
       maxIterations: Number.isFinite(options.maxIterations) ? options.maxIterations : undefined,
+      complexity: options.complexity,
     }, options)
   })
 
@@ -94,12 +98,14 @@ loopCommand
   .option('--wait-human', 'Wait for human confirmation (default)', true)
   .option('--no-wait-human', 'Do not wait for human confirmation; pause and exit')
   .option('--dry-run', 'Do not execute mutating stage actions')
+  .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .action(async (sessionId: string, options: SharedLoopOptions) => {
     await runLoop({
       mode: 'resume',
       sessionId,
       waitHuman: options.waitHuman,
       dryRun: options.dryRun,
+      complexity: options.complexity,
     }, options)
   })
 

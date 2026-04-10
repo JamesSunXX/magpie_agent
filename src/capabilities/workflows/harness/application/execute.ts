@@ -4,6 +4,7 @@ import YAML from 'yaml'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { createCapabilityContext } from '../../../../core/capability/context.js'
 import { runCapability } from '../../../../core/capability/runner.js'
+import { createRoutingDecision, escalateRoutingDecision, getEscalationReason, isRoutingEnabled } from '../../../routing/index.js'
 import { discussCapability } from '../../../discuss/index.js'
 import { loopCapability } from '../../../loop/index.js'
 import { unitTestEvalCapability } from '../../../quality/unit-test-eval/index.js'
@@ -16,12 +17,17 @@ import {
   sessionDirFor,
 } from '../../shared/runtime.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
-import type { MagpieConfigV2 } from '../../../../platform/config/types.js'
+import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
 import type { HarnessCycle, HarnessPreparedInput, HarnessResult } from '../types.js'
 import { selectHarnessProviders } from './provider-selection.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
+const HARNESS_REVIEWER_PROMPTS = [
+  'You are a strict release gate reviewer. Prioritize correctness, security, and missing tests. Focus on blocking risks first.',
+  'You are an adversarial implementation reviewer. Challenge weak claims, look for hidden failure modes, and verify that fixes really address the reported issue.',
+  'You are a systems reviewer. Focus on architecture drift, rollout safety, compatibility, and cross-module regressions.',
+]
 
 interface DecisionJson {
   decision?: 'approved' | 'revise'
@@ -34,11 +40,6 @@ function cloneConfig(config: MagpieConfigV2): MagpieConfigV2 {
 }
 
 function ensureHarnessReviewers(config: MagpieConfigV2, models: string[]): string[] {
-  const prompts = [
-    'You are a strict release gate reviewer. Prioritize correctness, security, and missing tests. Focus on blocking risks first.',
-    'You are an adversarial reviewer. Challenge weak claims from other reviewers, find blind spots, and verify if issues are real and severe.',
-  ]
-
   const reviewerIds: string[] = []
   const reviewers = config.reviewers || {}
 
@@ -46,7 +47,7 @@ function ensureHarnessReviewers(config: MagpieConfigV2, models: string[]): strin
     const reviewerId = `harness-${index + 1}`
     reviewers[reviewerId] = {
       model,
-      prompt: prompts[index] || prompts[prompts.length - 1],
+      prompt: HARNESS_REVIEWER_PROMPTS[index] || HARNESS_REVIEWER_PROMPTS[HARNESS_REVIEWER_PROMPTS.length - 1],
     }
     reviewerIds.push(reviewerId)
   })
@@ -64,12 +65,79 @@ function ensureHarnessReviewers(config: MagpieConfigV2, models: string[]): strin
   return reviewerIds
 }
 
+function applyHarnessReviewerPrompts(config: MagpieConfigV2, reviewerIds: string[]): void {
+  const reviewers = config.reviewers || {}
+
+  reviewerIds.forEach((reviewerId, index) => {
+    const reviewer = reviewers[reviewerId]
+    if (!reviewer) return
+    reviewer.prompt = HARNESS_REVIEWER_PROMPTS[index] || HARNESS_REVIEWER_PROMPTS[HARNESS_REVIEWER_PROMPTS.length - 1]
+  })
+
+  config.reviewers = reviewers
+}
+
+function applyBinding(
+  config: MagpieConfigV2,
+  target: 'loop' | 'issue_fix',
+  planner: ModelRouteBinding,
+  execution: ModelRouteBinding
+): void {
+  const current = config.capabilities[target] || {}
+  const next = {
+    ...current,
+    planner_model: planner.model,
+    executor_model: execution.model,
+  }
+  if (planner.agent) {
+    next.planner_agent = planner.agent
+  } else {
+    delete next.planner_agent
+  }
+  if (execution.agent) {
+    next.executor_agent = execution.agent
+  } else {
+    delete next.executor_agent
+  }
+  config.capabilities[target] = next
+}
+
+function alignSummaryRoles(config: MagpieConfigV2, reviewerIds: string[]): void {
+  const first = reviewerIds[0]
+  const last = reviewerIds[reviewerIds.length - 1] || first
+  if (first && config.reviewers[first]) {
+    config.summarizer = {
+      ...config.summarizer,
+      model: config.reviewers[first].model,
+      agent: config.reviewers[first].agent,
+    }
+  }
+  if (last && config.reviewers[last]) {
+    config.analyzer = {
+      ...config.analyzer,
+      model: config.reviewers[last].model,
+      agent: config.reviewers[last].agent,
+    }
+  }
+}
+
 function applyHarnessConfigOverrides(
   baseConfig: MagpieConfigV2,
-  models: string[]
+  models: string[],
+  modelsExplicit: boolean,
+  routingDecision?: RoutingDecision
 ): { config: MagpieConfigV2; reviewerIds: string[] } {
   const config = cloneConfig(baseConfig)
-  const reviewerIds = ensureHarnessReviewers(config, models)
+  const reviewerIds = modelsExplicit
+    ? ensureHarnessReviewers(config, models)
+    : routingDecision?.reviewerIds
+      ? [...routingDecision.reviewerIds]
+      : ensureHarnessReviewers(config, models)
+
+  if (!modelsExplicit) {
+    applyHarnessReviewerPrompts(config, reviewerIds)
+    alignSummaryRoles(config, reviewerIds)
+  }
 
   const loopConfig = config.capabilities.loop || {}
   config.capabilities.loop = {
@@ -80,11 +148,16 @@ function applyHarnessConfigOverrides(
     },
   }
 
-  const issueFixConfig = config.capabilities.issue_fix || {}
-  config.capabilities.issue_fix = {
-    ...issueFixConfig,
-    planner_model: models[0],
-    executor_model: models[Math.min(1, models.length - 1)] || models[0],
+  if (routingDecision) {
+    applyBinding(config, 'loop', routingDecision.planning, routingDecision.execution)
+    applyBinding(config, 'issue_fix', routingDecision.planning, routingDecision.execution)
+  } else {
+    const issueFixConfig = config.capabilities.issue_fix || {}
+    config.capabilities.issue_fix = {
+      ...issueFixConfig,
+      planner_model: models[0],
+      executor_model: models[Math.min(1, models.length - 1)] || models[0],
+    }
   }
 
   return { config, reviewerIds }
@@ -177,7 +250,10 @@ async function runCycle(
   reviewRounds: number,
   testCommand: string,
   sessionDir: string,
-): Promise<{ cycleResult: HarnessCycle; approved: boolean }> {
+  config: MagpieConfigV2,
+  routingDecision: RoutingDecision | undefined,
+  routingDecisionPath: string,
+): Promise<{ cycleResult: HarnessCycle; approved: boolean; routingDecision?: RoutingDecision }> {
   const cycleDir = join(sessionDir, `cycle-${cycle}`)
   await mkdir(cycleDir, { recursive: true })
 
@@ -255,7 +331,24 @@ async function runCycle(
   }
 
   if (approved) {
-    return { cycleResult, approved: true }
+    return { cycleResult, approved: true, routingDecision }
+  }
+
+  let nextRoutingDecision = routingDecision
+  const escalationReason = routingDecision
+    ? getEscalationReason({
+      blockingIssueCount: blockingIssues.length,
+      testsPassed,
+      modelDecision: cycleResult.modelDecision,
+    })
+    : null
+
+  if (routingDecision && escalationReason) {
+    nextRoutingDecision = escalateRoutingDecision(routingDecision, config, escalationReason)
+    applyBinding(config, 'loop', nextRoutingDecision.planning, nextRoutingDecision.execution)
+    applyBinding(config, 'issue_fix', nextRoutingDecision.planning, nextRoutingDecision.execution)
+    await writeFile(configPath, YAML.stringify(config), 'utf-8')
+    await writeFile(routingDecisionPath, JSON.stringify(nextRoutingDecision, null, 2), 'utf-8')
   }
 
   const issueFix = await runCapability(issueFixCapability, {
@@ -265,7 +358,7 @@ async function runCycle(
   }, cycleCtx)
 
   cycleResult.issueFixSessionId = issueFix.result.session?.id
-  return { cycleResult, approved: false }
+  return { cycleResult, approved: false, routingDecision: nextRoutingDecision }
 }
 
 export async function executeHarness(
@@ -278,13 +371,31 @@ export async function executeHarness(
   const roundsPath = join(sessionDir, 'rounds.json')
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
+  const routingDecisionPath = join(sessionDir, 'routing-decision.json')
 
   await mkdir(sessionDir, { recursive: true })
 
-  const { config: harnessConfig, reviewerIds } = applyHarnessConfigOverrides(config, prepared.models)
+  let routingDecision = isRoutingEnabled(config)
+    ? createRoutingDecision({
+      goal: prepared.goal,
+      prdContent: await readFile(prepared.prdPath, 'utf-8').catch(() => ''),
+      overrideTier: prepared.complexity,
+      config,
+    })
+    : undefined
+
+  let { config: harnessConfig, reviewerIds } = applyHarnessConfigOverrides(
+    config,
+    prepared.models,
+    prepared.modelsExplicit,
+    routingDecision
+  )
   const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
   await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
+  if (routingDecision) {
+    await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
+  }
 
   if (providerSelection.record.decision === 'fallback_failed') {
     const failedSession = {
@@ -299,6 +410,7 @@ export async function executeHarness(
         harnessConfigPath,
         roundsPath,
         providerSelectionPath,
+        routingDecisionPath,
       },
     }
     await persistWorkflowSession(failedSession)
@@ -334,6 +446,7 @@ export async function executeHarness(
         harnessConfigPath,
         roundsPath,
         providerSelectionPath,
+        routingDecisionPath,
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
       },
     }
@@ -359,7 +472,16 @@ export async function executeHarness(
         prepared.reviewRounds,
         testCommand,
         sessionDir,
+        harnessConfig,
+        routingDecision,
+        routingDecisionPath,
       )
+      routingDecision = cycleRun.routingDecision
+      if (routingDecision && !prepared.modelsExplicit) {
+        reviewerIds = [...routingDecision.reviewerIds]
+        alignSummaryRoles(harnessConfig, reviewerIds)
+        await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
+      }
       cycles.push(cycleRun.cycleResult)
       await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
       if (cycleRun.approved) {
@@ -381,6 +503,7 @@ export async function executeHarness(
         harnessConfigPath,
         roundsPath,
         providerSelectionPath,
+        routingDecisionPath,
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
       },
     }
@@ -402,6 +525,7 @@ export async function executeHarness(
       harnessConfigPath,
       roundsPath,
       providerSelectionPath,
+      routingDecisionPath,
       ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
     },
   }

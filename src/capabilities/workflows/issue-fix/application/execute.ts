@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
+import { createRoutingDecision, isRoutingEnabled } from '../../../routing/index.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import { createPlanningRouter } from '../../../../platform/integrations/planning/factory.js'
 import {
@@ -31,6 +32,7 @@ export async function executeIssueFix(
   const planPath = join(sessionDir, 'plan.md')
   const executionPath = join(sessionDir, 'execution.md')
   const verificationPath = join(sessionDir, 'verification.txt')
+  const routingDecisionPath = join(sessionDir, 'routing-decision.json')
 
   log.debug(`[issue-fix] session=${sessionId} dir=${sessionDir}`)
   log.debug(`[issue-fix] issue=${prepared.issue} apply=${prepared.apply}`)
@@ -38,18 +40,30 @@ export async function executeIssueFix(
 
   await mkdir(sessionDir, { recursive: true })
 
-  const plannerModel = runtime.planner_model || config.analyzer.model
-  const executorModel = runtime.executor_model || 'codex'
+  const routingDecision = isRoutingEnabled(config)
+    ? createRoutingDecision({
+      goal: prepared.issue,
+      overrideTier: prepared.complexity,
+      config,
+    })
+    : undefined
+
+  if (routingDecision) {
+    await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
+  }
+
+  const plannerModel = routingDecision?.planning.model || runtime.planner_model || config.analyzer.model
+  const executorModel = routingDecision?.execution.model || runtime.executor_model || 'codex'
   log.debug(`[issue-fix] planner=${plannerModel} executor=${executorModel}`)
   const planner = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.planner',
     model: plannerModel,
-    agent: runtime.planner_agent,
+    agent: routingDecision?.planning.agent || runtime.planner_agent,
   }, config)
   const executor = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.executor',
     model: executorModel,
-    agent: runtime.executor_agent,
+    agent: routingDecision?.execution.agent || runtime.executor_agent,
   }, config)
   planner.setCwd?.(ctx.cwd)
   executor.setCwd?.(ctx.cwd)
@@ -130,6 +144,7 @@ export async function executeIssueFix(
     artifacts: {
       planPath,
       executionPath,
+      ...(routingDecision ? { routingDecisionPath } : {}),
       ...(verifyCommand ? { verificationPath } : {}),
     },
   }

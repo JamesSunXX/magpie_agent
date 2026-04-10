@@ -1,3 +1,4 @@
+import type { ComplexityTier } from '../../config/types.js'
 import type { LoopSession } from '../../core/state/index.js'
 
 export type LoopMode = 'run' | 'resume' | 'list'
@@ -12,6 +13,7 @@ export interface LoopCapabilityInput {
   waitHuman?: boolean
   dryRun?: boolean
   maxIterations?: number
+  complexity?: ComplexityTier
 }
 
 export interface LoopPreparedInput extends LoopCapabilityInput {

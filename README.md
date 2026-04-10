@@ -68,6 +68,32 @@ reviewers:
 如果不写 `agent`，Magpie 会先尝试使用该配置项名称（例如 `backend`），找不到时回退到 `kiro_default`。
 如果仓库里有 `agents/kiro-config`，Magpie 会在调用前检查它，并在版本或内容变化时同步到 `~/.kiro`。如果仓库里没有这套项目配置，Magpie 会直接复用当前机器上已经存在的 Kiro agent。
 
+### 自动复杂度路由
+
+开启 `capabilities.routing.enabled: true` 后，`harness`、`loop`、`issue-fix`、`discuss` 会按任务复杂度自动选模型。
+
+- `simple`：优先 `gemini-cli`
+- `standard`：优先 `codex`
+- `complex`：优先 `kiro`
+  - 规划 / 审议：`kiro` + `architect`
+  - 执行 / 修复：`kiro` + `dev`
+
+默认内置三组稳定 reviewer，可直接用于 `discuss` 或自动路由：
+
+```yaml
+reviewers:
+  route-gemini:
+    model: gemini-cli
+  route-codex:
+    model: codex
+  route-architect:
+    model: kiro
+    agent: architect
+```
+
+如果手工传了 `--reviewers`、`--models` 或 `--complexity`，这些显式参数优先于自动路由。
+如果当前档位的首选模型不可用，路由会先按 `fallback_chain` 在同一条链路里换到下一个可用模型，并记录到 `routing-decision.json`。
+
 ### CLI provider 超时控制
 
 对于 `codex` 和 `kiro` 这类 CLI provider，建议配置超时，避免长时间无结果的挂起：
@@ -248,6 +274,7 @@ magpie discuss [topic] [options]
 magpie discuss "Should we keep legacy commands?"
 magpie discuss ./notes/topic.md --devil-advocate
 magpie discuss "Should we migrate now?" --plan-report
+magpie discuss ./docs/plans/2026-04-10-harness-complexity-routing.md --reviewers route-gemini,route-codex,route-architect --plan-report
 magpie discuss --list
 magpie discuss --resume <id>
 magpie discuss --export <id> --plan-report
@@ -261,6 +288,7 @@ magpie discuss --export <id> --plan-report
 - `-f, --format <format>`
 - `--no-converge`
 - `--reviewers <ids>` / `-a, --all`
+- `--complexity <tier>`：覆盖自动复杂度分级，可选 `simple|standard|complex`
 - `-d, --devil-advocate`
 - `--list`
 - `--resume <id>`
@@ -380,8 +408,10 @@ magpie workflow post-merge-regression [options]
 
 ```bash
 magpie workflow issue-fix "loop resume fails after human rejection"
+magpie workflow issue-fix "fix flaky tests in notifications" --complexity standard
 magpie workflow issue-fix "fix flaky tests in notifications" --apply --verify-command "npm run test:run"
 magpie workflow harness "Deliver checkout v2" --prd ./docs/prd.md
+magpie workflow harness "Deliver checkout v2" --prd ./docs/prd.md --complexity complex
 magpie workflow harness "Deliver checkout v2" --prd ./docs/prd.md --models gemini-cli kiro --max-cycles 4
 magpie workflow docs-sync
 magpie workflow docs-sync --apply
@@ -393,8 +423,10 @@ magpie workflow post-merge-regression --command "npm run test:run" "npm run buil
 
 - `issue-fix --apply`：允许执行器直接落代码
 - `issue-fix --verify-command <command>`：覆盖验证命令
+- `issue-fix --complexity <tier>`：覆盖自动复杂度分级
 - `harness --prd <path>`：指定需求 PRD，串行执行开发->评审->单测->自确认闭环
 - `harness --models <models...>`：指定用于对抗确认的模型，默认 `gemini-cli kiro`
+- `harness --complexity <tier>`：覆盖自动复杂度分级；如果同时传了 `--models`，只覆盖开发/修复链路，不改手工指定的评审模型
 - `harness --max-cycles <number>`：最大修复轮次，默认 `3`
 - `harness --review-rounds <number>`：每轮评审辩论轮次，默认 `3`
 - `harness --test-command <command>`：覆盖单测命令

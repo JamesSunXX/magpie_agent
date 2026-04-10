@@ -1,3 +1,4 @@
+import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
 
 export interface HarnessInput {
@@ -7,6 +8,7 @@ export interface HarnessInput {
   reviewRounds?: number
   testCommand?: string
   models?: string[]
+  complexity?: ComplexityTier
 }
 
 export interface HarnessPreparedInput extends HarnessInput {
@@ -14,6 +16,7 @@ export interface HarnessPreparedInput extends HarnessInput {
   maxCycles: number
   reviewRounds: number
   models: string[]
+  modelsExplicit: boolean
 }
 
 export interface HarnessCycle {
@@ -36,6 +39,7 @@ export interface HarnessResult {
       harnessConfigPath: string
       roundsPath: string
       providerSelectionPath: string
+      routingDecisionPath: string
       loopSessionId?: string
     }
   }

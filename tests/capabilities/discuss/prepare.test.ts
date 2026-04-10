@@ -56,4 +56,29 @@ describe('discuss capability prepare', () => {
       format: 'markdown',
     }))
   })
+
+  it('auto-selects routed discuss reviewers when routing is enabled and reviewers are not provided', async () => {
+    const config = {
+      reviewers: {
+        'route-gemini': { model: 'gemini-cli', prompt: 'route gemini' },
+        'route-codex': { model: 'codex', prompt: 'route codex' },
+        'route-architect': { model: 'kiro', agent: 'architect', prompt: 'route architect' },
+      },
+      capabilities: {
+        discuss: {
+          enabled: true,
+        },
+        routing: {
+          enabled: true,
+        },
+      },
+    }
+    vi.mocked(loadConfig).mockReturnValue(config as never)
+
+    const prepared = await prepareDiscussInput({
+      topic: 'Discuss payment database migration, auth rollback compatibility, public API changes, external integration risk, concurrency concerns, and performance constraints.',
+    }, createCapabilityContext({ configPath: '/tmp/magpie.yaml' }))
+
+    expect(prepared.options.reviewers).toBe('route-codex,route-architect')
+  })
 })

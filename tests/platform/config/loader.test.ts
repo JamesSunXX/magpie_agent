@@ -54,6 +54,16 @@ describe('platform config loader', () => {
     expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
   })
 
+  it('injects built-in route reviewers into the loaded config', () => {
+    vi.mocked(parse).mockReturnValue(structuredClone(validConfig))
+
+    const config = loadConfig('/path/to/config.yaml')
+
+    expect(config.reviewers['route-gemini']).toMatchObject({ model: 'gemini-cli' })
+    expect(config.reviewers['route-codex']).toMatchObject({ model: 'codex' })
+    expect(config.reviewers['route-architect']).toMatchObject({ model: 'kiro', agent: 'architect' })
+  })
+
   it('throws when config file not found', () => {
     vi.mocked(existsSync).mockReturnValue(false)
     expect(() => loadConfig('/path/to/missing.yaml')).toThrow('Config file not found')
@@ -96,6 +106,23 @@ describe('platform config loader', () => {
 
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       expect.stringContaining('api_key is empty')
+    )
+  })
+
+  it('rejects malformed routing fallback bindings', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.routing = {
+      enabled: true,
+      fallback_chain: {
+        planning: {
+          simple: [{} as never],
+        },
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.routing.fallback_chain.planning.simple entries must include a non-empty model'
     )
   })
 })

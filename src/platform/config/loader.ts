@@ -3,7 +3,88 @@ import { join } from 'path'
 import { parse } from 'yaml'
 import { getMagpieHomeDir } from '../paths.js'
 import { logger } from '../../shared/utils/logger.js'
-import type { MagpieConfigV2, ReviewerConfig, TrdConfig } from './types.js'
+import type {
+  MagpieConfigV2,
+  ReviewerConfig,
+  RoutingConfig,
+  ReviewerPoolPolicy,
+  ModelRouteBinding,
+  TrdConfig,
+} from './types.js'
+
+const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
+
+function ensureBuiltInRouteReviewers(config: MagpieConfigV2): void {
+  const reviewers = config.reviewers || {}
+
+  if (!reviewers['route-gemini']) {
+    reviewers['route-gemini'] = {
+      model: 'gemini-cli',
+      prompt: ROUTE_REVIEWER_PROMPT,
+    }
+  }
+
+  if (!reviewers['route-codex']) {
+    reviewers['route-codex'] = {
+      model: 'codex',
+      prompt: ROUTE_REVIEWER_PROMPT,
+    }
+  }
+
+  if (!reviewers['route-architect']) {
+    reviewers['route-architect'] = {
+      model: 'kiro',
+      agent: 'architect',
+      prompt: ROUTE_REVIEWER_PROMPT,
+    }
+  }
+
+  config.reviewers = reviewers
+}
+
+function validateReviewerPool(name: string, pool: string[] | undefined, reviewers: Record<string, ReviewerConfig>): void {
+  if (!pool) return
+  if (!Array.isArray(pool) || pool.length === 0) {
+    throw new Error(`Config error: ${name} must be a non-empty array`)
+  }
+
+  for (const id of pool) {
+    if (!reviewers[id]) {
+      throw new Error(`Config error: ${name} includes unknown reviewer "${id}"`)
+    }
+  }
+}
+
+function validateRoutingConfig(routing: RoutingConfig | undefined, reviewers: Record<string, ReviewerConfig>): void {
+  if (!routing) return
+
+  const pools = routing.reviewer_pools as ReviewerPoolPolicy | undefined
+  validateReviewerPool('capabilities.routing.reviewer_pools.simple', pools?.simple, reviewers)
+  validateReviewerPool('capabilities.routing.reviewer_pools.standard', pools?.standard, reviewers)
+  validateReviewerPool('capabilities.routing.reviewer_pools.complex', pools?.complex, reviewers)
+
+  const fallbackChain = routing.fallback_chain
+  validateFallbackBindings('capabilities.routing.fallback_chain.planning.simple', fallbackChain?.planning?.simple)
+  validateFallbackBindings('capabilities.routing.fallback_chain.planning.standard', fallbackChain?.planning?.standard)
+  validateFallbackBindings('capabilities.routing.fallback_chain.planning.complex', fallbackChain?.planning?.complex)
+  validateFallbackBindings('capabilities.routing.fallback_chain.execution.simple', fallbackChain?.execution?.simple)
+  validateFallbackBindings('capabilities.routing.fallback_chain.execution.standard', fallbackChain?.execution?.standard)
+  validateFallbackBindings('capabilities.routing.fallback_chain.execution.complex', fallbackChain?.execution?.complex)
+}
+
+function validateFallbackBindings(name: string, bindings: ModelRouteBinding[] | undefined): void {
+  if (!bindings) return
+  if (!Array.isArray(bindings) || bindings.length === 0) {
+    throw new Error(`Config error: ${name} must be a non-empty array`)
+  }
+
+  for (const binding of bindings) {
+    if (!binding?.model || typeof binding.model !== 'string') {
+      throw new Error(`Config error: ${name} entries must include a non-empty model`)
+    }
+    validateOptionalAgent(name, binding.agent)
+  }
+}
 
 export function expandEnvVars(value: string): string {
   return value.replace(/\$\{(\w+)\}/g, (_, envVar) => process.env[envVar] || '')
@@ -88,6 +169,8 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
     throw new Error('Config error: at least one reviewer must be defined')
   }
 
+  ensureBuiltInRouteReviewers(config)
+
   for (const [id, reviewer] of Object.entries(config.reviewers)) {
     validateReviewerConfig(`reviewers.${id}`, reviewer)
   }
@@ -105,6 +188,8 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   if (config.trd) {
     validateTrdConfig(config.trd, config.reviewers)
   }
+
+  validateRoutingConfig(config.capabilities.routing, config.reviewers)
 }
 
 export function loadConfig(configPath?: string): MagpieConfigV2 {

@@ -99,6 +99,38 @@ const REVIEW_PROMPT = `You are a thorough code reviewer. Your job is to find ALL
       \`\`\`
       You may include free-form discussion before the JSON block.`
 
+const ROUTE_GEMINI_PROMPT = `You are the fast-path reviewer used for automatic routing.
+
+Focus on:
+- local correctness
+- obvious omissions
+- simple rollback and validation gaps
+
+Be concise and flag only the most actionable issues.`
+
+const ROUTE_CODEX_PROMPT = `You are the implementation-focused reviewer used for automatic routing.
+
+Focus on:
+- business logic and edge cases
+- tests and verification gaps
+- concrete failure modes in the current plan
+
+Prefer specific, code-adjacent criticism over broad strategy.`
+
+const ROUTE_ARCHITECT_PROMPT = `You are the architecture reviewer used for automatic routing.
+
+Focus on:
+- architecture and trade-offs
+- module boundaries and long-term maintainability
+- rollout, compatibility, security, and performance risk
+
+Call out system-level consequences, not low-level nits.`
+
+function indentBlock(text: string, spaces = 6): string {
+  const prefix = ' '.repeat(spaces)
+  return text.split('\n').map(line => `${prefix}${line}`).join('\n')
+}
+
 function yamlDoubleQuoted(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
@@ -181,8 +213,12 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
     const reviewerAgentLine = reviewer.model === 'kiro'
       ? `\n    # agent: ${reviewer.id}`
       : ''
-    reviewersSection += `\n  ${reviewer.id}:\n    model: ${reviewer.model}${reviewerAgentLine}\n    prompt: |\n      ${REVIEW_PROMPT}`
+    reviewersSection += `\n  ${reviewer.id}:\n    model: ${reviewer.model}${reviewerAgentLine}\n    prompt: |\n${indentBlock(REVIEW_PROMPT)}`
   }
+
+  reviewersSection += `\n  route-gemini:\n    model: gemini-cli\n    prompt: |\n${indentBlock(ROUTE_GEMINI_PROMPT)}`
+  reviewersSection += `\n  route-codex:\n    model: codex\n    prompt: |\n${indentBlock(ROUTE_CODEX_PROMPT)}`
+  reviewersSection += `\n  route-architect:\n    model: kiro\n    agent: architect\n    prompt: |\n${indentBlock(ROUTE_ARCHITECT_PROMPT)}`
 
   const analyzerModel = selectedReviewers[0]?.model || 'claude-code'
   const defaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
@@ -317,6 +353,53 @@ capabilities:
     executor_model: codex
     verify_command: "npm run test:run"
     auto_commit: false
+  routing:
+    enabled: true
+    strategy: "rules_first"
+    default_tier: "standard"
+    allow_runtime_escalation: true
+    thresholds:
+      simple_max: 2
+      standard_max: 5
+      complex_min: 6
+    reviewer_pools:
+      simple: [route-gemini, route-codex]
+      standard: [route-codex, route-architect]
+      complex: [route-gemini, route-codex, route-architect]
+    stage_policies:
+      planning:
+        simple:
+          model: gemini-cli
+        standard:
+          model: codex
+        complex:
+          model: kiro
+          agent: architect
+      execution:
+        simple:
+          model: gemini-cli
+        standard:
+          model: codex
+        complex:
+          model: kiro
+          agent: dev
+    fallback_chain:
+      planning:
+        simple:
+          - model: codex
+        standard:
+          - model: gemini-cli
+        complex:
+          - model: codex
+          - model: gemini-cli
+      execution:
+        simple:
+          - model: codex
+        standard:
+          - model: gemini-cli
+        complex:
+          - model: codex
+          - model: gemini-cli
   docs_sync:
     enabled: true
     reviewer_model: ${analyzerModel}

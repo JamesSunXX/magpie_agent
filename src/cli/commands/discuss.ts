@@ -30,6 +30,7 @@ export const discussCommand = new Command('discuss')
   .option('--export <id>', 'Export a discuss session to file')
   .option('--conclusion', 'Export only the final conclusion (use with --export)')
   .option('--plan-report', 'Generate an actionable markdown plan report when exporting (makes an additional AI call)')
+  .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .action(async (topic: string | undefined, options: DiscussOptions) => {
     const validationError = validateDiscussExportOptions(options)
     if (validationError) {

@@ -1,0 +1,476 @@
+import type { LoopTask } from '../../state/types.js'
+import { getProviderForModel } from '../../providers/factory.js'
+import type {
+  ComplexityTier,
+  MagpieConfigV2,
+  ModelRouteBinding,
+  ReviewerPoolPolicy,
+  RoutingConfig,
+  RoutingDecision,
+  RoutingSignalBreakdown,
+} from '../../platform/config/types.js'
+
+const DEFAULT_THRESHOLDS = {
+  simple_max: 2,
+  standard_max: 5,
+  complex_min: 6,
+} as const
+
+const DEFAULT_KEYWORDS = [
+  'auth',
+  'payment',
+  'migration',
+  'security',
+  'database',
+  'public api',
+  'performance',
+  'concurrency',
+]
+
+const DEFAULT_REVIEWER_POOLS: Required<ReviewerPoolPolicy> = {
+  simple: ['route-gemini', 'route-codex'],
+  standard: ['route-codex', 'route-architect'],
+  complex: ['route-gemini', 'route-codex', 'route-architect'],
+}
+
+const DEFAULT_PLANNING_BINDINGS: Record<ComplexityTier, ModelRouteBinding> = {
+  simple: { model: 'gemini-cli' },
+  standard: { model: 'codex' },
+  complex: { model: 'kiro', agent: 'architect' },
+}
+
+const DEFAULT_EXECUTION_BINDINGS: Record<ComplexityTier, ModelRouteBinding> = {
+  simple: { model: 'gemini-cli' },
+  standard: { model: 'codex' },
+  complex: { model: 'kiro', agent: 'dev' },
+}
+
+const DEFAULT_FALLBACK_CHAIN = {
+  planning: {
+    simple: [{ model: 'codex' }],
+    standard: [{ model: 'gemini-cli' }],
+    complex: [{ model: 'codex' }, { model: 'gemini-cli' }],
+  },
+  execution: {
+    simple: [{ model: 'codex' }],
+    standard: [{ model: 'gemini-cli' }],
+    complex: [{ model: 'codex' }, { model: 'gemini-cli' }],
+  },
+} as const
+
+const DEFAULT_REVIEWER_FALLBACK_ORDER: Record<ComplexityTier, string[]> = {
+  simple: ['route-gemini', 'route-codex', 'route-architect'],
+  standard: ['route-codex', 'route-architect', 'route-gemini'],
+  complex: ['route-gemini', 'route-codex', 'route-architect'],
+}
+
+function cloneBinding(binding: ModelRouteBinding): ModelRouteBinding {
+  return binding.agent ? { model: binding.model, agent: binding.agent } : { model: binding.model }
+}
+
+function getRoutingConfig(config: MagpieConfigV2): RoutingConfig {
+  return config.capabilities.routing || {}
+}
+
+function getThresholds(config: MagpieConfigV2) {
+  const thresholds = getRoutingConfig(config).thresholds || {}
+  return {
+    simple_max: thresholds.simple_max ?? DEFAULT_THRESHOLDS.simple_max,
+    standard_max: thresholds.standard_max ?? DEFAULT_THRESHOLDS.standard_max,
+    complex_min: thresholds.complex_min ?? DEFAULT_THRESHOLDS.complex_min,
+  }
+}
+
+function getReviewerPools(config: MagpieConfigV2): Required<ReviewerPoolPolicy> {
+  const reviewerPools = getRoutingConfig(config).reviewer_pools || {}
+  return {
+    simple: reviewerPools.simple || DEFAULT_REVIEWER_POOLS.simple,
+    standard: reviewerPools.standard || DEFAULT_REVIEWER_POOLS.standard,
+    complex: reviewerPools.complex || DEFAULT_REVIEWER_POOLS.complex,
+  }
+}
+
+function getPlanningBindings(config: MagpieConfigV2): Record<ComplexityTier, ModelRouteBinding> {
+  const planning = getRoutingConfig(config).stage_policies?.planning || {}
+  return {
+    simple: cloneBinding(planning.simple || DEFAULT_PLANNING_BINDINGS.simple),
+    standard: cloneBinding(planning.standard || DEFAULT_PLANNING_BINDINGS.standard),
+    complex: cloneBinding(planning.complex || DEFAULT_PLANNING_BINDINGS.complex),
+  }
+}
+
+function getExecutionBindings(config: MagpieConfigV2): Record<ComplexityTier, ModelRouteBinding> {
+  const execution = getRoutingConfig(config).stage_policies?.execution || {}
+  return {
+    simple: cloneBinding(execution.simple || DEFAULT_EXECUTION_BINDINGS.simple),
+    standard: cloneBinding(execution.standard || DEFAULT_EXECUTION_BINDINGS.standard),
+    complex: cloneBinding(execution.complex || DEFAULT_EXECUTION_BINDINGS.complex),
+  }
+}
+
+type BindingStage = 'planning' | 'execution'
+
+function getFallbackBindings(
+  config: MagpieConfigV2,
+  stage: BindingStage,
+  tier: ComplexityTier
+): ModelRouteBinding[] {
+  const configured = getRoutingConfig(config).fallback_chain?.[stage]?.[tier] || []
+  const defaults = DEFAULT_FALLBACK_CHAIN[stage][tier]
+  return [...configured, ...defaults].map(cloneBinding)
+}
+
+function bindingKey(binding: ModelRouteBinding): string {
+  return `${binding.model}:${binding.agent || ''}`
+}
+
+function dedupeBindings(bindings: ModelRouteBinding[]): ModelRouteBinding[] {
+  const seen = new Set<string>()
+  const unique: ModelRouteBinding[] = []
+
+  for (const binding of bindings) {
+    const key = bindingKey(binding)
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(cloneBinding(binding))
+  }
+
+  return unique
+}
+
+function isBindingAvailable(config: MagpieConfigV2, binding: ModelRouteBinding): boolean {
+  const providerName = getProviderForModel(binding.model)
+
+  if (providerName === 'mock') {
+    return true
+  }
+
+  if (
+    providerName === 'claude-code'
+    || providerName === 'codex'
+    || providerName === 'claw'
+    || providerName === 'gemini-cli'
+    || providerName === 'qwen-code'
+    || providerName === 'kiro'
+  ) {
+    return config.providers?.[providerName]?.enabled !== false
+  }
+
+  return Boolean(config.providers?.[providerName])
+}
+
+function resolveBinding(
+  config: MagpieConfigV2,
+  stage: BindingStage,
+  tier: ComplexityTier,
+  primary: ModelRouteBinding,
+): { binding: ModelRouteBinding; trail: string[] } {
+  const candidates = dedupeBindings([primary, ...getFallbackBindings(config, stage, tier)])
+  const available = candidates.find(binding => isBindingAvailable(config, binding))
+
+  if (!available) {
+    return {
+      binding: cloneBinding(primary),
+      trail: [`${stage}_fallback_exhausted:${tier}:${bindingKey(primary)}`],
+    }
+  }
+
+  if (bindingKey(available) === bindingKey(primary)) {
+    return {
+      binding: cloneBinding(available),
+      trail: [],
+    }
+  }
+
+  return {
+    binding: cloneBinding(available),
+    trail: [`${stage}_fallback:${tier}:${bindingKey(primary)}->${bindingKey(available)}`],
+  }
+}
+
+function isReviewerAvailable(config: MagpieConfigV2, reviewerId: string): boolean {
+  const reviewer = config.reviewers?.[reviewerId]
+  if (!reviewer) return false
+  return isBindingAvailable(config, { model: reviewer.model, agent: reviewer.agent })
+}
+
+function resolveReviewerIds(
+  config: MagpieConfigV2,
+  tier: ComplexityTier,
+  basePool: string[]
+): { reviewerIds: string[]; trail: string[] } {
+  const candidates = [...basePool, ...DEFAULT_REVIEWER_FALLBACK_ORDER[tier]]
+  const uniqueCandidates = [...new Set(candidates)]
+  const available = uniqueCandidates.filter(id => isReviewerAvailable(config, id))
+  const desiredCount = Math.max(1, basePool.length)
+  const reviewerIds = available.slice(0, desiredCount)
+
+  if (reviewerIds.length === 0) {
+    return {
+      reviewerIds: [...basePool],
+      trail: [`reviewer_fallback_exhausted:${tier}:${basePool.join(',')}`],
+    }
+  }
+
+  if (reviewerIds.join(',') === basePool.join(',')) {
+    return {
+      reviewerIds,
+      trail: [],
+    }
+  }
+
+  return {
+    reviewerIds,
+    trail: [`reviewer_fallback:${tier}:${basePool.join(',')}->${reviewerIds.join(',')}`],
+  }
+}
+
+function collectTopLevelSubsystems(paths: string[] | undefined): number {
+  if (!paths || paths.length === 0) return 0
+  const roots = new Set(paths.map(path => path.split('/').filter(Boolean)[0]).filter(Boolean))
+  return roots.size
+}
+
+function scoreTextLength(text: string): number {
+  if (text.length >= 1200) return 2
+  if (text.length >= 400) return 1
+  return 0
+}
+
+function scoreTaskCount(tasks: LoopTask[] | undefined): number {
+  if (!tasks || tasks.length === 0) return 0
+  if (tasks.length >= 6) return 2
+  if (tasks.length >= 3) return 1
+  return 0
+}
+
+function scoreDependencies(tasks: LoopTask[] | undefined): number {
+  if (!tasks || tasks.length === 0) return 0
+  const count = tasks.reduce((sum, task) => sum + task.dependencies.length, 0)
+  if (count >= 4) return 1
+  return 0
+}
+
+function scoreStages(tasks: LoopTask[] | undefined): number {
+  if (!tasks || tasks.length === 0) return 0
+  const stages = new Set(tasks.map(task => task.stage))
+  if (stages.size >= 4) return 2
+  if (stages.size >= 2) return 1
+  return 0
+}
+
+function scoreKeywords(text: string, config: MagpieConfigV2): number {
+  const source = text.toLowerCase()
+  const keywords = getRoutingConfig(config).high_risk_keywords || DEFAULT_KEYWORDS
+  const hitCount = keywords.filter(keyword => source.includes(keyword.toLowerCase())).length
+  return Math.min(2, hitCount)
+}
+
+function scoreSubsystems(paths: string[] | undefined): number {
+  const count = collectTopLevelSubsystems(paths)
+  if (count >= 3) return 2
+  if (count >= 2) return 1
+  return 0
+}
+
+function scoreRollout(text: string): number {
+  const source = text.toLowerCase()
+  const markers = ['rollback', 'compatibility', 'data change', 'external integration', 'public api']
+  return Math.min(2, markers.filter(marker => source.includes(marker)).length)
+}
+
+function scoreSignals(
+  text: string,
+  tasks: LoopTask[] | undefined,
+  relatedPaths: string[] | undefined,
+  config: MagpieConfigV2
+): RoutingSignalBreakdown {
+  return {
+    textLengthScore: scoreTextLength(text),
+    taskCountScore: scoreTaskCount(tasks),
+    dependencyScore: scoreDependencies(tasks),
+    stageScore: scoreStages(tasks),
+    keywordScore: scoreKeywords(text, config),
+    subsystemScore: scoreSubsystems(relatedPaths),
+    rolloutScore: scoreRollout(text),
+  }
+}
+
+function sumSignals(signals: RoutingSignalBreakdown): number {
+  return Object.values(signals).reduce((sum, value) => sum + value, 0)
+}
+
+function buildReasons(signals: RoutingSignalBreakdown): string[] {
+  const reasons: string[] = []
+  if (signals.textLengthScore > 0) reasons.push(`text_length:${signals.textLengthScore}`)
+  if (signals.taskCountScore > 0) reasons.push(`task_count:${signals.taskCountScore}`)
+  if (signals.dependencyScore > 0) reasons.push(`dependencies:${signals.dependencyScore}`)
+  if (signals.stageScore > 0) reasons.push(`stages:${signals.stageScore}`)
+  if (signals.keywordScore > 0) reasons.push(`high_risk_keywords:${signals.keywordScore}`)
+  if (signals.subsystemScore > 0) reasons.push(`subsystems:${signals.subsystemScore}`)
+  if (signals.rolloutScore > 0) reasons.push(`rollout:${signals.rolloutScore}`)
+  return reasons
+}
+
+function resolveTier(score: number, config: MagpieConfigV2): ComplexityTier {
+  const defaultTier = getRoutingConfig(config).default_tier
+  const thresholds = getThresholds(config)
+  if (score === 0 && defaultTier) {
+    return defaultTier
+  }
+  if (score >= thresholds.complex_min) return 'complex'
+  if (score <= thresholds.simple_max) return 'simple'
+  return 'standard'
+}
+
+function buildDecision(
+  config: MagpieConfigV2,
+  tier: ComplexityTier,
+  score: number,
+  reasons: string[],
+  signals: RoutingSignalBreakdown,
+  escalationTrail: string[] = [],
+  fallbackTrail: string[] = []
+): RoutingDecision {
+  const reviewerPools = getReviewerPools(config)
+  const planningBindings = getPlanningBindings(config)
+  const executionBindings = getExecutionBindings(config)
+  const resolvedPlanning = resolveBinding(config, 'planning', tier, planningBindings[tier])
+  const resolvedExecution = resolveBinding(config, 'execution', tier, executionBindings[tier])
+  const resolvedReviewers = resolveReviewerIds(config, tier, reviewerPools[tier])
+
+  return {
+    schemaVersion: 1,
+    tier,
+    score,
+    reasons,
+    signals,
+    planning: resolvedPlanning.binding,
+    execution: resolvedExecution.binding,
+    reviewerIds: resolvedReviewers.reviewerIds,
+    escalationTrail,
+    fallbackTrail: [
+      ...fallbackTrail,
+      ...resolvedPlanning.trail,
+      ...resolvedExecution.trail,
+      ...resolvedReviewers.trail,
+    ],
+  }
+}
+
+export interface CreateRoutingDecisionInput {
+  goal: string
+  prdContent?: string
+  tasks?: LoopTask[]
+  relatedPaths?: string[]
+  overrideTier?: ComplexityTier
+  config: MagpieConfigV2
+}
+
+export function isRoutingEnabled(config: MagpieConfigV2): boolean {
+  return getRoutingConfig(config).enabled === true
+}
+
+export function getRouteBindings(config: MagpieConfigV2, tier: ComplexityTier): Pick<RoutingDecision, 'planning' | 'execution' | 'reviewerIds'> {
+  const decision = buildDecision(
+    config,
+    tier,
+    0,
+    [],
+    {
+      textLengthScore: 0,
+      taskCountScore: 0,
+      dependencyScore: 0,
+      stageScore: 0,
+      keywordScore: 0,
+      subsystemScore: 0,
+      rolloutScore: 0,
+    }
+  )
+
+  return {
+    planning: decision.planning,
+    execution: decision.execution,
+    reviewerIds: decision.reviewerIds,
+  }
+}
+
+export function createRoutingDecision(input: CreateRoutingDecisionInput): RoutingDecision {
+  if (input.overrideTier) {
+    return buildDecision(
+      input.config,
+      input.overrideTier,
+      0,
+      [`manual_override:${input.overrideTier}`],
+      {
+        textLengthScore: 0,
+        taskCountScore: 0,
+        dependencyScore: 0,
+        stageScore: 0,
+        keywordScore: 0,
+        subsystemScore: 0,
+        rolloutScore: 0,
+      }
+    )
+  }
+
+  const text = [input.goal, input.prdContent].filter(Boolean).join('\n\n')
+  const signals = scoreSignals(text, input.tasks, input.relatedPaths, input.config)
+  const score = sumSignals(signals)
+  const tier = resolveTier(score, input.config)
+
+  return buildDecision(input.config, tier, score, buildReasons(signals), signals)
+}
+
+function nextTier(tier: ComplexityTier): ComplexityTier {
+  if (tier === 'simple') return 'standard'
+  if (tier === 'standard') return 'complex'
+  return 'complex'
+}
+
+export function escalateRoutingDecision(
+  current: RoutingDecision,
+  config: MagpieConfigV2,
+  reason: string
+): RoutingDecision {
+  if (getRoutingConfig(config).allow_runtime_escalation === false) {
+    return {
+      ...current,
+      escalationTrail: [...current.escalationTrail],
+    }
+  }
+
+  const tier = nextTier(current.tier)
+  if (tier === current.tier) {
+    return {
+      ...current,
+      escalationTrail: [...current.escalationTrail, reason],
+    }
+  }
+
+  return buildDecision(
+    config,
+    tier,
+    current.score,
+    [...current.reasons],
+    { ...current.signals },
+    [...current.escalationTrail, reason],
+    [...current.fallbackTrail],
+  )
+}
+
+export interface EscalationSignalInput {
+  blockingIssueCount?: number
+  testsPassed?: boolean
+  modelDecision?: 'approved' | 'revise' | 'unknown'
+  consecutiveReviseCount?: number
+  providerFailure?: boolean
+}
+
+export function getEscalationReason(input: EscalationSignalInput): string | null {
+  if ((input.blockingIssueCount || 0) > 0) return 'high_severity_issue'
+  if (input.testsPassed === false) return 'tests_failed'
+  if ((input.consecutiveReviseCount || 0) >= 2) return 'repeated_revise'
+  if (input.modelDecision === 'revise') return 'model_requested_revise'
+  return null
+}

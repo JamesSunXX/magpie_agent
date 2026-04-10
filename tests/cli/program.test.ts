@@ -58,7 +58,9 @@ describe('CLI program', () => {
 
     expect(loopOptionFlags).toContain('--planning-item')
     expect(loopOptionFlags).toContain('--planning-project')
+    expect(loopOptionFlags).toContain('--complexity')
     expect(issueFixOptionFlags).toContain('--planning-item')
     expect(issueFixOptionFlags).toContain('--planning-project')
+    expect(issueFixOptionFlags).toContain('--complexity')
   })
 })

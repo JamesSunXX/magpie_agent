@@ -29,6 +29,9 @@ interface ConfigOptions {
   loopExecutorModel?: string
   issueFixPlannerModel?: string
   issueFixExecutorModel?: string
+  routingEnabled?: boolean
+  geminiEnabled?: boolean
+  kiroEnabled?: boolean
 }
 
 function writeConfig(configPath: string, options: ConfigOptions = {}): void {
@@ -36,9 +39,9 @@ function writeConfig(configPath: string, options: ConfigOptions = {}): void {
   claude-code:
     enabled: true
   gemini-cli:
-    enabled: true
+    enabled: ${options.geminiEnabled === false ? 'false' : 'true'}
   kiro:
-    enabled: true
+    enabled: ${options.kiroEnabled === false ? 'false' : 'true'}
 defaults:
   max_rounds: 3
   output_format: markdown
@@ -62,6 +65,8 @@ capabilities:
     enabled: true
     planner_model: ${options.issueFixPlannerModel || 'mock'}
     executor_model: ${options.issueFixExecutorModel || 'mock'}
+  routing:
+    enabled: ${options.routingEnabled ? 'true' : 'false'}
   quality:
     unitTestEval:
       enabled: true
@@ -852,6 +857,197 @@ describe('harness workflow', () => {
       expect(selection.decision).toBe('fallback_failed')
       expect(selection.kiroCheck.ok).toBe(false)
       expect(selection.kiroCheck.reason).toContain('kiro-cli missing')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('writes routing decisions and auto-selects complex reviewer pool when complexity override is provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-routing-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath, {
+      routingEnabled: true,
+      loopPlannerModel: 'mock',
+      loopExecutorModel: 'mock',
+      issueFixPlannerModel: 'mock',
+      issueFixExecutorModel: 'mock',
+    })
+
+    const reviewCalls: Array<{ reviewers: string }> = []
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-routing' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        reviewCalls.push({ reviewers: (input as { options: { reviewers: string } }).options.reviewers })
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Add payment migration with database auth compatibility and public API rollback support.',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        complexity: 'complex',
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(reviewCalls[0]?.reviewers).toBe('route-gemini,route-codex,route-architect')
+      expect(result.session?.artifacts.routingDecisionPath).toBeTruthy()
+      const routingDecision = readJson<{ tier: string }>(result.session!.artifacts.routingDecisionPath)
+      expect(routingDecision.tier).toBe('complex')
+      const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
+      expect(harnessConfig).toContain('planner_model: kiro')
+      expect(harnessConfig).toContain('planner_agent: architect')
+      expect(harnessConfig).toContain('executor_model: kiro')
+      expect(harnessConfig).toContain('executor_agent: dev')
+      expect(harnessConfig).toContain('strict release gate reviewer')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('falls back to available routed models when the preferred complex provider is disabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-routing-fallback-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath, {
+      routingEnabled: true,
+      kiroEnabled: false,
+    })
+
+    const reviewCalls: Array<{ reviewers: string }> = []
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-routing-fallback' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        reviewCalls.push({ reviewers: (input as { options: { reviewers: string } }).options.reviewers })
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Add payment migration with database auth compatibility and public API rollback support.',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        complexity: 'complex',
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(reviewCalls[0]?.reviewers).toBe('route-gemini,route-codex')
+      const routingDecision = readJson<{
+        planning: { model: string }
+        execution: { model: string }
+        fallbackTrail: string[]
+      }>(result.session!.artifacts.routingDecisionPath)
+      expect(routingDecision.planning).toEqual({ model: 'codex' })
+      expect(routingDecision.execution).toEqual({ model: 'codex' })
+      expect(routingDecision.fallbackTrail).toContain('planning_fallback:complex:kiro:architect->codex:')
+      const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
+      expect(harnessConfig).toContain('planner_model: codex')
+      expect(harnessConfig).toContain('executor_model: codex')
+      expect(harnessConfig).not.toContain('planner_agent: architect')
+      expect(harnessConfig).not.toContain('executor_agent: dev')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

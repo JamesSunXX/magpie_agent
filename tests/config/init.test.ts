@@ -4,6 +4,7 @@ import { initConfig, generateConfig, AVAILABLE_REVIEWERS } from '../../src/platf
 import { existsSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import YAML from 'yaml'
 
 describe('Config Init', () => {
   const testDir = join(tmpdir(), 'magpie-init-test-' + Date.now())
@@ -24,6 +25,12 @@ describe('Config Init', () => {
     expect(content).toContain('integrations:')
     expect(content).toContain('trd:')
     expect(content).toContain('default_reviewers:')
+    expect(content).toContain('route-gemini:')
+    expect(content).toContain('route-codex:')
+    expect(content).toContain('route-architect:')
+    expect(content).toContain('strategy: "rules_first"')
+    expect(content).toContain('allow_runtime_escalation: true')
+    expect(content).toContain('fallback_chain:')
     expect(content).not.toContain('image_reader:')
   })
 
@@ -169,5 +176,37 @@ describe('Config Init', () => {
     const claw = AVAILABLE_REVIEWERS.find((reviewer) => reviewer.id === 'claw')
     expect(claw?.model).toBe('claw')
     expect(claw?.needsApiKey).toBe(false)
+  })
+
+  it('generates config that can be parsed when route reviewers are included', () => {
+    const content = generateConfig(['gemini-cli', 'codex', 'kiro'])
+    const parsed = YAML.parse(content) as {
+      reviewers: Record<string, { model: string; agent?: string }>
+      capabilities: {
+        routing: {
+          fallback_chain: {
+            planning: {
+              complex: Array<{ model: string }>
+            }
+          }
+        }
+      }
+    }
+
+    expect(parsed.reviewers['route-gemini']).toMatchObject({ model: 'gemini-cli' })
+    expect(parsed.reviewers['route-codex']).toMatchObject({ model: 'codex' })
+    expect(parsed.reviewers['route-architect']).toMatchObject({ model: 'kiro', agent: 'architect' })
+    expect(parsed.capabilities.routing.fallback_chain.planning.complex).toEqual([
+      { model: 'codex' },
+      { model: 'gemini-cli' },
+    ])
+  })
+
+  it('gives each built-in route reviewer a distinct prompt block', () => {
+    const content = generateConfig(['gemini-cli', 'codex', 'kiro'])
+
+    expect(content).toContain('- local correctness')
+    expect(content).toContain('- business logic and edge cases')
+    expect(content).toContain('- architecture and trade-offs')
   })
 })

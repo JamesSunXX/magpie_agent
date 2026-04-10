@@ -2,7 +2,7 @@
 import type { ReviewFocus } from '../orchestrator/repo-orchestrator.js'
 import type { ReviewIssue } from '../reporter/types.js'
 import type { DomainBoundary } from '../trd/types.js'
-import type { LoopStageName } from '../config/types.js'
+import type { LoopStageName, ComplexityTier } from '../config/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -158,10 +158,12 @@ export interface LoopSession {
   stageResults: LoopStageResult[]
   humanConfirmations: HumanConfirmationItem[]
   branchName?: string
+  routingTier?: ComplexityTier
   artifacts: {
     sessionDir: string
     eventsPath: string
     planPath: string
     humanConfirmationPath: string
+    routingDecisionPath?: string
   }
 }

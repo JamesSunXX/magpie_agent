@@ -1,3 +1,4 @@
+import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
 
 export interface IssueFixInput {
@@ -6,6 +7,7 @@ export interface IssueFixInput {
   verifyCommand?: string
   planningItemKey?: string
   planningProjectKey?: string
+  complexity?: ComplexityTier
 }
 
 export interface IssueFixPreparedInput extends IssueFixInput {
@@ -19,6 +21,7 @@ export interface IssueFixResult {
       planPath: string
       executionPath: string
       verificationPath?: string
+      routingDecisionPath?: string
     }
   }
 }
