@@ -1,6 +1,6 @@
 // tests/providers/factory.test.ts
 import { describe, it, expect } from 'vitest'
-import { createProvider, getProviderForModel } from '../../src/providers/factory.js'
+import { createProvider, getProviderForModel, getProviderForTool, normalizeCliTool } from '../../src/providers/factory.js'
 import type { MagpieConfig } from '../../src/config/types.js'
 import { createConfiguredProvider } from '../../src/providers/configured-provider.js'
 
@@ -43,6 +43,21 @@ describe('Provider Factory', () => {
 
     it('should return claw for claw model', () => {
       expect(getProviderForModel('claw')).toBe('claw')
+    })
+  })
+
+  describe('tool normalization', () => {
+    it('normalizes short cli tool aliases', () => {
+      expect(normalizeCliTool('claude')).toBe('claude-code')
+      expect(normalizeCliTool('gemini')).toBe('gemini-cli')
+    })
+
+    it('returns provider ids for supported cli tools', () => {
+      expect(getProviderForTool('claude')).toBe('claude-code')
+      expect(getProviderForTool('codex')).toBe('codex')
+      expect(getProviderForTool('gemini')).toBe('gemini-cli')
+      expect(getProviderForTool('kiro')).toBe('kiro')
+      expect(getProviderForTool('claw')).toBe('claw')
     })
   })
 
@@ -114,6 +129,16 @@ describe('Provider Factory', () => {
       }, mockConfig)
 
       expect(provider.name).toBe('kiro')
+    })
+
+    it('creates a configured codex provider from explicit tool plus cli model', () => {
+      const provider = createConfiguredProvider({
+        logicalName: 'reviewers.route-codex',
+        tool: 'codex',
+        model: 'gpt-5.4',
+      }, mockConfig)
+
+      expect(provider.name).toBe('codex')
     })
   })
 })

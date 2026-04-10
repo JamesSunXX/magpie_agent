@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { resolveProviderBinding } from '../../src/providers/configured-provider.js'
 
 describe('resolveProviderBinding', () => {
+  it('keeps explicit tool, model, and kiro agent metadata', () => {
+    expect(resolveProviderBinding({
+      logicalName: 'reviewers.route-architect',
+      tool: 'kiro',
+      model: 'claude-sonnet-4-6',
+      agent: 'architect',
+    })).toEqual({
+      logicalName: 'reviewers.route-architect',
+      tool: 'kiro',
+      model: 'claude-sonnet-4-6',
+      agent: 'architect',
+    })
+  })
+
   it('prefers explicit kiro agent from config', () => {
     expect(resolveProviderBinding({
       logicalName: 'reviewers.go-review',
@@ -45,14 +59,12 @@ describe('resolveProviderBinding', () => {
     })
   })
 
-  it('does not carry agent metadata for non-kiro models', () => {
-    expect(resolveProviderBinding({
+  it('rejects agent metadata for non-kiro bindings', () => {
+    expect(() => resolveProviderBinding({
       logicalName: 'analyzer',
-      model: 'codex',
+      tool: 'codex',
+      model: 'gpt-5.4',
       agent: 'architect',
-    })).toEqual({
-      logicalName: 'analyzer',
-      model: 'codex',
-    })
+    })).toThrow('Only kiro bindings may define an agent')
   })
 })

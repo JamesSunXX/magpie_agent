@@ -183,6 +183,10 @@ function buildSystemPromptWithContext(basePrompt: string, model: string): string
   return `${basePrompt}\n\n---\nProject context:\n${context}`
 }
 
+function resolveContextModel(tool?: string, model?: string): string {
+  return model || tool || 'codex'
+}
+
 function buildPreviousContext(session: DiscussSession): string {
   return session.rounds.map((r, i) =>
     `## Round ${i + 1}: ${r.topic}\n\nConclusion: ${r.conclusion}`
@@ -202,22 +206,28 @@ async function runDiscussion(
     id,
     provider: createConfiguredProvider({
       logicalName: `reviewers.${id}`,
+      tool: config.reviewers[id].tool,
       model: config.reviewers[id].model,
       agent: config.reviewers[id].agent,
     }, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_REVIEWER_PROMPT, config.reviewers[id].model)
+    systemPrompt: buildSystemPromptWithContext(
+      DISCUSS_REVIEWER_PROMPT,
+      resolveContextModel(config.reviewers[id].tool, config.reviewers[id].model)
+    )
   }))
 
   // Add Devil's Advocate if enabled
   if (options.devilAdvocate) {
     const daModel = config.summarizer.model
+    const daContextModel = resolveContextModel(config.summarizer.tool, config.summarizer.model)
     reviewers.push({
       id: 'devil-advocate',
       provider: createConfiguredProvider({
         logicalName: 'reviewers.devil-advocate',
+        tool: config.summarizer.tool,
         model: daModel,
       }, config),
-      systemPrompt: buildSystemPromptWithContext(DEVIL_ADVOCATE_PROMPT, daModel)
+      systemPrompt: buildSystemPromptWithContext(DEVIL_ADVOCATE_PROMPT, daContextModel)
     })
   }
 
@@ -229,25 +239,33 @@ async function runDiscussion(
     id: 'summarizer',
     provider: createConfiguredProvider({
       logicalName: 'summarizer',
+      tool: config.summarizer.tool,
       model: config.summarizer.model,
       agent: config.summarizer.agent,
     }, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_SUMMARIZER_PROMPT, config.summarizer.model)
+    systemPrompt: buildSystemPromptWithContext(
+      DISCUSS_SUMMARIZER_PROMPT,
+      resolveContextModel(config.summarizer.tool, config.summarizer.model)
+    )
   }
 
   const analyzer: Reviewer = {
     id: 'analyzer',
     provider: createConfiguredProvider({
       logicalName: 'analyzer',
+      tool: config.analyzer.tool,
       model: config.analyzer.model,
       agent: config.analyzer.agent,
     }, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_ANALYZER_PROMPT, config.analyzer.model)
+    systemPrompt: buildSystemPromptWithContext(
+      DISCUSS_ANALYZER_PROMPT,
+      resolveContextModel(config.analyzer.tool, config.analyzer.model)
+    )
   }
 
   // Show context loading status per reviewer
   const contextStatus = selectedIds.map(id => {
-    const ctx = loadProjectContext(config.reviewers[id].model)
+    const ctx = loadProjectContext(resolveContextModel(config.reviewers[id].tool, config.reviewers[id].model))
     return ctx ? chalk.green(`${id}:loaded`) : chalk.dim(`${id}:none`)
   }).join(', ')
 

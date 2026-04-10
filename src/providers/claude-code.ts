@@ -6,6 +6,7 @@ export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private readonly model?: string
   private session = new CliSessionHelper()
 
   get sessionId() { return this.session.sessionId }
@@ -21,6 +22,7 @@ export class ClaudeCodeProvider implements AIProvider {
     } else {
       this.timeout = 15 * 60 * 1000  // 15 minutes default
     }
+    this.model = _options?.model
   }
 
   setCwd(cwd: string) {
@@ -73,6 +75,9 @@ export class ClaudeCodeProvider implements AIProvider {
       // Build args based on session state
       // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
       const args = ['-p', '-', '--dangerously-skip-permissions']
+      if (this.model) {
+        args.push('--model', this.model)
+      }
       // Disable all tools for pure text extraction (e.g., JSON structurization)
       // Without this, Claude may use Edit/Write to modify files instead of outputting text
       if (options?.disableTools) {
@@ -146,6 +151,9 @@ export class ClaudeCodeProvider implements AIProvider {
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     const args = ['-p', '-', '--dangerously-skip-permissions']
+    if (this.model) {
+      args.push('--model', this.model)
+    }
     if (this.session.sessionId) {
       if (this.session.isFirstMessage) {
         args.push('--session-id', this.session.sessionId)

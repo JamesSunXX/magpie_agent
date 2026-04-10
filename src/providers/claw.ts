@@ -9,9 +9,9 @@ export class ClawProvider implements AIProvider {
   private readonly model: string
   private promptHelper = new CliSessionHelper()
 
-  constructor(_options?: ProviderOptions) {
+  constructor(options?: ProviderOptions) {
     this.cwd = process.cwd()
-    this.model = process.env.CLAW_MODEL || process.env.ANTHROPIC_MODEL || 'openai/gemma-4-26b-a4b'
+    this.model = options?.model || process.env.CLAW_MODEL || process.env.ANTHROPIC_MODEL || 'openai/gemma-4-26b-a4b'
   }
 
   setCwd(cwd: string) {

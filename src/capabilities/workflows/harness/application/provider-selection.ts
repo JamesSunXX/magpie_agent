@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process'
 import type { MagpieConfigV2 } from '../../../../platform/config/types.js'
+import { getProviderForTool } from '../../../../providers/factory.js'
 
 const CLAUDE_MODEL = 'claude-code'
 const KIRO_MODEL = 'kiro'
@@ -8,8 +9,8 @@ const DEFAULT_PROVIDER_CHECK_TIMEOUT_MS = 10_000
 
 interface ModelBinding {
   path: string
-  getModel(): string | undefined
-  setModel(model: string): void
+  getProvider(): string | undefined
+  replaceProvider(model: string): void
 }
 
 interface ClaudeAuthRecord {
@@ -72,56 +73,98 @@ function isTimeoutFailure(reason: string | undefined): boolean {
 }
 
 function collectModelBindings(config: MagpieConfigV2, reviewerIds: string[]): ModelBinding[] {
+  const providerFromBinding = (tool?: string, model?: string): string | undefined => {
+    if (tool) {
+      return getProviderForTool(tool)
+    }
+    return model
+  }
+
   const bindings: ModelBinding[] = reviewerIds.map((reviewerId) => ({
     path: `reviewers.${reviewerId}.model`,
-    getModel: () => config.reviewers?.[reviewerId]?.model,
-    setModel: (model: string) => {
+    getProvider: () => providerFromBinding(config.reviewers?.[reviewerId]?.tool, config.reviewers?.[reviewerId]?.model),
+    replaceProvider: (model: string) => {
       const reviewer = config.reviewers?.[reviewerId]
-      if (reviewer) reviewer.model = model
+      if (!reviewer) return
+      if (reviewer.tool) {
+        reviewer.tool = model === CLAUDE_MODEL ? 'claude' : model
+      } else {
+        reviewer.model = model
+      }
     },
   }))
 
   bindings.push(
     {
       path: 'summarizer.model',
-      getModel: () => config.summarizer?.model,
-      setModel: (model: string) => {
-        if (config.summarizer) config.summarizer.model = model
+      getProvider: () => providerFromBinding(config.summarizer?.tool, config.summarizer?.model),
+      replaceProvider: (model: string) => {
+        if (!config.summarizer) return
+        if (config.summarizer.tool) {
+          config.summarizer.tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.summarizer.model = model
+        }
       },
     },
     {
       path: 'analyzer.model',
-      getModel: () => config.analyzer?.model,
-      setModel: (model: string) => {
-        if (config.analyzer) config.analyzer.model = model
+      getProvider: () => providerFromBinding(config.analyzer?.tool, config.analyzer?.model),
+      replaceProvider: (model: string) => {
+        if (!config.analyzer) return
+        if (config.analyzer.tool) {
+          config.analyzer.tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.analyzer.model = model
+        }
       },
     },
     {
       path: 'capabilities.loop.planner_model',
-      getModel: () => config.capabilities.loop?.planner_model,
-      setModel: (model: string) => {
-        if (config.capabilities.loop) config.capabilities.loop.planner_model = model
+      getProvider: () => providerFromBinding(config.capabilities.loop?.planner_tool, config.capabilities.loop?.planner_model),
+      replaceProvider: (model: string) => {
+        if (!config.capabilities.loop) return
+        if (config.capabilities.loop.planner_tool) {
+          config.capabilities.loop.planner_tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.capabilities.loop.planner_model = model
+        }
       },
     },
     {
       path: 'capabilities.loop.executor_model',
-      getModel: () => config.capabilities.loop?.executor_model,
-      setModel: (model: string) => {
-        if (config.capabilities.loop) config.capabilities.loop.executor_model = model
+      getProvider: () => providerFromBinding(config.capabilities.loop?.executor_tool, config.capabilities.loop?.executor_model),
+      replaceProvider: (model: string) => {
+        if (!config.capabilities.loop) return
+        if (config.capabilities.loop.executor_tool) {
+          config.capabilities.loop.executor_tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.capabilities.loop.executor_model = model
+        }
       },
     },
     {
       path: 'capabilities.issue_fix.planner_model',
-      getModel: () => config.capabilities.issue_fix?.planner_model,
-      setModel: (model: string) => {
-        if (config.capabilities.issue_fix) config.capabilities.issue_fix.planner_model = model
+      getProvider: () => providerFromBinding(config.capabilities.issue_fix?.planner_tool, config.capabilities.issue_fix?.planner_model),
+      replaceProvider: (model: string) => {
+        if (!config.capabilities.issue_fix) return
+        if (config.capabilities.issue_fix.planner_tool) {
+          config.capabilities.issue_fix.planner_tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.capabilities.issue_fix.planner_model = model
+        }
       },
     },
     {
       path: 'capabilities.issue_fix.executor_model',
-      getModel: () => config.capabilities.issue_fix?.executor_model,
-      setModel: (model: string) => {
-        if (config.capabilities.issue_fix) config.capabilities.issue_fix.executor_model = model
+      getProvider: () => providerFromBinding(config.capabilities.issue_fix?.executor_tool, config.capabilities.issue_fix?.executor_model),
+      replaceProvider: (model: string) => {
+        if (!config.capabilities.issue_fix) return
+        if (config.capabilities.issue_fix.executor_tool) {
+          config.capabilities.issue_fix.executor_tool = model === CLAUDE_MODEL ? 'claude' : model
+        } else {
+          config.capabilities.issue_fix.executor_model = model
+        }
       },
     },
   )
@@ -221,7 +264,7 @@ export function selectHarnessProviders(
   now: Date = new Date()
 ): HarnessProviderSelectionResult {
   const bindings = collectModelBindings(config, reviewerIds)
-  const claudeBindings = bindings.filter(binding => binding.getModel() === CLAUDE_MODEL)
+  const claudeBindings = bindings.filter(binding => binding.getProvider() === CLAUDE_MODEL)
 
   const record: HarnessProviderSelectionRecord = {
     checkedAt: now.toISOString(),
@@ -269,7 +312,7 @@ export function selectHarnessProviders(
   }
 
   for (const binding of claudeBindings) {
-    binding.setModel(KIRO_MODEL)
+    binding.replaceProvider(KIRO_MODEL)
     record.replacements.push(binding.path)
   }
 

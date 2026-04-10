@@ -4,7 +4,8 @@ export interface ProviderConfig {
 }
 
 export interface ReviewerConfig {
-  model: string
+  tool?: string
+  model?: string
   prompt: string
   agent?: string
 }
@@ -12,7 +13,8 @@ export interface ReviewerConfig {
 export type ComplexityTier = 'simple' | 'standard' | 'complex'
 
 export interface ModelRouteBinding {
-  model: string
+  tool?: string
+  model?: string
   agent?: string
 }
 
@@ -138,8 +140,10 @@ export interface LoopHumanConfirmationConfig {
 
 export interface LoopConfig {
   enabled?: boolean
+  planner_tool?: string
   planner_model?: string
   planner_agent?: string
+  executor_tool?: string
   executor_model?: string
   executor_agent?: string
   stages?: LoopStageName[]
@@ -288,8 +292,10 @@ export interface UnitTestEvalConfig {
 
 export interface IssueFixConfig {
   enabled?: boolean
+  planner_tool?: string
   planner_model?: string
   planner_agent?: string
+  executor_tool?: string
   executor_model?: string
   executor_agent?: string
   verify_command?: string

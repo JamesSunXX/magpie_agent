@@ -179,6 +179,7 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
   if (!analysis) {
     const analyzerProvider = createConfiguredProvider({
       logicalName: 'summarizer',
+      tool: config.summarizer.tool,
       model: config.summarizer.model,
       agent: config.summarizer.agent,
     }, config)
@@ -299,6 +300,17 @@ export async function executeFeatureReview(
   spinner: ReturnType<typeof ora>
 ): Promise<void> {
   const cwd = process.cwd()
+  const allReviewerIds = Object.keys(config.reviewers)
+  const selectedReviewerIds = (() => {
+    if (typeof config.capabilities.review?.reviewers !== 'undefined' && config.capabilities.review.reviewers.length > 0) {
+      return config.capabilities.review.reviewers
+    }
+    return allReviewerIds
+  })()
+  const invalidReviewerIds = selectedReviewerIds.filter(id => !config.reviewers[id])
+  if (invalidReviewerIds.length > 0) {
+    throw new Error(`Unknown reviewer(s) in capabilities.review.reviewers: ${invalidReviewerIds.join(', ')}`)
+  }
 
   // Create planner and plan
   const planner = new FeaturePlanner(analysis)
@@ -338,20 +350,25 @@ export async function executeFeatureReview(
   }
 
   // Create reviewers
-  const reviewers = Object.entries(config.reviewers).map(([id, cfg]) => ({
+  const reviewers = selectedReviewerIds.map((id) => {
+    const cfg = config.reviewers[id]
+    return {
     id,
     provider: createConfiguredProvider({
       logicalName: `reviewers.${id}`,
+      tool: cfg.tool,
       model: cfg.model,
       agent: cfg.agent,
     }, config),
     systemPrompt: cfg.prompt
-  }))
+    }
+  })
 
   const summarizer = {
     id: 'summarizer',
     provider: createConfiguredProvider({
       logicalName: 'summarizer',
+      tool: config.summarizer.tool,
       model: config.summarizer.model,
       agent: config.summarizer.agent,
     }, config),

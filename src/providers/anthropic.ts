@@ -9,6 +9,9 @@ export class AnthropicProvider implements AIProvider {
   private model: string
 
   constructor(options: ProviderOptions) {
+    if (!options.model) {
+      throw new Error('Anthropic provider requires a model')
+    }
     this.client = new Anthropic({ apiKey: options.apiKey, baseURL: options.baseURL })
     this.model = options.model
   }

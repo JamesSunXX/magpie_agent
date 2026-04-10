@@ -29,30 +29,30 @@ function buildConfig(reviewers: MagpieConfigV2['reviewers']): MagpieConfigV2 {
 describe('reviewers command helpers', () => {
   it('lists all configured reviewers', () => {
     const config = buildConfig({
-      backend: { model: 'kiro', agent: 'go-reviewer', prompt: 'backend review' },
-      frontend: { model: 'codex', prompt: 'frontend review' },
+      backend: { tool: 'kiro', agent: 'go-reviewer', prompt: 'backend review' },
+      frontend: { tool: 'codex', prompt: 'frontend review' },
     })
 
     const result = listConfiguredReviewers(config)
 
     expect(result).toEqual([
-      { id: 'backend', model: 'kiro', agent: 'go-reviewer' },
-      { id: 'frontend', model: 'codex', agent: undefined },
+      { id: 'backend', tool: 'kiro', model: undefined, binding: 'kiro', agent: 'go-reviewer' },
+      { id: 'frontend', tool: 'codex', model: undefined, binding: 'codex', agent: undefined },
     ])
   })
 
-  it('filters by model with case-insensitive exact match', () => {
+  it('filters by tool or model with case-insensitive exact match', () => {
     const config = buildConfig({
-      security: { model: 'kiro', prompt: 'security review' },
-      perf: { model: 'KiRo', prompt: 'performance review' },
-      quality: { model: 'codex', prompt: 'quality review' },
+      security: { tool: 'kiro', prompt: 'security review' },
+      perf: { tool: 'kiro', model: 'claude-sonnet-4-6', prompt: 'performance review' },
+      quality: { tool: 'codex', prompt: 'quality review' },
     })
 
     const result = listConfiguredReviewers(config, 'kiro')
 
     expect(result).toEqual([
-      { id: 'security', model: 'kiro', agent: undefined },
-      { id: 'perf', model: 'KiRo', agent: undefined },
+      { id: 'security', tool: 'kiro', model: undefined, binding: 'kiro', agent: undefined },
+      { id: 'perf', tool: 'kiro', model: 'claude-sonnet-4-6', binding: 'kiro:claude-sonnet-4-6', agent: undefined },
     ])
   })
 

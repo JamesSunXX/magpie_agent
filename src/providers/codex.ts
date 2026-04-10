@@ -6,6 +6,7 @@ export class CodexCliProvider implements AIProvider {
   name = 'codex'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private readonly model?: string
   private session = new CliSessionHelper()
   // Codex gets its session ID from the first response (thread_id in JSONL)
   private sessionEnabled = false
@@ -22,6 +23,7 @@ export class CodexCliProvider implements AIProvider {
     } else {
       this.timeout = 15 * 60 * 1000  // 15 minutes default
     }
+    this.model = _options?.model
   }
 
   setCwd(cwd: string) {
@@ -64,10 +66,10 @@ export class CodexCliProvider implements AIProvider {
     }
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
-      return ['exec', 'resume', this.sessionId, ...baseArgs, '-']
+      return ['exec', 'resume', this.sessionId, ...(this.model ? ['-m', this.model] : []), ...baseArgs, '-']
     }
     // New session or no session
-    return ['exec', ...baseArgs, '-']
+    return ['exec', ...(this.model ? ['-m', this.model] : []), ...baseArgs, '-']
   }
 
   private preparePromptAndImages(

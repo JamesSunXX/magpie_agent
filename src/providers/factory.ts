@@ -13,7 +13,53 @@ import { KiroProvider } from './kiro.js'
 import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
 
-export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex' | 'claw' | 'gemini-cli' | 'qwen-code' | 'kiro' | 'minimax' | 'mock' {
+export type ProviderName =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'claude-code'
+  | 'codex'
+  | 'claw'
+  | 'gemini-cli'
+  | 'qwen-code'
+  | 'kiro'
+  | 'minimax'
+  | 'mock'
+
+export type CliToolName =
+  | 'claude'
+  | 'claude-code'
+  | 'codex'
+  | 'claw'
+  | 'gemini'
+  | 'gemini-cli'
+  | 'qwen-code'
+  | 'kiro'
+
+const CLI_TOOL_ALIASES: Record<CliToolName, Extract<ProviderName, 'claude-code' | 'codex' | 'claw' | 'gemini-cli' | 'qwen-code' | 'kiro'>> = {
+  claude: 'claude-code',
+  'claude-code': 'claude-code',
+  codex: 'codex',
+  claw: 'claw',
+  gemini: 'gemini-cli',
+  'gemini-cli': 'gemini-cli',
+  'qwen-code': 'qwen-code',
+  kiro: 'kiro',
+}
+
+export function normalizeCliTool(tool: string): Extract<ProviderName, 'claude-code' | 'codex' | 'claw' | 'gemini-cli' | 'qwen-code' | 'kiro'> {
+  const normalized = CLI_TOOL_ALIASES[tool as CliToolName]
+  if (!normalized) {
+    throw new Error(`Unknown tool: ${tool}`)
+  }
+  return normalized
+}
+
+export function getProviderForTool(tool: string): Extract<ProviderName, 'claude-code' | 'codex' | 'claw' | 'gemini-cli' | 'qwen-code' | 'kiro'> {
+  return normalizeCliTool(tool)
+}
+
+export function getProviderForModel(model: string): ProviderName {
   if (model === 'claude-code') {
     return 'claude-code'
   }
@@ -56,26 +102,39 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
     return new MockProvider()
   }
 
-  const providerName = getProviderForModel(model)
+  const providerName = options?.tool ? getProviderForTool(options.tool) : getProviderForModel(model)
+  const selectedModel = options?.model
 
   // Claude Code doesn't need API key config
   if (providerName === 'claude-code') {
-    return new ClaudeCodeProvider()
+    return new ClaudeCodeProvider({
+      apiKey: '',
+      model: selectedModel,
+    })
   }
 
   // Codex CLI doesn't need API key config
   if (providerName === 'codex') {
-    return new CodexCliProvider()
+    return new CodexCliProvider({
+      apiKey: '',
+      model: selectedModel,
+    })
   }
 
   // Claw CLI doesn't need API key config
   if (providerName === 'claw') {
-    return new ClawProvider()
+    return new ClawProvider({
+      apiKey: '',
+      model: selectedModel,
+    })
   }
 
   // Gemini CLI doesn't need API key config (uses Google account)
   if (providerName === 'gemini-cli') {
-    return new GeminiCliProvider()
+    return new GeminiCliProvider({
+      apiKey: '',
+      model: selectedModel,
+    })
   }
 
   // Qwen Code CLI doesn't need API key config (uses OAuth)
@@ -87,8 +146,9 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
   if (providerName === 'kiro') {
     return new KiroProvider({
       apiKey: '',
-      model,
+      model: selectedModel,
       logicalName: options?.logicalName,
+      tool: options?.tool,
       agent: options?.agent,
     })
   }

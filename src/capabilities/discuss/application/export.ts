@@ -127,6 +127,7 @@ async function generateDiscussPlanReport(
 ): Promise<string> {
   const provider = createConfiguredProvider({
     logicalName: 'summarizer',
+    tool: config.summarizer.tool,
     model: config.summarizer.model,
     agent: config.summarizer.agent,
   }, config)

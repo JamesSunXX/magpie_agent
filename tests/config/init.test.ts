@@ -181,24 +181,24 @@ describe('Config Init', () => {
   it('generates config that can be parsed when route reviewers are included', () => {
     const content = generateConfig(['gemini-cli', 'codex', 'kiro'])
     const parsed = YAML.parse(content) as {
-      reviewers: Record<string, { model: string; agent?: string }>
+      reviewers: Record<string, { tool?: string; model?: string; agent?: string }>
       capabilities: {
         routing: {
           fallback_chain: {
             planning: {
-              complex: Array<{ model: string }>
+              complex: Array<{ tool?: string; model?: string }>
             }
           }
         }
       }
     }
 
-    expect(parsed.reviewers['route-gemini']).toMatchObject({ model: 'gemini-cli' })
-    expect(parsed.reviewers['route-codex']).toMatchObject({ model: 'codex' })
-    expect(parsed.reviewers['route-architect']).toMatchObject({ model: 'kiro', agent: 'architect' })
+    expect(parsed.reviewers['route-gemini']).toMatchObject({ tool: 'gemini' })
+    expect(parsed.reviewers['route-codex']).toMatchObject({ tool: 'codex' })
+    expect(parsed.reviewers['route-architect']).toMatchObject({ tool: 'kiro', agent: 'architect' })
     expect(parsed.capabilities.routing.fallback_chain.planning.complex).toEqual([
-      { model: 'codex' },
-      { model: 'gemini-cli' },
+      { tool: 'codex' },
+      { tool: 'gemini' },
     ])
   })
 

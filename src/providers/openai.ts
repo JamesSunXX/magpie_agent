@@ -9,6 +9,9 @@ export class OpenAIProvider implements AIProvider {
   private model: string
 
   constructor(options: ProviderOptions) {
+    if (!options.model) {
+      throw new Error('OpenAI provider requires a model')
+    }
     this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL })
     this.model = options.model
   }

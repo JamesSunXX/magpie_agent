@@ -86,8 +86,10 @@ function applyBinding(
   const current = config.capabilities[target] || {}
   const next = {
     ...current,
-    planner_model: planner.model,
-    executor_model: execution.model,
+    planner_tool: planner.tool,
+    planner_model: planner.model || planner.tool,
+    executor_tool: execution.tool,
+    executor_model: execution.model || execution.tool,
   }
   if (planner.agent) {
     next.planner_agent = planner.agent
@@ -108,6 +110,7 @@ function alignSummaryRoles(config: MagpieConfigV2, reviewerIds: string[]): void 
   if (first && config.reviewers[first]) {
     config.summarizer = {
       ...config.summarizer,
+      tool: config.reviewers[first].tool,
       model: config.reviewers[first].model,
       agent: config.reviewers[first].agent,
     }
@@ -115,6 +118,7 @@ function alignSummaryRoles(config: MagpieConfigV2, reviewerIds: string[]): void 
   if (last && config.reviewers[last]) {
     config.analyzer = {
       ...config.analyzer,
+      tool: config.reviewers[last].tool,
       model: config.reviewers[last].model,
       agent: config.reviewers[last].agent,
     }

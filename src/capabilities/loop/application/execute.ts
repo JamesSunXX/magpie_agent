@@ -42,8 +42,10 @@ const DEFAULT_STAGES: LoopStageName[] = [
 ]
 
 interface LoopRuntimeConfig {
+  plannerTool?: string
   plannerModel: string
   plannerAgent?: string
+  executorTool?: string
   executorModel: string
   executorAgent?: string
   stages: LoopStageName[]
@@ -82,8 +84,10 @@ function generateId(): string {
 
 function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
   return {
+    plannerTool: config?.planner_tool,
     plannerModel: config?.planner_model || 'claude-code',
     plannerAgent: config?.planner_agent,
+    executorTool: config?.executor_tool,
     executorModel: config?.executor_model || 'codex',
     executorAgent: config?.executor_agent,
     stages: config?.stages && config.stages.length > 0 ? config.stages : DEFAULT_STAGES,
@@ -808,9 +812,11 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     })
     : undefined
   if (routingDecision) {
-    loopRuntime.plannerModel = routingDecision.planning.model
+    loopRuntime.plannerTool = routingDecision.planning.tool
+    loopRuntime.plannerModel = routingDecision.planning.model || routingDecision.planning.tool || loopRuntime.plannerModel
     loopRuntime.plannerAgent = routingDecision.planning.agent
-    loopRuntime.executorModel = routingDecision.execution.model
+    loopRuntime.executorTool = routingDecision.execution.tool
+    loopRuntime.executorModel = routingDecision.execution.model || routingDecision.execution.tool || loopRuntime.executorModel
     loopRuntime.executorAgent = routingDecision.execution.agent
   }
   if (Number.isFinite(prepared.maxIterations)) {
@@ -823,11 +829,13 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const planner = createConfiguredProvider({
     logicalName: 'capabilities.loop.planner',
+    tool: loopRuntime.plannerTool,
     model: loopRuntime.plannerModel,
     agent: loopRuntime.plannerAgent,
   }, config)
   const executor = createConfiguredProvider({
     logicalName: 'capabilities.loop.executor',
+    tool: loopRuntime.executorTool,
     model: loopRuntime.executorModel,
     agent: loopRuntime.executorAgent,
   }, config)
@@ -987,9 +995,11 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     })
     : undefined
   if (routingDecision) {
-    loopRuntime.plannerModel = routingDecision.planning.model
+    loopRuntime.plannerTool = routingDecision.planning.tool
+    loopRuntime.plannerModel = routingDecision.planning.model || routingDecision.planning.tool || loopRuntime.plannerModel
     loopRuntime.plannerAgent = routingDecision.planning.agent
-    loopRuntime.executorModel = routingDecision.execution.model
+    loopRuntime.executorTool = routingDecision.execution.tool
+    loopRuntime.executorModel = routingDecision.execution.model || routingDecision.execution.tool || loopRuntime.executorModel
     loopRuntime.executorAgent = routingDecision.execution.agent
     session.routingTier = routingDecision.tier
     if (session.artifacts.routingDecisionPath) {
@@ -1006,11 +1016,13 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
 
   const planner = createConfiguredProvider({
     logicalName: 'capabilities.loop.planner',
+    tool: loopRuntime.plannerTool,
     model: loopRuntime.plannerModel,
     agent: loopRuntime.plannerAgent,
   }, config)
   const executor = createConfiguredProvider({
     logicalName: 'capabilities.loop.executor',
+    tool: loopRuntime.executorTool,
     model: loopRuntime.executorModel,
     agent: loopRuntime.executorAgent,
   }, config)

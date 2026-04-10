@@ -33,9 +33,10 @@ export interface AIProvider {
 
 export interface ProviderOptions {
   apiKey: string
-  model: string
+  model?: string
   baseURL?: string
   logicalName?: string
+  tool?: string
   agent?: string
 }
 

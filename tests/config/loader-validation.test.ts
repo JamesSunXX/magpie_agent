@@ -73,7 +73,7 @@ describe('loadConfig - validation', () => {
     const bad = structuredClone(validConfig)
     bad.reviewers = { claude: { model: '', prompt: 'test' } }
     vi.mocked(parse).mockReturnValue(bad)
-    expect(() => loadConfig('/path/to/config.yaml')).toThrow('missing a "model" field')
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('must include a non-empty tool or model')
   })
 
   it('throws when reviewer missing prompt', () => {
@@ -87,7 +87,7 @@ describe('loadConfig - validation', () => {
     const bad = structuredClone(validConfig)
     bad.summarizer = { model: '', prompt: 'summarize' }
     vi.mocked(parse).mockReturnValue(bad)
-    expect(() => loadConfig('/path/to/config.yaml')).toThrow('summarizer is missing a "model" field')
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('summarizer must include a non-empty tool or model')
   })
 
   it('warns on empty API key', () => {

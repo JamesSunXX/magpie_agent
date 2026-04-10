@@ -73,6 +73,10 @@ function ensureDir(path: string): void {
   mkdirSync(path, { recursive: true })
 }
 
+function resolveContextModel(tool?: string, model?: string): string {
+  return model || tool || 'codex'
+}
+
 function withProjectContext(basePrompt: string, model: string, config: MagpieConfigV2): string {
   const includeContext = config.trd?.include_project_context !== false
   if (!includeContext) return basePrompt
@@ -405,8 +409,10 @@ async function generateDomainOverview(
   images: ChatImageInput[],
 ): Promise<DomainOverview> {
   const analyzerModel = config.analyzer.model
+  const analyzerContextModel = resolveContextModel(config.analyzer.tool, config.analyzer.model)
   const analyzer = createConfiguredProvider({
     logicalName: 'analyzer',
+    tool: config.analyzer.tool,
     model: analyzerModel,
     agent: config.analyzer.agent,
   }, config)
@@ -414,7 +420,7 @@ async function generateDomainOverview(
   const prompt = buildDomainOverviewPrompt(digest)
   const response = await analyzer.chat(
     [{ role: 'user', content: prompt }],
-    withProjectContext(TRD_ANALYZER_PROMPT, analyzerModel, config),
+    withProjectContext(TRD_ANALYZER_PROMPT, analyzerContextModel, config),
     images.length > 0 ? { images } : undefined
   )
   return parseDomainOverviewOrFallback(response)
@@ -442,30 +448,45 @@ async function generateDomainPartials(
         id,
         provider: createConfiguredProvider({
           logicalName: `reviewers.${id}`,
+          tool: config.reviewers[id].tool,
           model: config.reviewers[id].model,
           agent: config.reviewers[id].agent,
         }, config),
-        systemPrompt: withProjectContext(DOMAIN_REVIEWER_PROMPT, config.reviewers[id].model, config),
+        systemPrompt: withProjectContext(
+          DOMAIN_REVIEWER_PROMPT,
+          resolveContextModel(config.reviewers[id].tool, config.reviewers[id].model),
+          config
+        ),
       }))
 
       const analyzer: Reviewer = {
         id: 'analyzer',
         provider: createConfiguredProvider({
           logicalName: 'analyzer',
+          tool: config.analyzer.tool,
           model: config.analyzer.model,
           agent: config.analyzer.agent,
         }, config),
-        systemPrompt: withProjectContext(DOMAIN_REVIEWER_PROMPT, config.analyzer.model, config),
+        systemPrompt: withProjectContext(
+          DOMAIN_REVIEWER_PROMPT,
+          resolveContextModel(config.analyzer.tool, config.analyzer.model),
+          config
+        ),
       }
 
       const summarizer: Reviewer = {
         id: 'summarizer',
         provider: createConfiguredProvider({
           logicalName: 'summarizer',
+          tool: config.summarizer.tool,
           model: config.summarizer.model,
           agent: config.summarizer.agent,
         }, config),
-        systemPrompt: withProjectContext(DOMAIN_SUMMARIZER_PROMPT, config.summarizer.model, config),
+        systemPrompt: withProjectContext(
+          DOMAIN_SUMMARIZER_PROMPT,
+          resolveContextModel(config.summarizer.tool, config.summarizer.model),
+          config
+        ),
       }
 
       const result = await runDebateSession({
@@ -526,12 +547,17 @@ async function synthesizeTrd(
   const prompt = `${buildIntegrationPrompt(overview, partials, traceabilityRows)}${followUp ? `\n\n补充修订要求：${followUp}` : ''}`
   const summarizer = createConfiguredProvider({
     logicalName: 'summarizer',
+    tool: config.summarizer.tool,
     model: config.summarizer.model,
     agent: config.summarizer.agent,
   }, config)
   const response = await summarizer.chat(
     [{ role: 'user', content: prompt }],
-    withProjectContext(INTEGRATION_SUMMARIZER_PROMPT, config.summarizer.model, config),
+    withProjectContext(
+      INTEGRATION_SUMMARIZER_PROMPT,
+      resolveContextModel(config.summarizer.tool, config.summarizer.model),
+      config
+    ),
     images.length > 0 ? { images } : undefined
   )
 

@@ -59,9 +59,9 @@ describe('platform config loader', () => {
 
     const config = loadConfig('/path/to/config.yaml')
 
-    expect(config.reviewers['route-gemini']).toMatchObject({ model: 'gemini-cli' })
-    expect(config.reviewers['route-codex']).toMatchObject({ model: 'codex' })
-    expect(config.reviewers['route-architect']).toMatchObject({ model: 'kiro', agent: 'architect' })
+    expect(config.reviewers['route-gemini']).toMatchObject({ tool: 'gemini' })
+    expect(config.reviewers['route-codex']).toMatchObject({ tool: 'codex' })
+    expect(config.reviewers['route-architect']).toMatchObject({ tool: 'kiro', agent: 'architect' })
   })
 
   it('throws when config file not found', () => {
@@ -122,7 +122,22 @@ describe('platform config loader', () => {
     vi.mocked(parse).mockReturnValue(config)
 
     expect(() => loadConfig('/path/to/config.yaml')).toThrow(
-      'Config error: capabilities.routing.fallback_chain.planning.simple entries must include a non-empty model'
+      'Config error: capabilities.routing.fallback_chain.planning.simple entries must include a non-empty tool or model'
+    )
+  })
+
+  it('rejects agent values on non-kiro tools', () => {
+    const config = structuredClone(validConfig)
+    config.reviewers.claude = {
+      tool: 'codex',
+      model: 'gpt-5.4',
+      agent: 'architect',
+      prompt: 'Review this code',
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: reviewers.claude.agent is only supported when tool/model resolves to kiro'
     )
   })
 })

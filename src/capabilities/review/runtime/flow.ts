@@ -301,6 +301,7 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         id,
         provider: createConfiguredProvider({
           logicalName: `reviewers.${id}`,
+          tool: config.reviewers[id].tool,
           model: config.reviewers[id].model,
           agent: config.reviewers[id].agent,
         }, config),
@@ -309,15 +310,16 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
 
       // When only one reviewer is selected, use its model for analyzer/summarizer/contextGatherer
       // When multiple reviewers are selected, use the original config models
-      const soloModel = selectedIds.length === 1 ? config.reviewers[selectedIds[0]].model : null
+      const soloBinding = selectedIds.length === 1 ? config.reviewers[selectedIds[0]] : null
 
       // Create summarizer
       const summarizer: Reviewer = {
         id: 'summarizer',
         provider: createConfiguredProvider({
           logicalName: 'summarizer',
-          model: soloModel || config.summarizer.model,
-          agent: config.summarizer.agent,
+          tool: soloBinding?.tool || config.summarizer.tool,
+          model: soloBinding?.model || config.summarizer.model,
+          agent: soloBinding?.agent || config.summarizer.agent,
         }, config),
         systemPrompt: config.summarizer.prompt
       }
@@ -327,8 +329,9 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         id: 'analyzer',
         provider: createConfiguredProvider({
           logicalName: 'analyzer',
-          model: soloModel || config.analyzer.model,
-          agent: config.analyzer.agent,
+          tool: soloBinding?.tool || config.analyzer.tool,
+          model: soloBinding?.model || config.analyzer.model,
+          agent: soloBinding?.agent || config.analyzer.agent,
         }, config),
         systemPrompt: config.analyzer.prompt
       }
@@ -338,10 +341,11 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       const contextEnabled = !options.skipContext && (config.contextGatherer?.enabled !== false)
 
       if (contextEnabled) {
-        const contextModel = soloModel || config.contextGatherer?.model || config.analyzer.model
+        const contextModel = soloBinding?.model || config.contextGatherer?.model || config.analyzer.model
         contextGatherer = new ContextGatherer({
           provider: createConfiguredProvider({
             logicalName: 'contextGatherer',
+            tool: soloBinding?.tool,
             model: contextModel,
             agent: config.contextGatherer?.agent,
           }, config),

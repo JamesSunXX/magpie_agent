@@ -1,25 +1,41 @@
 import type { MagpieConfig } from '../config/types.js'
 import type { AIProvider } from './types.js'
-import { createProvider, getProviderForModel } from './factory.js'
+import { createProvider, getProviderForModel, getProviderForTool } from './factory.js'
 
 export interface ProviderBindingInput {
   logicalName: string
-  model: string
+  tool?: string
+  model?: string
   agent?: string
 }
 
 export interface ProviderBinding {
   logicalName: string
-  model: string
+  tool?: string
+  model?: string
   agent?: string
 }
 
 export function resolveProviderBinding(input: ProviderBindingInput): ProviderBinding {
-  const providerName = getProviderForModel(input.model)
+  const providerName = input.tool
+    ? getProviderForTool(input.tool)
+    : input.model
+      ? getProviderForModel(input.model)
+      : null
+
+  if (!providerName) {
+    throw new Error(`Provider binding ${input.logicalName} must include a tool or model`)
+  }
+
+  if (providerName !== 'kiro' && providerName !== 'mock' && input.agent) {
+    throw new Error('Only kiro bindings may define an agent')
+  }
+
   if (providerName !== 'kiro') {
     return {
       logicalName: input.logicalName,
-      model: input.model,
+      ...(input.tool ? { tool: input.tool } : {}),
+      ...(input.model ? { model: input.model } : {}),
     }
   }
 
@@ -31,11 +47,21 @@ export function resolveProviderBinding(input: ProviderBindingInput): ProviderBin
   })()
   return {
     logicalName: input.logicalName,
-    model: input.model,
+    ...(input.tool ? { tool: input.tool } : {}),
+    ...(input.model ? { model: input.model } : {}),
     agent: input.agent || derivedAgent,
   }
 }
 
 export function createConfiguredProvider(input: ProviderBindingInput, config: MagpieConfig): AIProvider {
-  return createProvider(input.model, config, resolveProviderBinding(input))
+  const binding = resolveProviderBinding(input)
+  const selector = binding.tool
+    ? getProviderForTool(binding.tool)
+    : binding.model
+
+  if (!selector) {
+    throw new Error(`Provider binding ${input.logicalName} must resolve to a tool or model`)
+  }
+
+  return createProvider(selector, config, binding)
 }

@@ -10,6 +10,9 @@ export class GeminiProvider implements AIProvider {
   private requestOptions?: { baseUrl: string }
 
   constructor(options: ProviderOptions) {
+    if (!options.model) {
+      throw new Error('Gemini provider requires a model')
+    }
     this.client = new GoogleGenerativeAI(options.apiKey)
     this.model = options.model
     if (options.baseURL) {

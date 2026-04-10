@@ -139,6 +139,24 @@ function yamlStringOrEnvRef(value: string): string {
   return value.startsWith('${') && value.endsWith('}') ? value : yamlDoubleQuoted(value)
 }
 
+function bindingFromModel(model: string, agent?: string): { tool?: string; model?: string; agent?: string } {
+  if (model === 'claude-code') return { tool: 'claude', ...(agent ? { agent } : {}) }
+  if (model === 'gemini-cli') return { tool: 'gemini', ...(agent ? { agent } : {}) }
+  if (model === 'codex') return { tool: 'codex', ...(agent ? { agent } : {}) }
+  if (model === 'kiro') return { tool: 'kiro', ...(agent ? { agent } : {}) }
+  if (model === 'claw') return { tool: 'claw', ...(agent ? { agent } : {}) }
+  return { model, ...(agent ? { agent } : {}) }
+}
+
+function formatBindingLines(binding: { tool?: string; model?: string; agent?: string }, spaces = 4): string {
+  const prefix = ' '.repeat(spaces)
+  const lines: string[] = []
+  if (binding.tool) lines.push(`${prefix}tool: ${binding.tool}`)
+  if (binding.model) lines.push(`${prefix}model: ${binding.model}`)
+  if (binding.agent) lines.push(`${prefix}agent: ${binding.agent}`)
+  return lines.join('\n')
+}
+
 function normalizeBluebubblesTarget(target: string): string {
   return target.startsWith('chat_guid:') ? target : `chat_guid:${target}`
 }
@@ -213,14 +231,15 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
     const reviewerAgentLine = reviewer.model === 'kiro'
       ? `\n    # agent: ${reviewer.id}`
       : ''
-    reviewersSection += `\n  ${reviewer.id}:\n    model: ${reviewer.model}${reviewerAgentLine}\n    prompt: |\n${indentBlock(REVIEW_PROMPT)}`
+    reviewersSection += `\n  ${reviewer.id}:\n${formatBindingLines(bindingFromModel(reviewer.model), 4)}${reviewerAgentLine}\n    prompt: |\n${indentBlock(REVIEW_PROMPT)}`
   }
 
-  reviewersSection += `\n  route-gemini:\n    model: gemini-cli\n    prompt: |\n${indentBlock(ROUTE_GEMINI_PROMPT)}`
-  reviewersSection += `\n  route-codex:\n    model: codex\n    prompt: |\n${indentBlock(ROUTE_CODEX_PROMPT)}`
-  reviewersSection += `\n  route-architect:\n    model: kiro\n    agent: architect\n    prompt: |\n${indentBlock(ROUTE_ARCHITECT_PROMPT)}`
+  reviewersSection += `\n  route-gemini:\n${formatBindingLines({ tool: 'gemini' }, 4)}\n    prompt: |\n${indentBlock(ROUTE_GEMINI_PROMPT)}`
+  reviewersSection += `\n  route-codex:\n${formatBindingLines({ tool: 'codex' }, 4)}\n    prompt: |\n${indentBlock(ROUTE_CODEX_PROMPT)}`
+  reviewersSection += `\n  route-architect:\n${formatBindingLines({ tool: 'kiro', agent: 'architect' }, 4)}\n    prompt: |\n${indentBlock(ROUTE_ARCHITECT_PROMPT)}`
 
   const analyzerModel = selectedReviewers[0]?.model || 'claude-code'
+  const analyzerBinding = bindingFromModel(analyzerModel)
   const defaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
   if (defaultReviewers.length === 0) defaultReviewers.push('claude-code', 'codex')
   if (defaultReviewers.length === 1) defaultReviewers.push(defaultReviewers[0])
@@ -251,7 +270,7 @@ ${reviewersSection}
 
 # Analyzer configuration - runs before debate to provide context
 analyzer:
-  model: ${analyzerModel}
+${formatBindingLines(analyzerBinding, 2)}
   prompt: |
     You are a senior engineer providing PR context analysis.
     Before the review debate begins, analyze this PR and provide:
@@ -268,7 +287,7 @@ analyzer:
 
 # Summarizer configuration
 summarizer:
-  model: ${analyzerModel}
+${formatBindingLines(analyzerBinding, 2)}
   prompt: |
     You are a neutral technical reviewer.
     Based on the anonymous reviewer summaries, provide:
@@ -369,37 +388,37 @@ capabilities:
     stage_policies:
       planning:
         simple:
-          model: gemini-cli
+          tool: gemini
         standard:
-          model: codex
+          tool: codex
         complex:
-          model: kiro
+          tool: kiro
           agent: architect
       execution:
         simple:
-          model: gemini-cli
+          tool: gemini
         standard:
-          model: codex
+          tool: codex
         complex:
-          model: kiro
+          tool: kiro
           agent: dev
     fallback_chain:
       planning:
         simple:
-          - model: codex
+          - tool: codex
         standard:
-          - model: gemini-cli
+          - tool: gemini
         complex:
-          - model: codex
-          - model: gemini-cli
+          - tool: codex
+          - tool: gemini
       execution:
         simple:
-          - model: codex
+          - tool: codex
         standard:
-          - model: gemini-cli
+          - tool: gemini
         complex:
-          - model: codex
-          - model: gemini-cli
+          - tool: codex
+          - tool: gemini
   docs_sync:
     enabled: true
     reviewer_model: ${analyzerModel}

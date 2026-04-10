@@ -3,6 +3,7 @@ import { join } from 'path'
 import { parse } from 'yaml'
 import { getMagpieHomeDir } from '../paths.js'
 import { logger } from '../../shared/utils/logger.js'
+import { getProviderForModel, getProviderForTool } from '../../providers/factory.js'
 import type {
   MagpieConfigV2,
   ReviewerConfig,
@@ -19,21 +20,21 @@ function ensureBuiltInRouteReviewers(config: MagpieConfigV2): void {
 
   if (!reviewers['route-gemini']) {
     reviewers['route-gemini'] = {
-      model: 'gemini-cli',
+      tool: 'gemini',
       prompt: ROUTE_REVIEWER_PROMPT,
     }
   }
 
   if (!reviewers['route-codex']) {
     reviewers['route-codex'] = {
-      model: 'codex',
+      tool: 'codex',
       prompt: ROUTE_REVIEWER_PROMPT,
     }
   }
 
   if (!reviewers['route-architect']) {
     reviewers['route-architect'] = {
-      model: 'kiro',
+      tool: 'kiro',
       agent: 'architect',
       prompt: ROUTE_REVIEWER_PROMPT,
     }
@@ -63,6 +64,13 @@ function validateRoutingConfig(routing: RoutingConfig | undefined, reviewers: Re
   validateReviewerPool('capabilities.routing.reviewer_pools.standard', pools?.standard, reviewers)
   validateReviewerPool('capabilities.routing.reviewer_pools.complex', pools?.complex, reviewers)
 
+  validateBinding('capabilities.routing.stage_policies.planning.simple', routing.stage_policies?.planning?.simple)
+  validateBinding('capabilities.routing.stage_policies.planning.standard', routing.stage_policies?.planning?.standard)
+  validateBinding('capabilities.routing.stage_policies.planning.complex', routing.stage_policies?.planning?.complex)
+  validateBinding('capabilities.routing.stage_policies.execution.simple', routing.stage_policies?.execution?.simple)
+  validateBinding('capabilities.routing.stage_policies.execution.standard', routing.stage_policies?.execution?.standard)
+  validateBinding('capabilities.routing.stage_policies.execution.complex', routing.stage_policies?.execution?.complex)
+
   const fallbackChain = routing.fallback_chain
   validateFallbackBindings('capabilities.routing.fallback_chain.planning.simple', fallbackChain?.planning?.simple)
   validateFallbackBindings('capabilities.routing.fallback_chain.planning.standard', fallbackChain?.planning?.standard)
@@ -78,11 +86,40 @@ function validateFallbackBindings(name: string, bindings: ModelRouteBinding[] | 
     throw new Error(`Config error: ${name} must be a non-empty array`)
   }
 
-  for (const binding of bindings) {
-    if (!binding?.model || typeof binding.model !== 'string') {
-      throw new Error(`Config error: ${name} entries must include a non-empty model`)
+  for (const [index, binding] of bindings.entries()) {
+    validateBinding(`${name}[${index}]`, binding, `${name} entries`)
+  }
+}
+
+function validateBinding(name: string, binding: Pick<ReviewerConfig, 'tool' | 'model' | 'agent'> | undefined, listEntryLabel?: string): void {
+  if (!binding) return
+
+  const tool = binding.tool?.trim()
+  const model = binding.model?.trim()
+  if (!tool && !model) {
+    const prefix = listEntryLabel || name
+    throw new Error(`Config error: ${prefix} must include a non-empty tool or model`)
+  }
+
+  if (binding.tool !== undefined) {
+    if (!tool) {
+      throw new Error(`Config error: ${name}.tool must be a non-empty string`)
     }
-    validateOptionalAgent(name, binding.agent)
+    getProviderForTool(tool)
+  }
+
+  if (binding.model !== undefined && !model) {
+    throw new Error(`Config error: ${name}.model must be a non-empty string`)
+  }
+
+  validateOptionalAgent(name, binding.agent)
+  if (!binding.agent) return
+
+  const providerName = tool
+    ? getProviderForTool(tool)
+    : getProviderForModel(model!)
+  if (providerName !== 'kiro') {
+    throw new Error(`Config error: ${name}.agent is only supported when tool/model resolves to kiro`)
   }
 }
 
@@ -108,13 +145,13 @@ export function getConfigPath(customPath?: string): string {
 }
 
 function validateReviewerConfig(name: string, rc: ReviewerConfig | undefined): void {
-  if (!rc?.model || typeof rc.model !== 'string') {
-    throw new Error(`Config error: ${name} is missing a "model" field`)
+  if (!rc) {
+    throw new Error(`Config error: ${name} is missing a reviewer config`)
   }
+  validateBinding(name, rc)
   if (!rc.prompt || typeof rc.prompt !== 'string') {
     throw new Error(`Config error: ${name} is missing a "prompt" field`)
   }
-  validateOptionalAgent(name, rc.agent)
 }
 
 function validateOptionalAgent(name: string, agent: string | undefined): void {

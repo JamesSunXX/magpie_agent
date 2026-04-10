@@ -52,16 +52,20 @@ export async function executeIssueFix(
     await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
   }
 
-  const plannerModel = routingDecision?.planning.model || runtime.planner_model || config.analyzer.model
-  const executorModel = routingDecision?.execution.model || runtime.executor_model || 'codex'
+  const plannerTool = routingDecision?.planning.tool || runtime.planner_tool
+  const executorTool = routingDecision?.execution.tool || runtime.executor_tool
+  const plannerModel = routingDecision?.planning.model || routingDecision?.planning.tool || runtime.planner_model || config.analyzer.model
+  const executorModel = routingDecision?.execution.model || routingDecision?.execution.tool || runtime.executor_model || 'codex'
   log.debug(`[issue-fix] planner=${plannerModel} executor=${executorModel}`)
   const planner = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.planner',
+    tool: plannerTool,
     model: plannerModel,
     agent: routingDecision?.planning.agent || runtime.planner_agent,
   }, config)
   const executor = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.executor',
+    tool: executorTool,
     model: executorModel,
     agent: routingDecision?.execution.agent || runtime.executor_agent,
   }, config)

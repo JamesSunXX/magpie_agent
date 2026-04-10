@@ -15,9 +15,9 @@ function createConfig(): MagpieConfigV2 {
       kiro: { enabled: true },
     },
     reviewers: {
-      'route-gemini': { model: 'gemini-cli', prompt: 'route gemini' },
-      'route-codex': { model: 'codex', prompt: 'route codex' },
-      'route-architect': { model: 'kiro', agent: 'architect', prompt: 'route architect' },
+      'route-gemini': { tool: 'gemini', prompt: 'route gemini' },
+      'route-codex': { tool: 'codex', prompt: 'route codex' },
+      'route-architect': { tool: 'kiro', agent: 'architect', prompt: 'route architect' },
     },
     summarizer: { model: 'codex', prompt: 'summarize' },
     analyzer: { model: 'codex', prompt: 'analyze' },
@@ -128,8 +128,8 @@ describe('routing', () => {
   it('returns complex planning and execution bindings with distinct kiro agents', () => {
     const bindings = getRouteBindings(createConfig(), 'complex')
 
-    expect(bindings.planning).toEqual({ model: 'kiro', agent: 'architect' })
-    expect(bindings.execution).toEqual({ model: 'kiro', agent: 'dev' })
+    expect(bindings.planning).toEqual({ tool: 'kiro', agent: 'architect' })
+    expect(bindings.execution).toEqual({ tool: 'kiro', agent: 'dev' })
   })
 
   it('falls back within the same route when a selected provider is disabled', () => {
@@ -143,12 +143,12 @@ describe('routing', () => {
     })
 
     expect(decision.tier).toBe('complex')
-    expect(decision.planning).toEqual({ model: 'codex' })
-    expect(decision.execution).toEqual({ model: 'codex' })
+    expect(decision.planning).toEqual({ tool: 'codex' })
+    expect(decision.execution).toEqual({ tool: 'codex' })
     expect(decision.reviewerIds).toEqual(['route-gemini', 'route-codex'])
     expect(decision.fallbackTrail).toEqual([
-      'planning_fallback:complex:kiro:architect->codex:',
-      'execution_fallback:complex:kiro:dev->codex:',
+      'planning_fallback:complex:kiro::architect->codex::',
+      'execution_fallback:complex:kiro::dev->codex::',
       'reviewer_fallback:complex:route-gemini,route-codex,route-architect->route-gemini,route-codex',
     ])
   })
@@ -160,7 +160,7 @@ describe('routing', () => {
       enabled: true,
       fallback_chain: {
         planning: {
-          simple: [{ model: 'kiro', agent: 'architect' }],
+          simple: [{ tool: 'kiro', agent: 'architect' }],
         },
       },
     }
@@ -171,9 +171,9 @@ describe('routing', () => {
       config,
     })
 
-    expect(decision.planning).toEqual({ model: 'kiro', agent: 'architect' })
-    expect(decision.execution).toEqual({ model: 'codex' })
-    expect(decision.fallbackTrail).toContain('planning_fallback:simple:gemini-cli:->kiro:architect')
+    expect(decision.planning).toEqual({ tool: 'kiro', agent: 'architect' })
+    expect(decision.execution).toEqual({ tool: 'codex' })
+    expect(decision.fallbackTrail).toContain('planning_fallback:simple:gemini::->kiro::architect')
   })
 
   it('escalates upward only and records the escalation reason', () => {

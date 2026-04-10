@@ -947,8 +947,10 @@ describe('harness workflow', () => {
       const routingDecision = readJson<{ tier: string }>(result.session!.artifacts.routingDecisionPath)
       expect(routingDecision.tier).toBe('complex')
       const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
+      expect(harnessConfig).toContain('planner_tool: kiro')
       expect(harnessConfig).toContain('planner_model: kiro')
       expect(harnessConfig).toContain('planner_agent: architect')
+      expect(harnessConfig).toContain('executor_tool: kiro')
       expect(harnessConfig).toContain('executor_model: kiro')
       expect(harnessConfig).toContain('executor_agent: dev')
       expect(harnessConfig).toContain('strict release gate reviewer')
@@ -1036,15 +1038,18 @@ describe('harness workflow', () => {
       expect(result.status).toBe('completed')
       expect(reviewCalls[0]?.reviewers).toBe('route-gemini,route-codex')
       const routingDecision = readJson<{
-        planning: { model: string }
-        execution: { model: string }
+        planning: { tool: string }
+        execution: { tool: string }
         fallbackTrail: string[]
       }>(result.session!.artifacts.routingDecisionPath)
-      expect(routingDecision.planning).toEqual({ model: 'codex' })
-      expect(routingDecision.execution).toEqual({ model: 'codex' })
-      expect(routingDecision.fallbackTrail).toContain('planning_fallback:complex:kiro:architect->codex:')
+      expect(routingDecision.planning).toEqual({ tool: 'codex' })
+      expect(routingDecision.execution).toEqual({ tool: 'codex' })
+      expect(routingDecision.fallbackTrail).toContain('planning_fallback:complex:kiro::architect->codex::')
+      expect(routingDecision.fallbackTrail).toContain('execution_fallback:complex:kiro::dev->codex::')
       const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
+      expect(harnessConfig).toContain('planner_tool: codex')
       expect(harnessConfig).toContain('planner_model: codex')
+      expect(harnessConfig).toContain('executor_tool: codex')
       expect(harnessConfig).toContain('executor_model: codex')
       expect(harnessConfig).not.toContain('planner_agent: architect')
       expect(harnessConfig).not.toContain('executor_agent: dev')

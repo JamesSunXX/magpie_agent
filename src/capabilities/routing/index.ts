@@ -1,5 +1,5 @@
 import type { LoopTask } from '../../state/types.js'
-import { getProviderForModel } from '../../providers/factory.js'
+import { getProviderForModel, getProviderForTool } from '../../providers/factory.js'
 import type {
   ComplexityTier,
   MagpieConfigV2,
@@ -34,27 +34,27 @@ const DEFAULT_REVIEWER_POOLS: Required<ReviewerPoolPolicy> = {
 }
 
 const DEFAULT_PLANNING_BINDINGS: Record<ComplexityTier, ModelRouteBinding> = {
-  simple: { model: 'gemini-cli' },
-  standard: { model: 'codex' },
-  complex: { model: 'kiro', agent: 'architect' },
+  simple: { tool: 'gemini' },
+  standard: { tool: 'codex' },
+  complex: { tool: 'kiro', agent: 'architect' },
 }
 
 const DEFAULT_EXECUTION_BINDINGS: Record<ComplexityTier, ModelRouteBinding> = {
-  simple: { model: 'gemini-cli' },
-  standard: { model: 'codex' },
-  complex: { model: 'kiro', agent: 'dev' },
+  simple: { tool: 'gemini' },
+  standard: { tool: 'codex' },
+  complex: { tool: 'kiro', agent: 'dev' },
 }
 
 const DEFAULT_FALLBACK_CHAIN = {
   planning: {
-    simple: [{ model: 'codex' }],
-    standard: [{ model: 'gemini-cli' }],
-    complex: [{ model: 'codex' }, { model: 'gemini-cli' }],
+    simple: [{ tool: 'codex' }],
+    standard: [{ tool: 'gemini' }],
+    complex: [{ tool: 'codex' }, { tool: 'gemini' }],
   },
   execution: {
-    simple: [{ model: 'codex' }],
-    standard: [{ model: 'gemini-cli' }],
-    complex: [{ model: 'codex' }, { model: 'gemini-cli' }],
+    simple: [{ tool: 'codex' }],
+    standard: [{ tool: 'gemini' }],
+    complex: [{ tool: 'codex' }, { tool: 'gemini' }],
   },
 } as const
 
@@ -65,7 +65,11 @@ const DEFAULT_REVIEWER_FALLBACK_ORDER: Record<ComplexityTier, string[]> = {
 }
 
 function cloneBinding(binding: ModelRouteBinding): ModelRouteBinding {
-  return binding.agent ? { model: binding.model, agent: binding.agent } : { model: binding.model }
+  return {
+    ...(binding.tool ? { tool: binding.tool } : {}),
+    ...(binding.model ? { model: binding.model } : {}),
+    ...(binding.agent ? { agent: binding.agent } : {}),
+  }
 }
 
 function getRoutingConfig(config: MagpieConfigV2): RoutingConfig {
@@ -121,7 +125,7 @@ function getFallbackBindings(
 }
 
 function bindingKey(binding: ModelRouteBinding): string {
-  return `${binding.model}:${binding.agent || ''}`
+  return `${binding.tool || ''}:${binding.model || ''}:${binding.agent || ''}`
 }
 
 function dedupeBindings(bindings: ModelRouteBinding[]): ModelRouteBinding[] {
@@ -139,7 +143,15 @@ function dedupeBindings(bindings: ModelRouteBinding[]): ModelRouteBinding[] {
 }
 
 function isBindingAvailable(config: MagpieConfigV2, binding: ModelRouteBinding): boolean {
-  const providerName = getProviderForModel(binding.model)
+  const providerName = binding.tool
+    ? getProviderForTool(binding.tool)
+    : binding.model
+      ? getProviderForModel(binding.model)
+      : null
+
+  if (!providerName) {
+    return false
+  }
 
   if (providerName === 'mock') {
     return true
@@ -191,7 +203,7 @@ function resolveBinding(
 function isReviewerAvailable(config: MagpieConfigV2, reviewerId: string): boolean {
   const reviewer = config.reviewers?.[reviewerId]
   if (!reviewer) return false
-  return isBindingAvailable(config, { model: reviewer.model, agent: reviewer.agent })
+  return isBindingAvailable(config, { tool: reviewer.tool, model: reviewer.model, agent: reviewer.agent })
 }
 
 function resolveReviewerIds(

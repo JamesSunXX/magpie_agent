@@ -10,6 +10,7 @@ export class KiroProvider implements AIProvider {
     private cwd: string
     private timeout: number  // ms, 0 = no timeout
     private readonly logicalName?: string
+    private readonly model?: string
     private readonly desiredAgent?: string
     private session = new CliSessionHelper()
 
@@ -19,6 +20,7 @@ export class KiroProvider implements AIProvider {
         // No API key needed for Kiro CLI (uses AWS subscription)
         this.cwd = process.cwd()
         this.logicalName = options?.logicalName
+        this.model = options?.model
         this.desiredAgent = options?.agent
         const envTimeout = process.env.MAGPIE_KIRO_TIMEOUT_MS
         const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
@@ -99,6 +101,9 @@ export class KiroProvider implements AIProvider {
         return new Promise((resolve, reject) => {
             // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
             const args = ['chat', '--no-interactive', '--trust-all-tools']
+            if (this.model) {
+                args.push('--model', this.model)
+            }
             args.push('--agent', agent)
             if (this.session.sessionId && !this.session.isFirstMessage) {
                 args.push('--resume')
@@ -160,6 +165,9 @@ export class KiroProvider implements AIProvider {
 
         // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
         const args = ['chat', '--no-interactive', '--trust-all-tools']
+        if (this.model) {
+            args.push('--model', this.model)
+        }
         args.push('--agent', agent)
         if (this.session.sessionId && !this.session.isFirstMessage) {
             args.push('--resume')

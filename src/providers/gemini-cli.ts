@@ -6,6 +6,7 @@ export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private readonly model?: string
   private session = new CliSessionHelper()
   // Gemini gets its session ID from the first response (session_id in JSON)
   private sessionEnabled = false
@@ -16,6 +17,7 @@ export class GeminiCliProvider implements AIProvider {
     // No API key needed for Gemini CLI (uses Google account)
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
+    this.model = _options?.model
   }
 
   setCwd(cwd: string) {
@@ -66,6 +68,9 @@ export class GeminiCliProvider implements AIProvider {
       // stream-json mode cannot be resumed with -o json).
       // -e "" disables extensions/MCP servers that can cause startup failures
       const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
+      if (this.model) {
+        args.splice(3, 0, '-m', this.model)
+      }
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
@@ -122,6 +127,9 @@ export class GeminiCliProvider implements AIProvider {
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
     // -e "" disables extensions/MCP servers that can cause startup failures
     const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
+    if (this.model) {
+      args.splice(3, 0, '-m', this.model)
+    }
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
     }

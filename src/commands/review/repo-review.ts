@@ -180,6 +180,7 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
   if (!analysis) {
     const analyzerProvider = createConfiguredProvider({
       logicalName: 'summarizer',
+      tool: config.summarizer.tool,
       model: config.summarizer.model,
       agent: config.summarizer.agent,
     }, config)
@@ -343,6 +344,7 @@ export async function executeFeatureReview(
     id,
     provider: createConfiguredProvider({
       logicalName: `reviewers.${id}`,
+      tool: cfg.tool,
       model: cfg.model,
       agent: cfg.agent,
     }, config),
@@ -353,6 +355,7 @@ export async function executeFeatureReview(
     id: 'summarizer',
     provider: createConfiguredProvider({
       logicalName: 'summarizer',
+      tool: config.summarizer.tool,
       model: config.summarizer.model,
       agent: config.summarizer.agent,
     }, config),

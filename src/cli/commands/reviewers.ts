@@ -5,7 +5,9 @@ import type { MagpieConfigV2 } from '../../platform/config/types.js'
 
 export interface ConfiguredReviewer {
   id: string
-  model: string
+  tool?: string
+  model?: string
+  binding: string
   agent?: string
 }
 
@@ -15,11 +17,16 @@ export function listConfiguredReviewers(config: MagpieConfigV2, model?: string):
   return Object.entries(config.reviewers)
     .filter(([, reviewer]) => {
       if (!normalized) return true
-      return reviewer.model.toLowerCase() === normalized
+      return reviewer.model?.toLowerCase() === normalized
+        || reviewer.tool?.toLowerCase() === normalized
     })
     .map(([id, reviewer]) => ({
       id,
+      tool: reviewer.tool,
       model: reviewer.model,
+      binding: reviewer.tool && reviewer.model
+        ? `${reviewer.tool}:${reviewer.model}`
+        : reviewer.tool || reviewer.model || '(unset)',
       agent: reviewer.agent,
     }))
 }
@@ -33,7 +40,7 @@ interface ReviewerListOptions {
 const listReviewersCommand = new Command('list')
   .description('List configured reviewers')
   .option('-c, --config <path>', 'Path to config file')
-  .option('-m, --model <model>', 'Filter by model name (e.g., kiro)')
+  .option('-m, --model <model>', 'Filter by tool or model name (e.g., kiro or gpt-5.4)')
   .option('--json', 'Output in JSON format')
   .action((options: ReviewerListOptions) => {
     try {
@@ -54,9 +61,9 @@ const listReviewersCommand = new Command('list')
 
       const title = options.model ? ` Reviewers (model=${options.model}) ` : ' Configured Reviewers '
       console.log(chalk.bgBlue.white.bold(title))
-      console.log(chalk.dim(`  ${'ID'.padEnd(20)} ${'MODEL'.padEnd(16)} AGENT`))
+      console.log(chalk.dim(`  ${'ID'.padEnd(20)} ${'BINDING'.padEnd(28)} AGENT`))
       for (const reviewer of reviewers) {
-        console.log(`  ${chalk.cyan(reviewer.id.padEnd(20))} ${reviewer.model.padEnd(16)} ${reviewer.agent || '-'}`)
+        console.log(`  ${chalk.cyan(reviewer.id.padEnd(20))} ${reviewer.binding.padEnd(28)} ${reviewer.agent || '-'}`)
       }
       console.log(chalk.dim(`\n  Total: ${reviewers.length}`))
     } catch (error) {
