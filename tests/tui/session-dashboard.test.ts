@@ -132,4 +132,30 @@ describe('session dashboard', () => {
 
     expect(result.recent[0]?.title).toBe('混合在线圈包方案可行性深度研究报告')
   })
+
+  it('keeps non-resumable harness sessions out of the Continue section', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(join(magpieHomeDir, 'workflow-sessions', 'harness', 'harness-1'), { recursive: true })
+
+    writeFileSync(join(magpieHomeDir, 'workflow-sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
+      id: 'harness-1',
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'in_progress',
+      currentStage: 'reviewing',
+      summary: 'Running review cycle 1.',
+      artifacts: {
+        eventsPath: '/tmp/workflow/events.jsonl',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+
+    expect(result.continue).toEqual([])
+    expect(result.recent[0]).toMatchObject({ capability: 'harness', status: 'in_progress' })
+  })
 })

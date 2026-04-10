@@ -111,10 +111,14 @@ workflowCommand
       console.log(output.summary)
       if (output.details) {
         console.log(`Session: ${output.details.id}`)
+        if (output.details.currentStage) {
+          console.log(`Stage: ${output.details.currentStage}`)
+        }
         console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
         console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
         console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
         console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
+        console.log(`Events: ${output.details.artifacts.eventsPath}`)
         if (output.details.artifacts.loopSessionId) {
           console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
         }

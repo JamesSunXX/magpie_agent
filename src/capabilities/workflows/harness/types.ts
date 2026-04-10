@@ -1,6 +1,13 @@
 import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
 
+export type HarnessStage =
+  | 'queued'
+  | 'developing'
+  | 'reviewing'
+  | 'completed'
+  | 'failed'
+
 export interface HarnessInput {
   goal: string
   prdPath: string
@@ -35,11 +42,13 @@ export interface HarnessCycle {
 export interface HarnessResult {
   status: 'completed' | 'failed'
   session?: WorkflowSession & {
+    currentStage?: HarnessStage
     artifacts: WorkflowSession['artifacts'] & {
       harnessConfigPath: string
       roundsPath: string
       providerSelectionPath: string
       routingDecisionPath: string
+      eventsPath: string
       loopSessionId?: string
     }
   }

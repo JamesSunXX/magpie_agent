@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { discussCommand } from './commands/discuss.js'
+import { harnessCommand } from './commands/harness.js'
 import { initCommand } from './commands/init.js'
 import { loopCommand } from './commands/loop.js'
 import { qualityCommand } from './commands/quality.js'
@@ -22,6 +23,7 @@ export function createProgram(): Command {
   program.addCommand(reviewersCommand)
   program.addCommand(initCommand)
   program.addCommand(discussCommand)
+  program.addCommand(harnessCommand)
   program.addCommand(trdCommand)
   program.addCommand(qualityCommand)
   program.addCommand(loopCommand)

@@ -12,6 +12,7 @@ import { reviewCapability } from '../../../review/index.js'
 import { extractJsonBlock } from '../../../../trd/renderer.js'
 import { issueFixCapability } from '../../issue-fix/index.js'
 import {
+  appendWorkflowEvent,
   generateWorkflowId,
   persistWorkflowSession,
   sessionDirFor,
@@ -19,7 +20,7 @@ import {
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
-import type { HarnessCycle, HarnessPreparedInput, HarnessResult } from '../types.js'
+import type { HarnessCycle, HarnessPreparedInput, HarnessResult, HarnessStage } from '../types.js'
 import { selectHarnessProviders } from './provider-selection.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
@@ -376,8 +377,92 @@ export async function executeHarness(
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
+  const eventsPath = join(sessionDir, 'events.jsonl')
 
   await mkdir(sessionDir, { recursive: true })
+
+  type HarnessSession = NonNullable<HarnessResult['session']>
+  type HarnessSessionPatch = Omit<Partial<HarnessSession>, 'artifacts'> & {
+    artifacts?: Partial<HarnessSession['artifacts']>
+  }
+
+  let session: HarnessSession = {
+    id: sessionId,
+    capability: 'harness' as const,
+    title: prepared.goal.slice(0, 80),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    status: 'in_progress' as const,
+    currentStage: 'queued' as HarnessStage,
+    summary: 'Harness workflow queued.',
+    artifacts: {
+      harnessConfigPath,
+      roundsPath,
+      providerSelectionPath,
+      routingDecisionPath,
+      eventsPath,
+    },
+  }
+
+  const persistSession = async (
+    patch: HarnessSessionPatch = {}
+  ): Promise<void> => {
+    const nextArtifacts = {
+      ...session.artifacts,
+    }
+    for (const [key, value] of Object.entries(patch.artifacts || {})) {
+      if (typeof value === 'string') {
+        nextArtifacts[key] = value
+      }
+    }
+
+    session = {
+      ...session,
+      ...patch,
+      updatedAt: new Date(),
+      artifacts: nextArtifacts,
+    }
+    await persistWorkflowSession(session)
+  }
+
+  const appendEvent = async (
+    type: string,
+    patch: {
+      stage?: HarnessStage
+      cycle?: number
+      summary?: string
+      details?: Record<string, unknown>
+    } = {}
+  ): Promise<void> => {
+    await appendWorkflowEvent('harness', sessionId, {
+      timestamp: new Date(),
+      type,
+      ...patch,
+    })
+  }
+
+  const transitionStage = async (
+    stage: HarnessStage,
+    summary: string,
+    eventType = 'stage_changed',
+    details?: Record<string, unknown>
+  ): Promise<void> => {
+    await persistSession({
+      currentStage: stage,
+      summary,
+    })
+    await appendEvent(eventType, {
+      stage,
+      summary,
+      details,
+    })
+  }
+
+  await persistSession()
+  await appendEvent('workflow_started', {
+    stage: 'queued',
+    summary: 'Harness workflow started.',
+  })
 
   let routingDecision = isRoutingEnabled(config)
     ? createRoutingDecision({
@@ -402,26 +487,20 @@ export async function executeHarness(
   }
 
   if (providerSelection.record.decision === 'fallback_failed') {
-    const failedSession = {
-      id: sessionId,
-      capability: 'harness' as const,
-      title: prepared.goal.slice(0, 80),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      status: 'failed' as const,
-      summary: `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim(),
-      artifacts: {
-        harnessConfigPath,
-        roundsPath,
-        providerSelectionPath,
-        routingDecisionPath,
-      },
-    }
-    await persistWorkflowSession(failedSession)
+    const summary = `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim()
+    await persistSession({
+      status: 'failed',
+      currentStage: 'failed',
+      summary,
+    })
+    await appendEvent('workflow_failed', {
+      stage: 'failed',
+      summary,
+    })
 
     return {
       status: 'failed',
-      session: failedSession,
+      session,
     }
   }
 
@@ -429,6 +508,8 @@ export async function executeHarness(
     cwd: ctx.cwd,
     configPath: harnessConfigPath,
   })
+
+  await transitionStage('developing', 'Running loop development stage.')
 
   const loopResult = await runCapability(loopCapability, {
     mode: 'run',
@@ -438,29 +519,31 @@ export async function executeHarness(
   }, harnessCtx)
 
   if (loopResult.result.status !== 'completed') {
-    const failedSession = {
-      id: sessionId,
-      capability: 'harness' as const,
-      title: prepared.goal.slice(0, 80),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      status: 'failed' as const,
-      summary: 'Harness failed during loop development stage.',
+    const summary = 'Harness failed during loop development stage.'
+    await persistSession({
+      status: 'failed',
+      currentStage: 'failed',
+      summary,
       artifacts: {
-        harnessConfigPath,
-        roundsPath,
-        providerSelectionPath,
-        routingDecisionPath,
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
       },
-    }
-    await persistWorkflowSession(failedSession)
+    })
+    await appendEvent('workflow_failed', {
+      stage: 'failed',
+      summary,
+    })
 
     return {
       status: 'failed',
-      session: failedSession,
+      session,
     }
   }
+
+  await persistSession({
+    artifacts: {
+      ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+    },
+  })
 
   const testCommand = prepared.testCommand || config.capabilities.loop?.commands?.unit_test || 'npm run test:run'
   const cycles: HarnessCycle[] = []
@@ -468,6 +551,7 @@ export async function executeHarness(
 
   try {
     for (let cycle = 1; cycle <= prepared.maxCycles; cycle++) {
+      await transitionStage('reviewing', `Running review cycle ${cycle}.`, 'stage_changed', { cycle })
       const cycleRun = await runCycle(
         cycle,
         resolve(ctx.cwd),
@@ -488,6 +572,19 @@ export async function executeHarness(
       }
       cycles.push(cycleRun.cycleResult)
       await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
+      await appendEvent('cycle_completed', {
+        stage: cycleRun.approved ? 'completed' : 'reviewing',
+        cycle,
+        summary: cycleRun.approved
+          ? `Cycle ${cycle} approved.`
+          : `Cycle ${cycle} requested more changes.`,
+        details: {
+          approved: cycleRun.approved,
+          blockingIssueCount: cycleRun.cycleResult.blockingIssueCount,
+          testsPassed: cycleRun.cycleResult.testsPassed,
+          modelDecision: cycleRun.cycleResult.modelDecision,
+        },
+      })
       if (cycleRun.approved) {
         approved = true
         break
@@ -495,48 +592,38 @@ export async function executeHarness(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    const failedSession = {
-      id: sessionId,
-      capability: 'harness' as const,
-      title: prepared.goal.slice(0, 80),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      status: 'failed' as const,
-      summary: `Harness failed during review cycle: ${message}`,
-      artifacts: {
-        harnessConfigPath,
-        roundsPath,
-        providerSelectionPath,
-        routingDecisionPath,
-        ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
-      },
-    }
-    await persistWorkflowSession(failedSession)
-    return { status: 'failed', session: failedSession }
+    const summary = `Harness failed during review cycle: ${message}`
+    await persistSession({
+      status: 'failed',
+      currentStage: 'failed',
+      summary,
+    })
+    await appendEvent('workflow_failed', {
+      stage: 'failed',
+      summary,
+      details: { error: message },
+    })
+    return { status: 'failed', session }
   }
 
-  const completedSession = {
-    id: sessionId,
-    capability: 'harness' as const,
-    title: prepared.goal.slice(0, 80),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    status: approved ? 'completed' as const : 'failed' as const,
-    summary: approved
-      ? `Harness approved after ${cycles.length} cycle(s).`
-      : `Harness failed after ${cycles.length} cycle(s) without approval.`,
-    artifacts: {
-      harnessConfigPath,
-      roundsPath,
-      providerSelectionPath,
-      routingDecisionPath,
-      ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+  const summary = approved
+    ? `Harness approved after ${cycles.length} cycle(s).`
+    : `Harness failed after ${cycles.length} cycle(s) without approval.`
+  await persistSession({
+    status: approved ? 'completed' : 'failed',
+    currentStage: approved ? 'completed' : 'failed',
+    summary,
+  })
+  await appendEvent(approved ? 'workflow_completed' : 'workflow_failed', {
+    stage: approved ? 'completed' : 'failed',
+    summary,
+    details: {
+      totalCycles: cycles.length,
     },
-  }
-  await persistWorkflowSession(completedSession)
+  })
 
   return {
     status: approved ? 'completed' : 'failed',
-    session: completedSession,
+    session,
   }
 }

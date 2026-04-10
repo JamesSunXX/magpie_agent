@@ -234,9 +234,19 @@ describe('harness workflow', () => {
       expect(result.session?.status).toBe('completed')
       expect(result.session?.artifacts.loopSessionId).toBe('loop-1')
       expect(result.session?.artifacts.providerSelectionPath).toBeTruthy()
+      expect(result.session?.artifacts.eventsPath).toBeTruthy()
+      expect(result.session?.currentStage).toBe('completed')
       const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
       expect(harnessConfig).toContain('planner_model: claude-code')
       expect(harnessConfig).toContain('executor_model: claude-code')
+      const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { type: string; stage?: string })
+      expect(events.some((event) => event.type === 'workflow_started')).toBe(true)
+      expect(events.some((event) => event.type === 'stage_changed' && event.stage === 'developing')).toBe(true)
+      expect(events.some((event) => event.type === 'cycle_completed')).toBe(true)
+      expect(events.at(-1)?.type).toBe('workflow_completed')
       const selection = readJson<{
         decision: string
         hasPreciseUsage: boolean
@@ -346,7 +356,14 @@ describe('harness workflow', () => {
 
       expect(result.status).toBe('failed')
       expect(result.session?.status).toBe('failed')
+      expect(result.session?.currentStage).toBe('failed')
       expect(issueFixCalls).toBe(2)
+      const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { type: string; cycle?: number })
+      expect(events.filter((event) => event.type === 'cycle_completed')).toHaveLength(2)
+      expect(events.at(-1)?.type).toBe('workflow_failed')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

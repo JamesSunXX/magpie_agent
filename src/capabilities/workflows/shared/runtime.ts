@@ -1,17 +1,40 @@
-import { mkdir, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { getMagpieHomeDir } from '../../../platform/paths.js'
 
+export type WorkflowCapability =
+  | 'issue-fix'
+  | 'docs-sync'
+  | 'post-merge-regression'
+  | 'harness'
+
+export type WorkflowSessionStatus =
+  | 'queued'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+
 export interface WorkflowSession {
   id: string
-  capability: 'issue-fix' | 'docs-sync' | 'post-merge-regression' | 'harness'
+  capability: WorkflowCapability
   title: string
   createdAt: Date
   updatedAt: Date
-  status: 'completed' | 'failed'
+  status: WorkflowSessionStatus
+  currentStage?: string
   summary: string
   artifacts: Record<string, string>
+  evidence?: unknown
+}
+
+export interface WorkflowEvent {
+  timestamp: Date
+  type: string
+  stage?: string
+  cycle?: number
+  summary?: string
+  details?: Record<string, unknown>
 }
 
 export interface CommandRunResult {
@@ -23,7 +46,7 @@ export function generateWorkflowId(prefix: string): string {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}`
 }
 
-export function sessionDirFor(capability: WorkflowSession['capability'], id: string): string {
+export function sessionDirFor(capability: WorkflowCapability, id: string): string {
   return join(getMagpieHomeDir(), 'workflow-sessions', capability, id)
 }
 
@@ -31,6 +54,59 @@ export async function persistWorkflowSession(session: WorkflowSession): Promise<
   const dir = sessionDirFor(session.capability, session.id)
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8')
+}
+
+function reviveWorkflowSession(content: string): WorkflowSession {
+  const data = JSON.parse(content) as WorkflowSession & {
+    createdAt: string
+    updatedAt: string
+  }
+
+  return {
+    ...data,
+    createdAt: new Date(data.createdAt),
+    updatedAt: new Date(data.updatedAt),
+  }
+}
+
+export async function loadWorkflowSession(
+  capability: WorkflowCapability,
+  id: string
+): Promise<WorkflowSession | null> {
+  try {
+    const content = await readFile(join(sessionDirFor(capability, id), 'session.json'), 'utf-8')
+    return reviveWorkflowSession(content)
+  } catch {
+    return null
+  }
+}
+
+export async function listWorkflowSessions(capability: WorkflowCapability): Promise<WorkflowSession[]> {
+  const baseDir = join(getMagpieHomeDir(), 'workflow-sessions', capability)
+
+  try {
+    const ids = await readdir(baseDir)
+    const sessions = (await Promise.all(
+      ids.map(async (id) => loadWorkflowSession(capability, id))
+    )).filter((session): session is WorkflowSession => session !== null)
+
+    sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+    return sessions
+  } catch {
+    return []
+  }
+}
+
+export async function appendWorkflowEvent(
+  capability: WorkflowCapability,
+  id: string,
+  event: WorkflowEvent
+): Promise<string> {
+  const dir = sessionDirFor(capability, id)
+  const eventsPath = join(dir, 'events.jsonl')
+  await mkdir(dir, { recursive: true })
+  await appendFile(eventsPath, `${JSON.stringify(event)}\n`, 'utf-8')
+  return eventsPath
 }
 
 export function parseCommandArgs(command: string): string[] {

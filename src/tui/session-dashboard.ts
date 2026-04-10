@@ -98,6 +98,8 @@ async function loadWorkflowSessions(magpieHomeDir: string): Promise<WorkflowSess
 
 function isContinuable(card: SessionCard): boolean {
   return (CONTINUABLE_STATUSES as readonly string[]).includes(card.status)
+    && Array.isArray(card.resumeCommand)
+    && card.resumeCommand.length > 0
 }
 
 function withResumeCommand(card: SessionCard): SessionCard {
@@ -167,14 +169,14 @@ function mapLoopSession(session: LoopSessionFile): SessionCard {
 }
 
 function mapWorkflowSession(session: WorkflowSessionFile): SessionCard {
-  return {
+  return withResumeCommand({
     id: session.id,
     capability: session.capability,
     title: normalizeSessionTitle(session.title, session.capability),
     status: session.status,
     updatedAt: new Date(session.updatedAt),
     artifactPaths: toArtifactPaths(session.artifacts),
-  }
+  })
 }
 
 function groupCards(cards: SessionCard[]): DashboardSessions {
