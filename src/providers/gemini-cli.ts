@@ -62,15 +62,20 @@ export class GeminiCliProvider implements AIProvider {
     return `${prompt}\n\n请结合以下图片引用进行分析：\n${refs}`
   }
 
+  private getModelArgs(): string[] {
+    if (!this.model || this.model === 'gemini-cli') {
+      return []
+    }
+    return ['-m', this.model]
+  }
+
   private runGemini(prompt: string): Promise<string> {
     return new Promise((resolve, reject) => {
       // Always use stream-json so session resume works (sessions created in
       // stream-json mode cannot be resumed with -o json).
       // -e "" disables extensions/MCP servers that can cause startup failures
       const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
-      if (this.model) {
-        args.splice(3, 0, '-m', this.model)
-      }
+      args.splice(3, 0, ...this.getModelArgs())
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
@@ -127,9 +132,7 @@ export class GeminiCliProvider implements AIProvider {
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
     // -e "" disables extensions/MCP servers that can cause startup failures
     const args = ['-y', '-e', '', '-o', 'stream-json', '-p', '-']
-    if (this.model) {
-      args.splice(3, 0, '-m', this.model)
-    }
+    args.splice(3, 0, ...this.getModelArgs())
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
     }

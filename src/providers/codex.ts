@@ -59,6 +59,13 @@ export class CodexCliProvider implements AIProvider {
     this.session.markMessageSent()
   }
 
+  private getModelArgs(): string[] {
+    if (!this.model || this.model === 'codex') {
+      return []
+    }
+    return ['-m', this.model]
+  }
+
   private buildArgs(imageFiles: string[]): string[] {
     const baseArgs = ['--json', '--dangerously-bypass-approvals-and-sandbox']
     for (const file of imageFiles) {
@@ -66,10 +73,10 @@ export class CodexCliProvider implements AIProvider {
     }
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
-      return ['exec', 'resume', this.sessionId, ...(this.model ? ['-m', this.model] : []), ...baseArgs, '-']
+      return ['exec', 'resume', this.sessionId, ...this.getModelArgs(), ...baseArgs, '-']
     }
     // New session or no session
-    return ['exec', ...(this.model ? ['-m', this.model] : []), ...baseArgs, '-']
+    return ['exec', ...this.getModelArgs(), ...baseArgs, '-']
   }
 
   private preparePromptAndImages(

@@ -65,6 +65,13 @@ export class ClaudeCodeProvider implements AIProvider {
     return `${prompt}\n\n请直接读取并分析以下图片路径/URL：\n${lines.join('\n')}`
   }
 
+  private getModelArgs(): string[] {
+    if (!this.model || this.model === 'claude-code') {
+      return []
+    }
+    return ['--model', this.model]
+  }
+
   private getTimeoutCheckInterval(): number {
     if (this.timeout <= 0) return 0
     return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
@@ -75,9 +82,7 @@ export class ClaudeCodeProvider implements AIProvider {
       // Build args based on session state
       // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
       const args = ['-p', '-', '--dangerously-skip-permissions']
-      if (this.model) {
-        args.push('--model', this.model)
-      }
+      args.push(...this.getModelArgs())
       // Disable all tools for pure text extraction (e.g., JSON structurization)
       // Without this, Claude may use Edit/Write to modify files instead of outputting text
       if (options?.disableTools) {
@@ -151,9 +156,7 @@ export class ClaudeCodeProvider implements AIProvider {
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     const args = ['-p', '-', '--dangerously-skip-permissions']
-    if (this.model) {
-      args.push('--model', this.model)
-    }
+    args.push(...this.getModelArgs())
     if (this.session.sessionId) {
       if (this.session.isFirstMessage) {
         args.push('--session-id', this.session.sessionId)

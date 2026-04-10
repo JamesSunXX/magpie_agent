@@ -144,6 +144,80 @@ describe('CLI provider invocation smoke tests', () => {
     ])
   })
 
+  it('omits the kiro provider alias from kiro-cli model args', async () => {
+    scenarios.push({
+      onStart: (child) => {
+        setImmediate(() => {
+          child.stdout.emit('data', Buffer.from('kiro default ok'))
+          child.emit('close', 0)
+        })
+      },
+    })
+
+    const provider = new KiroProvider({ model: 'kiro', apiKey: '', agent: 'architect' }) as KiroProvider & {
+      resolveAgent: () => Promise<string>
+    }
+    provider.setCwd('/repo/kiro-default')
+    provider.resolveAgent = vi.fn().mockResolvedValue('architect')
+
+    await expect(provider.chat(
+      [{ role: 'user', content: 'check default kiro' }],
+      'system kiro default'
+    )).resolves.toBe('kiro default ok')
+
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'kiro-cli',
+      cwd: '/repo/kiro-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      'chat',
+      '--no-interactive',
+      '--trust-all-tools',
+      '--agent',
+      'architect',
+      'System: system kiro default\n\nuser: check default kiro\n\n',
+    ])
+  })
+
+  it('omits the kiro provider alias from kiro-cli stream args', async () => {
+    scenarios.push({
+      onStart: (child) => {
+        setImmediate(() => {
+          child.stdout.emit('data', Buffer.from('kiro stream ok'))
+          child.emit('close', 0)
+        })
+      },
+    })
+
+    const provider = new KiroProvider({ model: 'kiro', apiKey: '', agent: 'architect' }) as KiroProvider & {
+      resolveAgent: () => Promise<string>
+    }
+    provider.setCwd('/repo/kiro-stream-default')
+    provider.resolveAgent = vi.fn().mockResolvedValue('architect')
+
+    const chunks: string[] = []
+    for await (const chunk of provider.chatStream(
+      [{ role: 'user', content: 'stream default kiro' }],
+      'system kiro stream'
+    )) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.join('')).toBe('kiro stream ok')
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'kiro-cli',
+      cwd: '/repo/kiro-stream-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      'chat',
+      '--no-interactive',
+      '--trust-all-tools',
+      '--agent',
+      'architect',
+      'System: system kiro stream\n\nuser: stream default kiro\n\n',
+    ])
+  })
+
   it('invokes gemini-cli with expected command, args, cwd, and prompt', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
@@ -183,6 +257,80 @@ describe('CLI provider invocation smoke tests', () => {
     expect(spawnCalls[0]?.prompt).toContain('user: check gemini')
   })
 
+  it('omits the gemini-cli provider alias from gemini model args', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        setImmediate(() => {
+          child.stdout.emit('data', Buffer.from(
+            '{"type":"message","role":"assistant","content":"gemini default ok"}\n'
+          ))
+          child.emit('close', 0)
+        })
+      },
+    })
+
+    const provider = new GeminiCliProvider({ model: 'gemini-cli', apiKey: '' })
+    provider.setCwd('/repo/gemini-default')
+
+    await expect(provider.chat(
+      [{ role: 'user', content: 'check default gemini' }],
+      'system gemini default'
+    )).resolves.toBe('gemini default ok')
+
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'gemini',
+      cwd: '/repo/gemini-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      '-y',
+      '-e',
+      '',
+      '-o',
+      'stream-json',
+      '-p',
+      '-',
+    ])
+  })
+
+  it('omits the gemini-cli provider alias from gemini stream args', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        setImmediate(() => {
+          child.stdout.emit('data', Buffer.from(
+            '{"type":"message","role":"assistant","content":"gemini stream ok"}\n'
+          ))
+          child.emit('close', 0)
+        })
+      },
+    })
+
+    const provider = new GeminiCliProvider({ model: 'gemini-cli', apiKey: '' })
+    provider.setCwd('/repo/gemini-stream-default')
+
+    const chunks: string[] = []
+    for await (const chunk of provider.chatStream(
+      [{ role: 'user', content: 'stream default gemini' }],
+      'system gemini stream'
+    )) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.join('')).toBe('gemini stream ok')
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'gemini',
+      cwd: '/repo/gemini-stream-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      '-y',
+      '-e',
+      '',
+      '-o',
+      'stream-json',
+      '-p',
+      '-',
+    ])
+  })
+
   it('invokes claude with expected command, args, cwd, and prompt', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
@@ -215,6 +363,67 @@ describe('CLI provider invocation smoke tests', () => {
     ])
     expect(spawnCalls[0]?.prompt).toContain('System: system claude')
     expect(spawnCalls[0]?.prompt).toContain('user: check claude')
+  })
+
+  it('omits the claude-code provider alias from claude model args', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from('claude default ok'))
+        setImmediate(() => child.emit('close', 0))
+      },
+    })
+
+    const provider = new ClaudeCodeProvider({ model: 'claude-code', apiKey: '' })
+    provider.setCwd('/repo/claude-default')
+
+    await expect(provider.chat(
+      [{ role: 'user', content: 'check default claude' }],
+      'system claude default',
+      { disableTools: true }
+    )).resolves.toBe('claude default ok')
+
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'claude',
+      cwd: '/repo/claude-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      '-p',
+      '-',
+      '--dangerously-skip-permissions',
+      '--tools',
+      '',
+    ])
+  })
+
+  it('omits the claude-code provider alias from claude stream args', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from('claude stream ok'))
+        setImmediate(() => child.emit('close', 0))
+      },
+    })
+
+    const provider = new ClaudeCodeProvider({ model: 'claude-code', apiKey: '' })
+    provider.setCwd('/repo/claude-stream-default')
+
+    const chunks: string[] = []
+    for await (const chunk of provider.chatStream(
+      [{ role: 'user', content: 'stream default claude' }],
+      'system claude stream'
+    )) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.join('')).toBe('claude stream ok')
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'claude',
+      cwd: '/repo/claude-stream-default',
+    })
+    expect(spawnCalls[0]?.args).toEqual([
+      '-p',
+      '-',
+      '--dangerously-skip-permissions',
+    ])
   })
 
   it('invokes claw with expected command, args, cwd, and prompt', async () => {

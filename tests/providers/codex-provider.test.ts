@@ -78,6 +78,54 @@ afterEach(() => {
 })
 
 describe('CodexCliProvider behavior', () => {
+  it('omits the codex provider alias from CLI model args', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        ))
+        setImmediate(() => child.emit('close', 0))
+      }
+    })
+
+    const provider = new CodexCliProvider({ model: 'codex' })
+    const result = await provider.chat([{ role: 'user', content: 'default alias prompt' }])
+
+    expect(result).toBe('ok')
+    expect(spawnCalls).toHaveLength(1)
+    expect(spawnCalls[0].args).toEqual([
+      'exec',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-',
+    ])
+  })
+
+  it('passes through explicit Codex model names', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        ))
+        setImmediate(() => child.emit('close', 0))
+      }
+    })
+
+    const provider = new CodexCliProvider({ model: 'gpt-5-codex' })
+    const result = await provider.chat([{ role: 'user', content: 'custom model prompt' }])
+
+    expect(result).toBe('ok')
+    expect(spawnCalls).toHaveLength(1)
+    expect(spawnCalls[0].args).toEqual([
+      'exec',
+      '-m',
+      'gpt-5-codex',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-',
+    ])
+  })
+
   it('uses session resume args after first response returns thread id', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
