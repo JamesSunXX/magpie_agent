@@ -87,6 +87,7 @@ export interface LoopConfig {
   retries_per_stage?: number
   max_iterations?: number
   auto_commit?: boolean
+  reuse_current_branch?: boolean
   auto_branch_prefix?: string
   human_confirmation?: LoopHumanConfirmationConfig
   commands?: LoopCommandsConfig

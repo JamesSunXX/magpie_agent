@@ -334,6 +334,7 @@ capabilities:
     retries_per_stage: 2
     max_iterations: 30
     auto_commit: true
+    reuse_current_branch: false
     auto_branch_prefix: "sch/"
     human_confirmation:
       file: "human_confirmation.md"

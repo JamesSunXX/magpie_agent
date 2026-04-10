@@ -202,6 +202,88 @@ describe('loop capability', () => {
     expect(currentBranch).toBe(result.result.session?.branchName)
   })
 
+  it('reuses the current feature branch for auto-commit when configured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-reuse-branch-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    reuse_current_branch: true\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    execSync('git add README.md docs/sample-prd.md config.yaml', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+    execSync('git checkout -b feature/current-branch', { cwd: dir, stdio: 'pipe' })
+
+    writeFileSync(join(dir, 'pending-change.txt'), 'should be auto-committed on current branch\n', 'utf-8')
+
+    const beforeBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const beforeCommit = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const afterBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const afterCommit = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const headMessage = execSync('git log -1 --pretty=%s', { cwd: dir, encoding: 'utf-8' }).trim()
+    const schBranches = execSync('git branch --list "sch/*"', { cwd: dir, encoding: 'utf-8' }).trim()
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe(beforeBranch)
+    expect(afterBranch).toBe(beforeBranch)
+    expect(afterCommit).not.toBe(beforeCommit)
+    expect(headMessage).toBe('feat(loop): 完成prd_review')
+    expect(schBranches).toBe('')
+  })
+
+  it('still creates a new branch from main when current branch reuse is enabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-safe-main-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    reuse_current_branch: true\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    execSync('git add README.md docs/sample-prd.md config.yaml', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    writeFileSync(join(dir, 'pending-change.txt'), 'should trigger auto-commit on a new branch\n', 'utf-8')
+
+    const beforeBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const afterBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBeDefined()
+    expect(result.result.session?.branchName).not.toBe(beforeBranch)
+    expect(result.result.session?.branchName).toMatch(/^sch\//)
+    expect(afterBranch).toBe(result.result.session?.branchName)
+  })
+
   it('does not auto-commit onto the current branch when the configured prefix is not a valid git ref', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-no-branch-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })

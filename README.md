@@ -501,6 +501,7 @@ capabilities:
     enabled: true
     executor_model: codex
     auto_commit: true
+    reuse_current_branch: false
     auto_branch_prefix: "sch/"
     human_confirmation:
       file: "human_confirmation.md"
@@ -510,6 +511,7 @@ capabilities:
 说明：
 
 - 默认 reviewer 由 `init` 选择结果决定；`-y` 时默认是 `claude-code` + `codex`
+- `capabilities.loop.reuse_current_branch: true` 时，如果当前已经在非 `main/master` 分支上，loop/harness 会直接沿用当前分支并继续按阶段自动提交；如果当前在 `main/master`，仍会自动新建 `sch/...` 分支
 - `init` 会在已有配置存在时自动备份旧文件为 `config.yaml.bak-<timestamp>`
 - 通知配置会同时生成 `macos_local`、`feishu_team`、`imessage_local`、`imessage_remote` provider 模板
 - `init` 交互模式会额外引导填写 `integrations.planning` 和 `integrations.operations` 的默认 provider 与关键字段

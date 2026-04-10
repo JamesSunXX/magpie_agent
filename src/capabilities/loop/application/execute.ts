@@ -50,6 +50,7 @@ interface LoopRuntimeConfig {
   retriesPerStage: number
   maxIterations: number
   autoCommit: boolean
+  reuseCurrentBranch: boolean
   autoBranchPrefix: string
   humanConfirmationFile: string
   pollIntervalSec: number
@@ -89,6 +90,7 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     retriesPerStage: config?.retries_per_stage ?? 2,
     maxIterations: config?.max_iterations ?? 30,
     autoCommit: config?.auto_commit !== false,
+    reuseCurrentBranch: config?.reuse_current_branch === true,
     autoBranchPrefix: config?.auto_branch_prefix || 'sch/',
     humanConfirmationFile: config?.human_confirmation?.file || 'human_confirmation.md',
     pollIntervalSec: config?.human_confirmation?.poll_interval_sec || 8,
@@ -358,6 +360,27 @@ function ensureBranch(prefix: string, cwd: string): string | null {
   } catch {
     return null
   }
+}
+
+function getCurrentBranch(cwd: string): string | null {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+    const branchName = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf-8',
+      cwd,
+    }).trim()
+    if (!branchName || branchName === 'HEAD') {
+      return null
+    }
+    return branchName
+  } catch {
+    return null
+  }
+}
+
+function shouldReuseCurrentBranch(branchName: string | null): branchName is string {
+  if (!branchName) return false
+  return branchName !== 'main' && branchName !== 'master'
 }
 
 function commitIfChanged(
@@ -831,9 +854,19 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     ].join('\n'),
   })
 
-  const branchName = (loopRuntime.autoCommit && prepared.dryRun !== true)
-    ? ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined
-    : undefined
+  let branchName: string | undefined
+  let reusedCurrentBranch = false
+  if (loopRuntime.autoCommit && prepared.dryRun !== true) {
+    const currentBranch = loopRuntime.reuseCurrentBranch
+      ? getCurrentBranch(ctx.cwd)
+      : null
+    if (shouldReuseCurrentBranch(currentBranch)) {
+      branchName = currentBranch
+      reusedCurrentBranch = true
+    } else {
+      branchName = ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined
+    }
+  }
 
   const session: LoopSession = {
     id: sessionId,
@@ -859,6 +892,12 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await stateManager.saveLoopSession(session)
   await appendEvent(eventsPath, { event: 'loop_started', goal: prepared.goal })
+  if (reusedCurrentBranch && branchName) {
+    await appendEvent(eventsPath, {
+      event: 'auto_commit_branch_reused',
+      branch: branchName,
+    })
+  }
   if (loopRuntime.autoCommit && prepared.dryRun !== true && !branchName) {
     ctx.logger.warn('[loop] Auto-commit disabled because branch creation failed; changes will remain on the current branch.')
     await appendEvent(eventsPath, {
