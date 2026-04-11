@@ -1,6 +1,8 @@
-import { writeFileSync, mkdirSync, existsSync, renameSync } from 'fs'
-import { join } from 'path'
+import { writeFileSync, mkdirSync, existsSync, renameSync, readFileSync } from 'fs'
+import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import { parse, stringify } from 'yaml'
+import { CURRENT_CONFIG_VERSION } from './loader.js'
 
 export interface ReviewerOption {
   id: string
@@ -55,6 +57,15 @@ export interface InitConfigOptions {
 export interface InitConfigResult {
   configPath: string
   backupPath?: string
+  written?: boolean
+  changes?: string[]
+  warnings?: string[]
+  content?: string
+}
+
+export interface ConfigWriteOptions {
+  configPath?: string
+  dryRun?: boolean
 }
 
 export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
@@ -125,6 +136,69 @@ Focus on:
 - rollout, compatibility, security, and performance risk
 
 Call out system-level consequences, not low-level nits.`
+
+const REVIEW_COMMAND_WARNING = 'Review repo-specific verification commands before applying this config to a non-Node repository.'
+
+function buildDefaultRoutingConfig() {
+  return {
+    enabled: true,
+    strategy: 'rules_first',
+    default_tier: 'standard',
+    allow_runtime_escalation: true,
+    thresholds: {
+      simple_max: 2,
+      standard_max: 5,
+      complex_min: 6,
+    },
+    reviewer_pools: {
+      simple: ['route-gemini', 'route-codex'],
+      standard: ['route-codex', 'route-architect'],
+      complex: ['route-gemini', 'route-codex', 'route-architect'],
+    },
+    stage_policies: {
+      planning: {
+        simple: { tool: 'gemini' },
+        standard: { tool: 'codex' },
+        complex: { tool: 'kiro', agent: 'architect' },
+      },
+      execution: {
+        simple: { tool: 'gemini' },
+        standard: { tool: 'codex' },
+        complex: { tool: 'kiro', agent: 'dev' },
+      },
+    },
+    fallback_chain: {
+      planning: {
+        simple: [{ tool: 'codex' }],
+        standard: [{ tool: 'gemini' }],
+        complex: [{ tool: 'codex' }, { tool: 'gemini' }],
+      },
+      execution: {
+        simple: [{ tool: 'codex' }],
+        standard: [{ tool: 'gemini' }],
+        complex: [{ tool: 'codex' }, { tool: 'gemini' }],
+      },
+    },
+  }
+}
+
+function buildRouteReviewerDefaults() {
+  return {
+    'route-gemini': {
+      tool: 'gemini',
+      prompt: ROUTE_GEMINI_PROMPT,
+    },
+    'route-codex': {
+      tool: 'codex',
+      prompt: ROUTE_CODEX_PROMPT,
+    },
+    'route-architect': {
+      tool: 'kiro',
+      agent: 'architect',
+      prompt: ROUTE_ARCHITECT_PROMPT,
+    },
+  }
+}
 
 function indentBlock(text: string, spaces = 6): string {
   const prefix = ' '.repeat(spaces)
@@ -214,6 +288,200 @@ function resolveOperationsOptions(options?: InitConfigOptions) {
   }
 }
 
+function resolveConfigPath(baseDir?: string, configPath?: string): string {
+  if (configPath) {
+    return resolve(configPath)
+  }
+
+  const base = baseDir || homedir()
+  return join(base, '.magpie', 'config.yaml')
+}
+
+function writeConfigContent(configPath: string, content: string, dryRun = false): Pick<InitConfigResult, 'backupPath' | 'written' | 'content'> {
+  if (dryRun) {
+    return {
+      written: false,
+      content,
+    }
+  }
+
+  mkdirSync(dirname(configPath), { recursive: true })
+  let backupPath: string | undefined
+  if (existsSync(configPath)) {
+    backupPath = buildBackupPath(configPath)
+    renameSync(configPath, backupPath)
+  }
+
+  writeFileSync(configPath, content, 'utf-8')
+  return {
+    backupPath,
+    written: true,
+    content,
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function deepMergeMissing(target: Record<string, any>, defaults: Record<string, any>): boolean {
+  let changed = false
+
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!(key in target)) {
+      target[key] = value
+      changed = true
+      continue
+    }
+
+    if (isObjectRecord(target[key]) && isObjectRecord(value)) {
+      if (deepMergeMissing(target[key], value)) {
+        changed = true
+      }
+    }
+  }
+
+  return changed
+}
+
+function upgradeCodexBinding(binding: Record<string, any> | undefined, path: string, changes: string[]): void {
+  if (!binding) return
+
+  if (binding.model === 'codex-cli') {
+    delete binding.model
+    binding.tool = 'codex'
+    changes.push(`Converted ${path} from model: codex-cli to tool: codex.`)
+  }
+
+  if (binding.tool === 'codex-cli') {
+    binding.tool = 'codex'
+    changes.push(`Converted ${path} from tool: codex-cli to tool: codex.`)
+  }
+}
+
+function upgradeCodexModelField(target: Record<string, any> | undefined, field: string, path: string, changes: string[]): void {
+  if (!target || target[field] !== 'codex-cli') return
+  target[field] = 'codex'
+  changes.push(`Converted ${path} from codex-cli to codex.`)
+}
+
+function upgradeCodexBindingList(bindings: unknown, path: string, changes: string[]): void {
+  if (!Array.isArray(bindings)) {
+    return
+  }
+
+  bindings.forEach((binding, index) => {
+    if (isObjectRecord(binding)) {
+      upgradeCodexBinding(binding, `${path}[${index}]`, changes)
+    }
+  })
+}
+
+function upgradeRoutingBindings(routing: Record<string, any> | undefined, changes: string[]): void {
+  if (!isObjectRecord(routing)) {
+    return
+  }
+
+  for (const stage of ['planning', 'execution']) {
+    const stagePolicies = routing.stage_policies?.[stage]
+    if (isObjectRecord(stagePolicies)) {
+      for (const tier of ['simple', 'standard', 'complex']) {
+        const binding = stagePolicies[tier]
+        if (isObjectRecord(binding)) {
+          upgradeCodexBinding(binding, `capabilities.routing.stage_policies.${stage}.${tier}`, changes)
+        }
+      }
+    }
+
+    const fallbackBindings = routing.fallback_chain?.[stage]
+    if (isObjectRecord(fallbackBindings)) {
+      for (const tier of ['simple', 'standard', 'complex']) {
+        upgradeCodexBindingList(
+          fallbackBindings[tier],
+          `capabilities.routing.fallback_chain.${stage}.${tier}`,
+          changes
+        )
+      }
+    }
+  }
+}
+
+function upgradeExistingConfig(content: string): { content: string; changes: string[]; warnings: string[] } {
+  const parsed = parse(content) as Record<string, any> | null
+  if (!isObjectRecord(parsed)) {
+    throw new Error('Config upgrade expects a YAML object at the top level.')
+  }
+  if (!('capabilities' in parsed) || !('integrations' in parsed)) {
+    throw new Error('Config upgrade currently supports v2 configs only. Run `magpie init` to regenerate older configs.')
+  }
+
+  const upgraded = structuredClone(parsed) as Record<string, any>
+  const changes: string[] = []
+  const warnings = [REVIEW_COMMAND_WARNING]
+  if (upgraded.config_version !== CURRENT_CONFIG_VERSION) {
+    upgraded.config_version = CURRENT_CONFIG_VERSION
+    changes.push(`Set config_version to ${CURRENT_CONFIG_VERSION}.`)
+  }
+  const reviewers = isObjectRecord(upgraded.reviewers) ? upgraded.reviewers : {}
+  upgraded.reviewers = reviewers
+
+  for (const [id, reviewer] of Object.entries(reviewers)) {
+    if (isObjectRecord(reviewer)) {
+      upgradeCodexBinding(reviewer, `reviewers.${id}`, changes)
+    }
+  }
+
+  if (isObjectRecord(upgraded.analyzer)) {
+    upgradeCodexBinding(upgraded.analyzer, 'analyzer', changes)
+  }
+  if (isObjectRecord(upgraded.summarizer)) {
+    upgradeCodexBinding(upgraded.summarizer, 'summarizer', changes)
+  }
+
+  const routeReviewers = buildRouteReviewerDefaults()
+  for (const [id, reviewer] of Object.entries(routeReviewers)) {
+    if (!reviewers[id]) {
+      reviewers[id] = reviewer
+      changes.push(`Added reviewers.${id} default binding.`)
+    }
+  }
+
+  const capabilities = isObjectRecord(upgraded.capabilities) ? upgraded.capabilities : {}
+  upgraded.capabilities = capabilities
+
+  if (!isObjectRecord(capabilities.routing)) {
+    capabilities.routing = buildDefaultRoutingConfig()
+    changes.push('Added capabilities.routing defaults.')
+  } else if (deepMergeMissing(capabilities.routing, buildDefaultRoutingConfig())) {
+    changes.push('Filled missing capabilities.routing defaults.')
+  }
+  upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
+
+  if (isObjectRecord(capabilities.issue_fix)) {
+    upgradeCodexModelField(capabilities.issue_fix, 'planner_model', 'capabilities.issue_fix.planner_model', changes)
+    upgradeCodexModelField(capabilities.issue_fix, 'executor_model', 'capabilities.issue_fix.executor_model', changes)
+  }
+  if (isObjectRecord(capabilities.loop)) {
+    upgradeCodexModelField(capabilities.loop, 'planner_model', 'capabilities.loop.planner_model', changes)
+    upgradeCodexModelField(capabilities.loop, 'executor_model', 'capabilities.loop.executor_model', changes)
+  }
+  if (isObjectRecord(capabilities.quality) && isObjectRecord(capabilities.quality.unitTestEval)) {
+    upgradeCodexModelField(capabilities.quality.unitTestEval, 'provider', 'capabilities.quality.unitTestEval.provider', changes)
+  }
+  if (isObjectRecord(capabilities.docs_sync)) {
+    upgradeCodexModelField(capabilities.docs_sync, 'reviewer_model', 'capabilities.docs_sync.reviewer_model', changes)
+  }
+  if (isObjectRecord(capabilities.post_merge_regression)) {
+    upgradeCodexModelField(capabilities.post_merge_regression, 'evaluator_model', 'capabilities.post_merge_regression.evaluator_model', changes)
+  }
+
+  return {
+    content: stringify(upgraded),
+    changes,
+    warnings,
+  }
+}
+
 export function generateConfig(selectedReviewerIds: string[], options?: InitConfigOptions): string {
   const selectedReviewers = AVAILABLE_REVIEWERS.filter(r => selectedReviewerIds.includes(r.id))
   const needsAnthropic = selectedReviewers.some(r => r.provider === 'anthropic')
@@ -257,6 +525,8 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
     .join('\n')
 
   return `# Magpie Configuration
+
+config_version: ${CURRENT_CONFIG_VERSION}
 
 ${providersSection}
 
@@ -522,25 +792,33 @@ function buildBackupPath(configPath: string): string {
   return backupPath
 }
 
-export function initConfigWithResult(baseDir?: string, selectedReviewers?: string[], options?: InitConfigOptions): InitConfigResult {
-  const base = baseDir || homedir()
-  const magpieDir = join(base, '.magpie')
-  const configPath = join(magpieDir, 'config.yaml')
-  let backupPath: string | undefined
-
-  mkdirSync(magpieDir, { recursive: true })
-
-  if (existsSync(configPath)) {
-    backupPath = buildBackupPath(configPath)
-    renameSync(configPath, backupPath)
-  }
-
+export function initConfigWithResult(baseDir?: string, selectedReviewers?: string[], options?: InitConfigOptions, writeOptions?: ConfigWriteOptions): InitConfigResult {
+  const configPath = resolveConfigPath(baseDir, writeOptions?.configPath)
   const reviewerIds = selectedReviewers?.length ? selectedReviewers : ['claude-code', 'codex']
-  writeFileSync(configPath, generateConfig(reviewerIds, options), 'utf-8')
+  const content = generateConfig(reviewerIds, options)
+  const writeResult = writeConfigContent(configPath, content, writeOptions?.dryRun)
 
-  return { configPath, backupPath }
+  return { configPath, ...writeResult }
 }
 
 export function initConfig(baseDir?: string, selectedReviewers?: string[], options?: InitConfigOptions): string {
   return initConfigWithResult(baseDir, selectedReviewers, options).configPath
+}
+
+export function upgradeConfigWithResult(configPath: string, options?: { dryRun?: boolean }): InitConfigResult {
+  const resolvedPath = resolveConfigPath(undefined, configPath)
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`Config file not found: ${resolvedPath}`)
+  }
+
+  const current = readFileSync(resolvedPath, 'utf-8')
+  const upgraded = upgradeExistingConfig(current)
+  const writeResult = writeConfigContent(resolvedPath, upgraded.content, options?.dryRun)
+
+  return {
+    configPath: resolvedPath,
+    changes: upgraded.changes,
+    warnings: upgraded.warnings,
+    ...writeResult,
+  }
 }

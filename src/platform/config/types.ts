@@ -333,6 +333,7 @@ export interface CapabilitiesConfig {
 }
 
 export interface MagpieConfigV2 {
+  config_version?: number
   providers: {
     anthropic?: ProviderConfig
     openai?: ProviderConfig

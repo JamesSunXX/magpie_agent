@@ -23,8 +23,10 @@ import { existsSync, readFileSync } from 'fs'
 import { parse } from 'yaml'
 import { loadConfig } from '../../../src/platform/config/loader.js'
 import { logger } from '../../../src/shared/utils/logger.js'
+import { getConfigVersionStatus, CURRENT_CONFIG_VERSION } from '../../../src/platform/config/loader.js'
 
 const validConfig: MagpieConfigV2 = {
+  config_version: CURRENT_CONFIG_VERSION,
   defaults: { max_rounds: 3, output_format: 'markdown', check_convergence: true },
   providers: {
     anthropic: { api_key: 'test-key' },
@@ -52,6 +54,31 @@ describe('platform config loader', () => {
   it('loads valid v2 config without error', () => {
     vi.mocked(parse).mockReturnValue(structuredClone(validConfig))
     expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
+
+  it('reports config status as current when version matches', () => {
+    vi.mocked(parse).mockReturnValue(structuredClone(validConfig))
+
+    const status = getConfigVersionStatus('/path/to/config.yaml')
+
+    expect(status).toEqual({
+      path: '/path/to/config.yaml',
+      configVersion: CURRENT_CONFIG_VERSION,
+      expectedVersion: CURRENT_CONFIG_VERSION,
+      state: 'current',
+      message: undefined,
+    })
+  })
+
+  it('reports config status as outdated when version is missing', () => {
+    const config = structuredClone(validConfig)
+    delete config.config_version
+    vi.mocked(parse).mockReturnValue(config)
+
+    const status = getConfigVersionStatus('/path/to/config.yaml')
+
+    expect(status.state).toBe('outdated')
+    expect(status.message).toContain('Run `magpie init --upgrade --config /path/to/config.yaml`')
   })
 
   it('injects built-in route reviewers into the loaded config', () => {

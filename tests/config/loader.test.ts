@@ -1,18 +1,20 @@
 // tests/config/loader.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { loadConfig, expandEnvVars, getConfigPath } from '../../src/platform/config/loader.js'
-import { writeFileSync, mkdirSync, rmSync } from 'fs'
+import { writeFileSync, mkdirSync, rmSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
 describe('Config Loader', () => {
   const testDir = join(tmpdir(), 'magpie-test-' + Date.now())
+  const originalCwd = process.cwd()
 
   beforeEach(() => {
     mkdirSync(testDir, { recursive: true })
   })
 
   afterEach(() => {
+    process.chdir(originalCwd)
     rmSync(testDir, { recursive: true, force: true })
   })
 
@@ -110,6 +112,37 @@ integrations:
     it('should prefer MAGPIE_HOME when building the default path', () => {
       const previousMagpieHome = process.env.MAGPIE_HOME
       process.env.MAGPIE_HOME = '/tmp/magpie-home'
+
+      try {
+        const result = getConfigPath()
+        expect(result).toBe('/tmp/magpie-home/config.yaml')
+      } finally {
+        if (previousMagpieHome === undefined) {
+          delete process.env.MAGPIE_HOME
+        } else {
+          process.env.MAGPIE_HOME = previousMagpieHome
+        }
+      }
+    })
+
+    it('should prefer ./.magpie/config.yaml when present in the current directory', () => {
+      const projectDir = join(testDir, 'project')
+      const localMagpieDir = join(projectDir, '.magpie')
+      mkdirSync(localMagpieDir, { recursive: true })
+      writeFileSync(join(localMagpieDir, 'config.yaml'), 'providers: {}\n', 'utf-8')
+      process.chdir(projectDir)
+
+      const result = getConfigPath()
+
+      expect(realpathSync(result)).toBe(realpathSync(join(projectDir, '.magpie', 'config.yaml')))
+    })
+
+    it('should fall back to MAGPIE_HOME when local project config is absent', () => {
+      const projectDir = join(testDir, 'project-without-config')
+      mkdirSync(projectDir, { recursive: true })
+      const previousMagpieHome = process.env.MAGPIE_HOME
+      process.env.MAGPIE_HOME = '/tmp/magpie-home'
+      process.chdir(projectDir)
 
       try {
         const result = getConfigPath()

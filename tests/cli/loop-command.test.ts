@@ -30,6 +30,13 @@ describe('loop CLI command', () => {
     writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
     writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
     writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+    writeFileSync(join(knowledgeDir, 'state.json'), JSON.stringify({
+      currentStage: 'prd_review',
+      lastReliableResult: 'Plan synced.',
+      nextAction: 'Run PRD review stage.',
+      currentBlocker: 'Waiting for PRD review output.',
+      updatedAt: '2026-04-11T00:05:00.000Z',
+    }, null, 2), 'utf-8')
     writeFileSync(join(summaryDir, 'goal.md'), '# Goal\n\nShip checkout v2 safely', 'utf-8')
     writeFileSync(join(summaryDir, 'open-issues.md'), '- Waiting for canary verification', 'utf-8')
     writeFileSync(join(summaryDir, 'evidence.md'), '- /tmp/evidence.log', 'utf-8')
@@ -66,6 +73,7 @@ describe('loop CLI command', () => {
         knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
         knowledgeIndexPath: join(knowledgeDir, 'index.md'),
         knowledgeLogPath: join(knowledgeDir, 'log.md'),
+        knowledgeStatePath: join(knowledgeDir, 'state.json'),
         knowledgeSummaryDir: summaryDir,
         knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
       },
@@ -85,9 +93,70 @@ describe('loop CLI command', () => {
     }
 
     expect(logSpy).toHaveBeenCalledWith('Goal: Ship checkout v2 safely')
+    expect(logSpy).toHaveBeenCalledWith('State: prd_review | next: Run PRD review stage. | blocker: Waiting for PRD review output.')
     expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
     expect(logSpy).toHaveBeenCalledWith('Open issues: Waiting for canary verification')
     expect(logSpy).toHaveBeenCalledWith(`Knowledge: ${knowledgeDir}`)
+    logSpy.mockRestore()
+  })
+
+  it('falls back to persisted session status when a legacy session has no state card', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-loop-cli-legacy-home-'))
+    process.env.MAGPIE_HOME = magpieHome
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-loop-cli-legacy-cwd-'))
+    const state = new StateManager(cwd)
+    await state.initLoopSessions()
+
+    const knowledgeDir = join(magpieHome, 'loop-sessions', 'loop-legacy', 'knowledge')
+    const summaryDir = join(knowledgeDir, 'summaries')
+    mkdirSync(summaryDir, { recursive: true })
+    writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
+    writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
+    writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+    writeFileSync(join(summaryDir, 'goal.md'), '# Goal\n\nAlready finished task', 'utf-8')
+    writeFileSync(join(summaryDir, 'stage-prd-review.md'), 'Done', 'utf-8')
+    writeFileSync(join(knowledgeDir, 'candidates.json'), '[]', 'utf-8')
+
+    const session: LoopSession = {
+      id: 'loop-legacy',
+      title: 'Legacy task',
+      goal: 'Already finished task',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-10T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T00:10:00.000Z'),
+      status: 'completed',
+      currentStageIndex: 1,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: join(magpieHome, 'loop-sessions', 'loop-legacy'),
+        eventsPath: '/tmp/events.jsonl',
+        planPath: '/tmp/plan.json',
+        humanConfirmationPath: '/tmp/human_confirmation.md',
+        knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
+        knowledgeIndexPath: join(knowledgeDir, 'index.md'),
+        knowledgeLogPath: join(knowledgeDir, 'log.md'),
+        knowledgeSummaryDir: summaryDir,
+        knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+      },
+    }
+    await state.saveLoopSession(session)
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.resetModules()
+    const { loopCommand } = await import('../../src/cli/commands/loop.js')
+    const previousCwd = process.cwd()
+
+    try {
+      process.chdir(cwd)
+      await loopCommand.parseAsync(['node', 'loop', 'inspect', 'loop-legacy'], { from: 'node' })
+    } finally {
+      process.chdir(previousCwd)
+    }
+
+    expect(logSpy).toHaveBeenCalledWith('State: completed | next: No further action. | blocker: None.')
     logSpy.mockRestore()
   })
 })

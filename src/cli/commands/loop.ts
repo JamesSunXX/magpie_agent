@@ -12,6 +12,7 @@ import type {
 } from '../../capabilities/loop/types.js'
 import type { ComplexityTier } from '../../config/types.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
+import type { KnowledgeState } from '../../knowledge/runtime.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -78,6 +79,34 @@ async function loadLoopSessionByPrefix(sessionId: string, cwd: string) {
   return matches[0]
 }
 
+function legacyLoopKnowledgeState(session: Awaited<ReturnType<typeof loadLoopSessionByPrefix>> extends infer T ? NonNullable<T> : never): Partial<KnowledgeState> {
+  if (session.status === 'completed') {
+    return {
+      currentStage: 'completed',
+      nextAction: 'No further action.',
+      currentBlocker: 'None.',
+      lastReliableResult: session.stageResults.at(-1)?.summary || session.goal,
+    }
+  }
+
+  if (session.status === 'failed') {
+    return {
+      currentStage: 'failed',
+      nextAction: 'Inspect failure details and replan.',
+      currentBlocker: 'Session is marked failed.',
+      lastReliableResult: session.stageResults.at(-1)?.summary || session.goal,
+    }
+  }
+
+  const stage = session.stages[session.currentStageIndex] || session.stages.at(-1) || 'running'
+  return {
+    currentStage: stage,
+    nextAction: session.status === 'paused_for_human' ? 'Wait for human confirmation.' : `Resume ${stage}.`,
+    currentBlocker: session.status === 'paused_for_human' ? 'Waiting for human confirmation.' : 'Legacy session has no persisted state card.',
+    lastReliableResult: session.stageResults.at(-1)?.summary || session.goal,
+  }
+}
+
 export const loopCommand = new Command('loop')
   .description('Goal-driven agent loop execution')
 
@@ -139,7 +168,7 @@ loopCommand
         process.exitCode = 1
         return
       }
-      await printKnowledgeInspectView(session.artifacts)
+      await printKnowledgeInspectView(session.artifacts, legacyLoopKnowledgeState(session))
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
       process.exitCode = 1

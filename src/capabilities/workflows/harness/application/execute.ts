@@ -26,6 +26,7 @@ import { getHarnessProgressObserver } from '../progress.js'
 import {
   createTaskKnowledge,
   promoteKnowledgeCandidates,
+  updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
   writeTaskKnowledgeFinal,
   type KnowledgeCandidate,
@@ -491,6 +492,12 @@ export async function executeHarness(
     buildHarnessPlanSummary(prepared.goal),
     'Harness plan summary initialized.'
   )
+  await updateTaskKnowledgeState(knowledgeArtifacts, {
+    currentStage: 'queued',
+    lastReliableResult: 'Harness workflow queued.',
+    nextAction: 'Select providers and start loop development.',
+    currentBlocker: 'Waiting for provider selection.',
+  }, 'Harness state initialized.')
 
   type HarnessSession = NonNullable<HarnessResult['session']>
   type HarnessSessionPatch = Omit<Partial<HarnessSession>, 'artifacts'> & {
@@ -588,6 +595,22 @@ export async function executeHarness(
       currentStage: stage,
       summary,
     })
+    await updateTaskKnowledgeState(knowledgeArtifacts, {
+      currentStage: stage,
+      lastReliableResult: summary,
+      nextAction: stage === 'queued'
+        ? 'Select providers and start loop development.'
+        : stage === 'developing'
+          ? 'Wait for loop development stage.'
+          : stage === 'reviewing'
+            ? 'Run the current review cycle.'
+            : 'No further action.',
+      currentBlocker: stage === 'failed'
+        ? summary
+        : stage === 'completed'
+          ? 'None.'
+          : 'Stage in progress.',
+    }, `Harness state moved to ${stage}.`)
     await appendEvent(eventType, {
       stage,
       summary,
@@ -631,6 +654,12 @@ export async function executeHarness(
       currentStage: 'failed',
       summary,
     })
+    await updateTaskKnowledgeState(knowledgeArtifacts, {
+      currentStage: 'failed',
+      lastReliableResult: summary,
+      nextAction: 'Inspect provider fallback details and replan.',
+      currentBlocker: providerSelection.record.kiroCheck.reason || 'Kiro fallback unavailable.',
+    }, 'Harness state marked failed before development started.')
     await appendEvent('workflow_failed', {
       stage: 'failed',
       summary,
@@ -672,6 +701,12 @@ export async function executeHarness(
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
       },
     })
+    await updateTaskKnowledgeState(knowledgeArtifacts, {
+      currentStage: 'failed',
+      lastReliableResult: summary,
+      nextAction: 'Inspect loop development failure and replan.',
+      currentBlocker: 'Loop development did not complete successfully.',
+    }, 'Harness state marked failed during loop development stage.')
     await appendEvent('workflow_failed', {
       stage: 'failed',
       summary,
@@ -776,6 +811,12 @@ export async function executeHarness(
       currentStage: 'failed',
       summary,
     })
+    await updateTaskKnowledgeState(knowledgeArtifacts, {
+      currentStage: 'failed',
+      lastReliableResult: summary,
+      nextAction: 'Inspect the failing review cycle and replan.',
+      currentBlocker: message,
+    }, 'Harness state marked failed during review cycle.')
     await appendEvent('workflow_failed', {
       stage: 'failed',
       summary,
@@ -804,6 +845,12 @@ export async function executeHarness(
     currentStage: approved ? 'completed' : 'failed',
     summary,
   })
+  await updateTaskKnowledgeState(knowledgeArtifacts, {
+    currentStage: approved ? 'completed' : 'failed',
+    lastReliableResult: summary,
+    nextAction: approved ? 'No further action.' : 'Inspect unresolved review findings and retry.',
+    currentBlocker: approved ? 'None.' : 'Harness did not receive approval.',
+  }, `Harness state marked ${approved ? 'completed' : 'failed'}.`)
   await appendEvent(approved ? 'workflow_completed' : 'workflow_failed', {
     stage: approved ? 'completed' : 'failed',
     summary,

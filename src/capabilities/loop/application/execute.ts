@@ -35,8 +35,10 @@ import {
   createTaskKnowledge,
   promoteKnowledgeCandidates,
   renderKnowledgeContext,
+  updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
   writeTaskKnowledgeFinal,
+  type KnowledgeArtifacts,
   type KnowledgeCandidate,
 } from '../../../knowledge/runtime.js'
 
@@ -533,6 +535,12 @@ async function markSessionFailed(
   }
   session.status = 'failed'
   session.updatedAt = new Date()
+  await updateLoopState(session, {
+    currentStage: stage,
+    lastReliableResult: `Stage ${stage} failed.`,
+    nextAction: 'Inspect failure details and replan.',
+    currentBlocker: reason,
+  }, `Loop failed at stage ${stage}.`)
   await stateManager.saveLoopSession(session)
   await appendEvent(session.artifacts.eventsPath, { event: 'loop_failed', stage, reason })
   await finalizeLoopKnowledge(session, false, [
@@ -568,23 +576,52 @@ async function finalizeLoopKnowledge(
   evidencePath: string | undefined,
   logMessage: string
 ): Promise<void> {
-  if (!session.artifacts.knowledgeSummaryDir) {
+  const artifacts = resolveLoopKnowledgeArtifacts(session)
+  if (!artifacts) {
     return
   }
 
   const candidates = buildLoopCandidates(session, approved, summary, evidencePath)
   try {
-    await writeTaskKnowledgeFinal({
-      knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
-      knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
-      knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
-      knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
-      knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
-    }, content, candidates, logMessage)
+    await updateTaskKnowledgeState(artifacts, {
+      currentStage: approved ? 'completed' : 'failed',
+      lastReliableResult: summary,
+      nextAction: approved ? 'No further action.' : 'Inspect failure details and replan.',
+      currentBlocker: approved ? 'None.' : summary,
+    }, `Loop state updated for ${approved ? 'completion' : 'failure'}.`)
+    await writeTaskKnowledgeFinal(artifacts, content, candidates, logMessage)
     await promoteKnowledgeCandidates(session.artifacts.repoRootPath || session.artifacts.sessionDir, candidates)
   } catch {
     return
   }
+}
+
+function resolveLoopKnowledgeArtifacts(session: LoopSession): KnowledgeArtifacts | null {
+  if (!session.artifacts.knowledgeSummaryDir) {
+    return null
+  }
+
+  return {
+    knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
+    knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
+    knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+    knowledgeStatePath: session.artifacts.knowledgeStatePath || join(session.artifacts.sessionDir, 'knowledge', 'state.json'),
+    knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+    knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+  }
+}
+
+async function updateLoopState(
+  session: LoopSession,
+  state: Parameters<typeof updateTaskKnowledgeState>[1],
+  logMessage: string
+): Promise<void> {
+  const artifacts = resolveLoopKnowledgeArtifacts(session)
+  if (!artifacts) {
+    return
+  }
+
+  await updateTaskKnowledgeState(artifacts, state, logMessage)
 }
 
 async function waitForHumanDecision(
@@ -626,6 +663,7 @@ async function runSingleStage(
       knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath,
       knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'index.md'),
       knowledgeLogPath: session.artifacts.knowledgeLogPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'log.md'),
+      knowledgeStatePath: session.artifacts.knowledgeStatePath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'state.json'),
       knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
       knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'candidates.json'),
     }, runCwd)
@@ -858,6 +896,12 @@ async function continueSession(
 ): Promise<LoopExecutionResult> {
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
+    await updateLoopState(session, {
+      currentStage: stage,
+      lastReliableResult: `Preparing stage ${stage}.`,
+      nextAction: `Execute ${stage}.`,
+      currentBlocker: 'Stage in progress.',
+    }, `Loop state moved to ${stage}.`)
     let stageRun: StageRunResult
     try {
       stageRun = await runSingleStage(
@@ -885,6 +929,7 @@ async function continueSession(
         knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
         knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
         knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeStatePath: session.artifacts.knowledgeStatePath || join(session.artifacts.sessionDir, 'knowledge', 'state.json'),
         knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
         knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
       }, `stage-${stage}`, renderStageKnowledge(stageRun), `Stage ${stage} summary updated.`)
@@ -892,6 +937,7 @@ async function continueSession(
         knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
         knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
         knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeStatePath: session.artifacts.knowledgeStatePath || join(session.artifacts.sessionDir, 'knowledge', 'state.json'),
         knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
         knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
       }, 'open-issues', renderOpenIssues(stageRun), `Stage ${stage} open issues updated.`)
@@ -899,10 +945,25 @@ async function continueSession(
         knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
         knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
         knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeStatePath: session.artifacts.knowledgeStatePath || join(session.artifacts.sessionDir, 'knowledge', 'state.json'),
         knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
         knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
       }, 'evidence', renderEvidence(stageRun), `Stage ${stage} evidence updated.`)
     }
+    await updateLoopState(session, {
+      currentStage: stage,
+      lastReliableResult: stageRun.stageResult.summary,
+      nextAction: stageRun.paused
+        ? 'Wait for human confirmation.'
+        : session.stages[i + 1]
+          ? `Start ${session.stages[i + 1]}.`
+          : 'Finalize loop output.',
+      currentBlocker: stageRun.paused
+        ? 'Waiting for human confirmation.'
+        : stageRun.stageResult.success
+          ? 'None.'
+          : 'Stage did not complete successfully.',
+    }, `Loop state refreshed after ${stage}.`)
 
     if (stageRun.paused) {
       session.currentStageIndex = i
@@ -1067,6 +1128,12 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     renderPlanSummary(tasks),
     'Loop plan summary generated.'
   )
+  await updateTaskKnowledgeState(knowledgeArtifacts, {
+    currentStage: 'planning',
+    lastReliableResult: 'Loop plan summary generated.',
+    nextAction: tasks[0] ? `Start ${tasks[0].stage}.` : 'Finalize loop output.',
+    currentBlocker: tasks.length > 0 ? 'Waiting for stage execution.' : 'No planned stages available.',
+  }, 'Loop planning state initialized.')
   await planningRouter.syncPlanArtifact({
     projectKey: planningContext?.projectKey,
     itemKey: planningContext?.itemKey || planningItemKey,

@@ -4,6 +4,7 @@ import { createInterface } from 'readline'
 import {
   AVAILABLE_REVIEWERS,
   initConfigWithResult,
+  upgradeConfigWithResult,
   type InitNotificationsOptions,
   type InitOperationsOptions,
   type InitPlanningOptions,
@@ -192,6 +193,9 @@ async function selectOperationsOptions(): Promise<InitOperationsOptions | undefi
 
 interface InitCommandOptions {
   yes?: boolean
+  upgrade?: boolean
+  dryRun?: boolean
+  config?: string
 }
 
 interface CollectInitInputsDependencies {
@@ -270,8 +274,34 @@ export async function collectInitInputs(
 export const initCommand = new Command('init')
   .description('Initialize Magpie configuration')
   .option('-y, --yes', 'Use default reviewers (claude-code + codex)')
+  .option('--upgrade', 'Upgrade an existing config in place without regenerating custom reviewers/prompts')
+  .option('--dry-run', 'Preview the generated or upgraded config without writing files')
+  .option('--config <path>', 'Use a custom config path instead of ~/.magpie/config.yaml')
   .action(async (options) => {
     try {
+      if (options.upgrade) {
+        const result = upgradeConfigWithResult(options.config, { dryRun: options.dryRun })
+        const wroteConfig = result.written !== false
+
+        if (result.backupPath) {
+          console.log(chalk.yellow(`\n! Existing config backed up to: ${result.backupPath}`))
+        }
+
+        console.log(chalk.green(`\n✓ ${wroteConfig ? 'Config upgraded at' : 'Dry run for'}: ${result.configPath}`))
+        if (result.changes?.length) {
+          console.log(chalk.cyan('\nChanges:'))
+          result.changes.forEach(change => console.log(`  - ${change}`))
+        }
+        if (result.warnings?.length) {
+          console.log(chalk.yellow('\nWarnings:'))
+          result.warnings.forEach(warning => console.log(`  - ${warning}`))
+        }
+        if (!wroteConfig && result.content) {
+          console.log(`\n${result.content}`)
+        }
+        return
+      }
+
       const {
         selectedReviewers,
         notificationOptions,
@@ -283,14 +313,22 @@ export const initCommand = new Command('init')
         notifications: notificationOptions,
         planning: planningOptions,
         operations: operationsOptions,
+      }, {
+        configPath: options.config,
+        dryRun: options.dryRun,
       })
+      const wroteConfig = result.written !== false
 
       if (result.backupPath) {
         console.log(chalk.yellow(`\n! Existing config backed up to: ${result.backupPath}`))
       }
 
-      console.log(chalk.green(`\n✓ Config created at: ${result.configPath}`))
-      console.log(chalk.dim('Edit this file to customize your reviewers and prompts.'))
+      console.log(chalk.green(`\n✓ ${wroteConfig ? 'Config created at' : 'Dry run for'}: ${result.configPath}`))
+      if (wroteConfig) {
+        console.log(chalk.dim('Edit this file to customize your reviewers and prompts.'))
+      } else if (result.content) {
+        console.log(`\n${result.content}`)
+      }
     } catch (error) {
       if (error instanceof Error) {
         console.error(chalk.red(`Error: ${error.message}`))

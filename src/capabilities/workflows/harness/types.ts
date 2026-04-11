@@ -53,6 +53,7 @@ export interface HarnessResult {
       knowledgeSchemaPath?: string
       knowledgeIndexPath?: string
       knowledgeLogPath?: string
+      knowledgeStatePath?: string
       knowledgeSummaryDir?: string
       knowledgeCandidatesPath?: string
       loopSessionId?: string

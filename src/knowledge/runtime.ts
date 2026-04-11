@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { execSync } from 'child_process'
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
 import { basename, join, resolve } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
@@ -7,24 +8,45 @@ export interface KnowledgeArtifacts {
   knowledgeSchemaPath: string
   knowledgeIndexPath: string
   knowledgeLogPath: string
+  knowledgeStatePath: string
   knowledgeSummaryDir: string
   knowledgeCandidatesPath: string
 }
 
-export type KnowledgeCandidateType = 'decision' | 'failure-pattern'
+export type KnowledgeCandidateType = 'decision' | 'failure-pattern' | 'workflow-rule'
+export type KnowledgeCandidateStatus = 'candidate' | 'promoted' | 'deferred'
+export type KnowledgeLifecycle = 'active' | 'deferred' | 'superseded' | 'retired'
 
 export interface KnowledgeCandidate {
   type: KnowledgeCandidateType
   title: string
   summary: string
+  topicKey?: string
   sourceSessionId: string
   evidencePath?: string
-  status: 'candidate' | 'promoted' | 'deferred'
+  status: KnowledgeCandidateStatus
+  whyPromotable?: string
+  stability?: string
+  scope?: string
+  appliesTo?: string[]
+  introducedAt?: string
+  lastUsedAt?: string
+  lifecycle?: KnowledgeLifecycle
+  supersededBy?: string
+}
+
+export interface KnowledgeState {
+  currentStage: string
+  lastReliableResult: string
+  nextAction: string
+  currentBlocker: string
+  updatedAt: string
 }
 
 export interface InspectSnapshot {
   knowledgeDir: string
   goal: string
+  state: KnowledgeState
   latestSummary: string
   openIssues: string
   evidence: string
@@ -86,14 +108,80 @@ function normalizeKey(input: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+function readGitRemote(repoRoot: string): string {
+  try {
+    return execSync('git remote get-url origin', {
+      cwd: resolve(repoRoot),
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function normalizeRemoteUrl(remote: string): string {
+  return remote
+    .replace(/^git@github\.com:/, 'github.com/')
+    .replace(/^https?:\/\//, '')
+    .replace(/\.git$/, '')
+    .trim()
+}
+
 function repoKeyFor(repoRoot: string): string {
-  const name = normalizeKey(basename(resolve(repoRoot))) || 'repo'
-  const digest = createHash('sha1').update(resolve(repoRoot)).digest('hex').slice(0, 8)
+  const resolved = resolve(repoRoot)
+  const remote = normalizeRemoteUrl(readGitRemote(resolved))
+  const identity = remote || resolved
+  const nameSource = remote ? remote.split('/').pop() || 'repo' : basename(resolved)
+  const name = normalizeKey(nameSource) || 'repo'
+  const digest = createHash('sha1').update(identity).digest('hex').slice(0, 8)
   return `${name}-${digest}`
 }
 
+function candidateTopicKey(candidate: KnowledgeCandidate): string {
+  return normalizeKey(candidate.topicKey || candidate.title) || `${candidate.type}-entry`
+}
+
 function candidateSlug(candidate: KnowledgeCandidate): string {
-  return normalizeKey(candidate.title) || `${candidate.type}-entry`
+  return candidate.type === 'failure-pattern'
+    ? candidateTopicKey(candidate)
+    : normalizeKey(candidate.title) || candidateTopicKey(candidate)
+}
+
+function defaultKnowledgeState(): KnowledgeState {
+  return {
+    currentStage: 'queued',
+    lastReliableResult: 'Knowledge scaffold created.',
+    nextAction: 'Generate or update the task plan.',
+    currentBlocker: 'Waiting for the first stage result.',
+    updatedAt: new Date(0).toISOString(),
+  }
+}
+
+function toKnowledgeState(input: Partial<KnowledgeState> | undefined, fallback?: KnowledgeState): KnowledgeState {
+  const base = fallback || defaultKnowledgeState()
+  return {
+    currentStage: input?.currentStage || base.currentStage,
+    lastReliableResult: input?.lastReliableResult || base.lastReliableResult,
+    nextAction: input?.nextAction || base.nextAction,
+    currentBlocker: input?.currentBlocker || base.currentBlocker,
+    updatedAt: input?.updatedAt || new Date().toISOString(),
+  }
+}
+
+export function formatKnowledgeStateSummary(state: KnowledgeState): string {
+  return [
+    state.currentStage || '(unknown)',
+    state.nextAction ? `next: ${state.nextAction}` : undefined,
+    state.currentBlocker ? `blocker: ${state.currentBlocker}` : undefined,
+  ].filter(Boolean).join(' | ')
+}
+
+export function resolveKnowledgeState(
+  state: Partial<KnowledgeState> | undefined,
+  fallback?: KnowledgeState
+): KnowledgeState {
+  return toKnowledgeState(state, fallback)
 }
 
 async function appendLog(artifacts: KnowledgeArtifacts, heading: string, body: string): Promise<void> {
@@ -109,7 +197,7 @@ async function appendLog(artifacts: KnowledgeArtifacts, heading: string, body: s
 
 async function rebuildIndex(artifacts: KnowledgeArtifacts): Promise<void> {
   const entryNames = await listSummaryNames(artifacts)
-  const lines = ['# Task Knowledge Index', '', '## Core summaries']
+  const lines = ['# Task Knowledge Index', '', '## Core summaries', '- state.json']
   for (const name of entryNames) {
     lines.push(`- ${name}.md`)
   }
@@ -123,6 +211,7 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
     knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
     knowledgeIndexPath: join(knowledgeDir, 'index.md'),
     knowledgeLogPath: join(knowledgeDir, 'log.md'),
+    knowledgeStatePath: join(knowledgeDir, 'state.json'),
     knowledgeSummaryDir,
     knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
   }
@@ -132,8 +221,8 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
   await writeFile(artifacts.knowledgeSchemaPath, [
     '# Task Knowledge Schema',
     '',
-    '- Keep a concise goal summary, plan summary, open issues, evidence, stage summaries, and final summary.',
-    '- Promote only stable decisions and repeated failure patterns.',
+    '- Keep a concise goal summary, plan summary, state card, open issues, evidence, stage summaries, and final summary.',
+    '- Promote only stable decisions, repeated failure patterns, and stable workflow rules.',
     '- Do not overwrite raw artifacts; reference them from summaries instead.',
     '',
   ].join('\n'), 'utf-8')
@@ -142,6 +231,12 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
   await writeFile(summaryPath(artifacts, 'plan'), '# Plan\n\nPlan not available yet.\n', 'utf-8')
   await writeFile(summaryPath(artifacts, 'open-issues'), '# Open Issues\n\n- None yet.\n', 'utf-8')
   await writeFile(summaryPath(artifacts, 'evidence'), '# Evidence\n\n- No evidence recorded yet.\n', 'utf-8')
+  await writeFile(artifacts.knowledgeStatePath, `${JSON.stringify(toKnowledgeState({
+    currentStage: 'queued',
+    lastReliableResult: 'Knowledge scaffold created.',
+    nextAction: 'Generate or update the task plan.',
+    currentBlocker: 'Waiting for the first stage result.',
+  }), null, 2)}\n`, 'utf-8')
   await writeFile(artifacts.knowledgeCandidatesPath, '[]\n', 'utf-8')
   await writeFile(artifacts.knowledgeLogPath, '# Task Knowledge Log\n\n', 'utf-8')
 
@@ -153,6 +248,23 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
   await rebuildIndex(artifacts)
 
   return artifacts
+}
+
+export async function updateTaskKnowledgeState(
+  artifacts: KnowledgeArtifacts,
+  state: Partial<KnowledgeState>,
+  logMessage?: string
+): Promise<void> {
+  const current = await readKnowledgeState(artifacts)
+  const next = toKnowledgeState(state, current || undefined)
+  await writeFile(artifacts.knowledgeStatePath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8')
+  if (logMessage) {
+    await appendLog(
+      artifacts,
+      `[${new Date().toISOString()}] update | state`,
+      `- ${logMessage}`
+    )
+  }
 }
 
 export async function updateTaskKnowledgeSummary(
@@ -183,6 +295,15 @@ export async function writeTaskKnowledgeFinal(
   await writeFile(artifacts.knowledgeCandidatesPath, `${JSON.stringify(candidates, null, 2)}\n`, 'utf-8')
 }
 
+async function readKnowledgeState(artifacts: KnowledgeArtifacts): Promise<KnowledgeState | null> {
+  try {
+    const raw = await readFile(artifacts.knowledgeStatePath, 'utf-8')
+    return toKnowledgeState(JSON.parse(raw) as Partial<KnowledgeState>)
+  } catch {
+    return null
+  }
+}
+
 export async function readKnowledgeCandidates(artifacts: KnowledgeArtifacts): Promise<KnowledgeCandidate[]> {
   try {
     const raw = await readFile(artifacts.knowledgeCandidatesPath, 'utf-8')
@@ -198,8 +319,15 @@ function formatGlobalEntry(candidate: KnowledgeCandidate): string {
     `# ${candidate.title}`,
     '',
     `Type: ${candidate.type}`,
+    `Topic key: ${candidate.topicKey || candidateSlug(candidate)}`,
+    `Lifecycle: ${candidate.lifecycle || 'active'}`,
     `Source session: ${candidate.sourceSessionId}`,
     candidate.evidencePath ? `Evidence: ${candidate.evidencePath}` : undefined,
+    candidate.scope ? `Scope: ${candidate.scope}` : undefined,
+    candidate.appliesTo && candidate.appliesTo.length > 0 ? `Applies to: ${candidate.appliesTo.join(', ')}` : undefined,
+    candidate.supersededBy ? `Superseded by: ${candidate.supersededBy}` : undefined,
+    candidate.introducedAt ? `Introduced at: ${candidate.introducedAt}` : undefined,
+    candidate.lastUsedAt ? `Last used at: ${candidate.lastUsedAt}` : undefined,
     '',
     candidate.summary,
     '',
@@ -219,8 +347,10 @@ async function readCountIndex(path: string): Promise<Record<string, number>> {
 async function writeGlobalIndex(repoDir: string): Promise<void> {
   const decisionDir = join(repoDir, 'decisions')
   const failureDir = join(repoDir, 'failure-patterns')
+  const workflowRuleDir = join(repoDir, 'workflow-rules')
   const decisionEntries = await listMarkdownEntries(decisionDir)
   const failureEntries = await listMarkdownEntries(failureDir)
+  const workflowRuleEntries = await listMarkdownEntries(workflowRuleDir)
   const lines = [
     '# Repository Knowledge Index',
     '',
@@ -230,8 +360,11 @@ async function writeGlobalIndex(repoDir: string): Promise<void> {
     '## Failure patterns',
     ...failureEntries.map((entry) => `- ${entry}`),
     '',
+    '## Workflow rules',
+    ...workflowRuleEntries.map((entry) => `- ${entry}`),
+    '',
   ]
-  await writeFile(join(repoDir, 'index.md'), lines.join('\n'), 'utf-8')
+  await writeFile(join(repoDir, 'index.md'), `${lines.join('\n')}\n`, 'utf-8')
 }
 
 async function listMarkdownEntries(dir: string): Promise<string[]> {
@@ -263,6 +396,18 @@ async function listSummaryNames(artifacts: KnowledgeArtifacts): Promise<string[]
   return entries.map((entry) => entry.replace(/\.md$/, ''))
 }
 
+function finalizeCandidate(candidate: KnowledgeCandidate, status: KnowledgeCandidateStatus, lifecycle: KnowledgeLifecycle): KnowledgeCandidate {
+  const now = new Date().toISOString()
+  return {
+    ...candidate,
+    topicKey: candidate.topicKey || candidateSlug(candidate),
+    status,
+    lifecycle,
+    introducedAt: candidate.introducedAt || now,
+    lastUsedAt: candidate.lastUsedAt || now,
+  }
+}
+
 export async function promoteKnowledgeCandidates(
   repoRoot: string,
   candidates: KnowledgeCandidate[]
@@ -271,34 +416,44 @@ export async function promoteKnowledgeCandidates(
   const repoDir = join(getMagpieHomeDir(), 'knowledge', repoKey)
   const decisionsDir = join(repoDir, 'decisions')
   const failuresDir = join(repoDir, 'failure-patterns')
+  const workflowRulesDir = join(repoDir, 'workflow-rules')
   const failureCountPath = join(repoDir, 'failure-pattern-counts.json')
   const promoted: KnowledgeCandidate[] = []
   const deferred: KnowledgeCandidate[] = []
 
   await mkdir(decisionsDir, { recursive: true })
   await mkdir(failuresDir, { recursive: true })
+  await mkdir(workflowRulesDir, { recursive: true })
 
   const failureCounts = await readCountIndex(failureCountPath)
 
   for (const candidate of candidates) {
     const slug = candidateSlug(candidate)
     if (candidate.type === 'decision') {
-      const filePath = join(decisionsDir, `${slug}.md`)
-      await writeFile(filePath, formatGlobalEntry({ ...candidate, status: 'promoted' }), 'utf-8')
-      promoted.push({ ...candidate, status: 'promoted' })
+      const promotedCandidate = finalizeCandidate(candidate, 'promoted', 'active')
+      await writeFile(join(decisionsDir, `${slug}.md`), `${formatGlobalEntry(promotedCandidate)}\n`, 'utf-8')
+      promoted.push(promotedCandidate)
       continue
     }
 
-    const nextCount = (failureCounts[slug] || 0) + 1
-    failureCounts[slug] = nextCount
+    if (candidate.type === 'workflow-rule') {
+      const promotedCandidate = finalizeCandidate(candidate, 'promoted', 'active')
+      await writeFile(join(workflowRulesDir, `${slug}.md`), `${formatGlobalEntry(promotedCandidate)}\n`, 'utf-8')
+      promoted.push(promotedCandidate)
+      continue
+    }
+
+    const countKey = candidateTopicKey(candidate)
+    const nextCount = (failureCounts[countKey] || 0) + 1
+    failureCounts[countKey] = nextCount
     if (nextCount < 2) {
-      deferred.push({ ...candidate, status: 'deferred' })
+      deferred.push(finalizeCandidate(candidate, 'deferred', 'deferred'))
       continue
     }
 
-    const filePath = join(failuresDir, `${slug}.md`)
-    await writeFile(filePath, formatGlobalEntry({ ...candidate, status: 'promoted' }), 'utf-8')
-    promoted.push({ ...candidate, status: 'promoted' })
+    const promotedCandidate = finalizeCandidate(candidate, 'promoted', 'active')
+    await writeFile(join(failuresDir, `${slug}.md`), `${formatGlobalEntry(promotedCandidate)}\n`, 'utf-8')
+    promoted.push(promotedCandidate)
   }
 
   await writeFile(failureCountPath, `${JSON.stringify(failureCounts, null, 2)}\n`, 'utf-8')
@@ -312,8 +467,8 @@ async function readLatestSummary(artifacts: KnowledgeArtifacts): Promise<string>
     .filter((name) => name.startsWith('stage-'))
     .sort()
     .reverse()
-  const candidates = ['final', ...stageEntries, ...SUMMARY_ORDER]
-  for (const name of candidates) {
+  const names = ['final', ...stageEntries, ...SUMMARY_ORDER]
+  for (const name of names) {
     const content = stripMarkdown(await safeRead(summaryPath(artifacts, name)))
     if (content) {
       return content
@@ -333,11 +488,16 @@ async function loadGlobalContext(repoRoot: string): Promise<string> {
 
   const decisionFiles = await listMarkdownFileNames(join(repoDir, 'decisions'))
   const failureFiles = await listMarkdownFileNames(join(repoDir, 'failure-patterns'))
+  const workflowRuleFiles = await listMarkdownFileNames(join(repoDir, 'workflow-rules'))
+
   const decisionEntries = await Promise.all(
     decisionFiles.slice(0, 3).map(async (entry) => stripMarkdown(await safeRead(join(repoDir, 'decisions', entry))))
   )
   const failureEntries = await Promise.all(
     failureFiles.slice(0, 3).map(async (entry) => stripMarkdown(await safeRead(join(repoDir, 'failure-patterns', entry))))
+  )
+  const workflowRuleEntries = await Promise.all(
+    workflowRuleFiles.slice(0, 3).map(async (entry) => stripMarkdown(await safeRead(join(repoDir, 'workflow-rules', entry))))
   )
 
   if (decisionEntries.length > 0) {
@@ -345,6 +505,9 @@ async function loadGlobalContext(repoRoot: string): Promise<string> {
   }
   if (failureEntries.length > 0) {
     sections.push(`Failure patterns: ${failureEntries.filter(Boolean).join(' | ')}`)
+  }
+  if (workflowRuleEntries.length > 0) {
+    sections.push(`Workflow rules: ${workflowRuleEntries.filter(Boolean).join(' | ')}`)
   }
 
   return sections.length > 0 ? `Repository knowledge:\n${sections.join('\n')}` : ''
@@ -361,6 +524,10 @@ export async function renderKnowledgeContext(
     'Task knowledge context:',
     '',
     `Goal summary: ${snapshot.goal || '(missing)'}`,
+    `Current stage: ${snapshot.state.currentStage || '(missing)'}`,
+    `Last reliable result: ${snapshot.state.lastReliableResult || '(missing)'}`,
+    `Next action: ${snapshot.state.nextAction || '(missing)'}`,
+    `Current blocker: ${snapshot.state.currentBlocker || '(none)'}`,
     `Latest summary: ${snapshot.latestSummary || '(missing)'}`,
     `Open issues: ${snapshot.openIssues || '(none)'}`,
     `Evidence: ${snapshot.evidence || '(none)'}`,
@@ -370,6 +537,7 @@ export async function renderKnowledgeContext(
 
 export async function loadInspectSnapshot(artifacts: KnowledgeArtifacts): Promise<InspectSnapshot> {
   const goal = removeLeadingLabel(await safeRead(summaryPath(artifacts, 'goal')), 'Goal')
+  const state = (await readKnowledgeState(artifacts)) || defaultKnowledgeState()
   const latestSummary = await readLatestSummary(artifacts)
   const openIssues = removeLeadingLabel(await safeRead(summaryPath(artifacts, 'open-issues')), 'Open Issues')
   const evidence = removeLeadingLabel(await safeRead(summaryPath(artifacts, 'evidence')), 'Evidence')
@@ -378,6 +546,7 @@ export async function loadInspectSnapshot(artifacts: KnowledgeArtifacts): Promis
   return {
     knowledgeDir: knowledgeDirFromArtifacts(artifacts),
     goal,
+    state,
     latestSummary,
     openIssues,
     evidence,

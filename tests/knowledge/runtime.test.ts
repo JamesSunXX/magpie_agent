@@ -7,6 +7,7 @@ import {
   loadInspectSnapshot,
   promoteKnowledgeCandidates,
   renderKnowledgeContext,
+  updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
   type KnowledgeCandidate,
 } from '../../src/knowledge/runtime.js'
@@ -36,6 +37,12 @@ describe('knowledge runtime', () => {
     })
 
     await updateTaskKnowledgeSummary(artifacts, 'plan', 'Plan summary body', 'Plan summary updated.')
+    await updateTaskKnowledgeState(artifacts, {
+      currentStage: 'prd_review',
+      lastReliableResult: 'Planning context synced.',
+      nextAction: 'Run PRD review stage.',
+      currentBlocker: 'Waiting for PRD review output.',
+    }, 'State updated.')
     await updateTaskKnowledgeSummary(artifacts, 'open-issues', '- Waiting for migration rollback plan', 'Open issues updated.')
     await updateTaskKnowledgeSummary(artifacts, 'evidence', '- See /tmp/evidence.log', 'Evidence updated.')
     await updateTaskKnowledgeSummary(artifacts, 'stage-prd-review', 'Latest stage summary', 'Stage summary updated.')
@@ -45,15 +52,19 @@ describe('knowledge runtime', () => {
 
     expect(readFileSync(artifacts.knowledgeSchemaPath, 'utf-8')).toContain('# Task Knowledge Schema')
     expect(readFileSync(artifacts.knowledgeIndexPath, 'utf-8')).toContain('stage-prd-review.md')
+    expect(readFileSync(artifacts.knowledgeStatePath, 'utf-8')).toContain('"currentStage": "prd_review"')
     expect(inspect.goal).toContain('Ship checkout v2 safely')
+    expect(inspect.state.currentStage).toBe('prd_review')
+    expect(inspect.state.nextAction).toBe('Run PRD review stage.')
     expect(inspect.latestSummary).toContain('Latest stage summary')
     expect(inspect.openIssues).toContain('migration rollback plan')
     expect(inspect.evidence).toContain('/tmp/evidence.log')
     expect(promptContext).toContain('Goal summary')
+    expect(promptContext).toContain('Current stage: prd_review')
     expect(promptContext).toContain('Latest stage summary')
   })
 
-  it('promotes decisions immediately and failure patterns only on the second occurrence', async () => {
+  it('promotes decisions and workflow rules immediately and failure patterns by topic key on the second occurrence', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-promote-'))
     process.env.MAGPIE_HOME = magpieHome
 
@@ -65,30 +76,52 @@ describe('knowledge runtime', () => {
       sourceSessionId: 'harness-1',
       evidencePath: '/tmp/final.md',
       status: 'candidate',
+      lifecycle: 'active',
+    }
+    const workflowRule: KnowledgeCandidate = {
+      type: 'workflow-rule',
+      title: 'Always update README for CLI surface changes',
+      summary: 'Whenever command output or flags change, sync README examples in the same task.',
+      sourceSessionId: 'harness-1',
+      evidencePath: '/tmp/final.md',
+      status: 'candidate',
+      appliesTo: ['README.md', 'src/cli/**'],
+      lifecycle: 'active',
     }
     const failure: KnowledgeCandidate = {
       type: 'failure-pattern',
-      title: 'review-cycle-timeout',
+      title: 'review-cycle-timeout first wording',
       summary: 'Review cycle timed out before adjudication completed.',
       sourceSessionId: 'harness-1',
       evidencePath: '/tmp/events.jsonl',
       status: 'candidate',
+      topicKey: 'review-cycle-timeout',
+      lifecycle: 'deferred',
+    }
+    const sameFailureDifferentTitle: KnowledgeCandidate = {
+      ...failure,
+      title: 'review cycle timed out again',
+      sourceSessionId: 'harness-2',
     }
 
-    const first = await promoteKnowledgeCandidates(repoRoot, [decision, failure])
-    const second = await promoteKnowledgeCandidates(repoRoot, [failure])
+    const first = await promoteKnowledgeCandidates(repoRoot, [decision, workflowRule, failure])
+    const second = await promoteKnowledgeCandidates(repoRoot, [sameFailureDifferentTitle])
 
     const knowledgeRoot = join(magpieHome, 'knowledge')
     const indexPath = join(knowledgeRoot, first.repoKey, 'index.md')
     const decisionDir = join(knowledgeRoot, first.repoKey, 'decisions')
     const failureDir = join(knowledgeRoot, first.repoKey, 'failure-patterns')
+    const workflowRuleDir = join(knowledgeRoot, first.repoKey, 'workflow-rules')
 
     expect(first.promoted.map((item) => item.type)).toContain('decision')
+    expect(first.promoted.map((item) => item.type)).toContain('workflow-rule')
     expect(first.promoted.map((item) => item.type)).not.toContain('failure-pattern')
     expect(second.promoted.map((item) => item.type)).toContain('failure-pattern')
     expect(readFileSync(indexPath, 'utf-8')).toContain('Prefer explicit harness inspect output')
-    expect(readFileSync(indexPath, 'utf-8')).toContain('review-cycle-timeout')
+    expect(readFileSync(indexPath, 'utf-8')).toContain('Always update README for CLI surface changes')
+    expect(readFileSync(indexPath, 'utf-8')).toContain('review cycle timed out again')
     expect(() => readFileSync(join(decisionDir, 'prefer-explicit-harness-inspect-output.md'), 'utf-8')).not.toThrow()
+    expect(() => readFileSync(join(workflowRuleDir, 'always-update-readme-for-cli-surface-changes.md'), 'utf-8')).not.toThrow()
     expect(() => readFileSync(join(failureDir, 'review-cycle-timeout.md'), 'utf-8')).not.toThrow()
   })
 
@@ -113,6 +146,7 @@ describe('knowledge runtime', () => {
       sourceSessionId: 'loop-old',
       evidencePath: '/tmp/final.md',
       status: 'candidate',
+      lifecycle: 'active',
     }])
 
     const context = await renderKnowledgeContext(artifacts, repoRoot)

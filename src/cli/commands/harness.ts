@@ -11,6 +11,7 @@ import {
 import type { HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary } from '../../capabilities/workflows/harness/types.js'
 import { createHarnessProgressReporter, followHarnessEventStream } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
+import type { KnowledgeState } from '../../knowledge/runtime.js'
 
 interface HarnessCommandOptions {
   config?: string
@@ -19,6 +20,33 @@ interface HarnessCommandOptions {
   testCommand?: string
   models?: string[]
   complexity?: HarnessInput['complexity']
+}
+
+function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typeof loadWorkflowSession>>>): Partial<KnowledgeState> {
+  if (session.status === 'completed') {
+    return {
+      currentStage: 'completed',
+      nextAction: 'No further action.',
+      currentBlocker: 'None.',
+      lastReliableResult: session.summary,
+    }
+  }
+
+  if (session.status === 'failed') {
+    return {
+      currentStage: 'failed',
+      nextAction: 'Inspect failure details and replan.',
+      currentBlocker: session.summary,
+      lastReliableResult: session.summary,
+    }
+  }
+
+  return {
+    currentStage: session.currentStage || 'in_progress',
+    nextAction: session.currentStage === 'reviewing' ? 'Resume the current review cycle.' : 'Resume the harness workflow.',
+    currentBlocker: 'Legacy session has no persisted state card.',
+    lastReliableResult: session.summary,
+  }
 }
 
 async function runHarness(input: HarnessInput, options: HarnessCommandOptions): Promise<void> {
@@ -162,7 +190,7 @@ harnessCommand
       return
     }
 
-    await printKnowledgeInspectView(session.artifacts)
+    await printKnowledgeInspectView(session.artifacts, legacyHarnessKnowledgeState(session))
   })
 
 harnessCommand

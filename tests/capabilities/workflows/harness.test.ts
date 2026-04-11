@@ -253,9 +253,11 @@ describe('harness workflow', () => {
       expect(result.session?.artifacts.providerSelectionPath).toBeTruthy()
       expect(result.session?.artifacts.eventsPath).toBeTruthy()
       expect(result.session?.artifacts.knowledgeSchemaPath).toBeTruthy()
+      expect(result.session?.artifacts.knowledgeStatePath).toBeTruthy()
       expect(result.session?.artifacts.knowledgeSummaryDir).toBeTruthy()
       expect(result.session?.currentStage).toBe('completed')
       expect(readFileSync(result.session!.artifacts.knowledgeSchemaPath, 'utf-8')).toContain('Task Knowledge Schema')
+      expect(readFileSync(result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
       expect(readFileSync(join(result.session!.artifacts.knowledgeSummaryDir, 'final.md'), 'utf-8')).toContain('Harness approved after 1 cycle(s).')
       const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
       expect(harnessConfig).toContain('planner_model: claude-code')
@@ -871,6 +873,7 @@ describe('harness workflow', () => {
       expect(result.status).toBe('failed')
       expect(result.session?.summary).toContain('loop')
       expect(result.session?.artifacts.loopSessionId).toBe('loop-fail-1')
+      expect(readFileSync(result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "failed"')
       // review should never have been called
       const calledNames = runCapabilityMock.mock.calls.map(([m]) => m.name)
       expect(calledNames).not.toContain('review')
@@ -969,6 +972,7 @@ describe('harness workflow', () => {
       expect(result.status).toBe('failed')
       expect(result.session?.summary).toContain('Kiro')
       expect(runCapabilityMock).not.toHaveBeenCalled()
+      expect(readFileSync(result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "failed"')
       const selection = readJson<{
         decision: string
         kiroCheck: { ok: boolean; reason: string }

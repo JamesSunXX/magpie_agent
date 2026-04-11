@@ -188,6 +188,7 @@ describe('top-level harness CLI command', () => {
     )
 
     expect(logSpy).toHaveBeenCalledWith('Goal: Ship checkout v2')
+    expect(logSpy).toHaveBeenCalledWith('State: reviewing | next: Run adjudication for cycle 1. | blocker: Waiting for review cycle result.')
     expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
     expect(logSpy).toHaveBeenCalledWith('Open issues: Missing migration rollback drill')
     expect(logSpy).toHaveBeenCalledWith('Candidates: decision:Prefer staged rollout')
@@ -412,6 +413,13 @@ function loadWorkflowSessionsDetail(): void {
   writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
   writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
   writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+  writeFileSync(join(knowledgeDir, 'state.json'), JSON.stringify({
+    currentStage: 'reviewing',
+    lastReliableResult: 'Loop stage completed.',
+    nextAction: 'Run adjudication for cycle 1.',
+    currentBlocker: 'Waiting for review cycle result.',
+    updatedAt: '2026-04-11T00:05:00.000Z',
+  }, null, 2), 'utf-8')
   writeFileSync(join(summaryDir, 'goal.md'), '# Goal\n\nShip checkout v2', 'utf-8')
   writeFileSync(join(summaryDir, 'open-issues.md'), '- Missing migration rollback drill', 'utf-8')
   writeFileSync(join(summaryDir, 'evidence.md'), '- /tmp/review.json', 'utf-8')
@@ -445,6 +453,7 @@ function loadWorkflowSessionsDetail(): void {
       knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
       knowledgeIndexPath: join(knowledgeDir, 'index.md'),
       knowledgeLogPath: join(knowledgeDir, 'log.md'),
+      knowledgeStatePath: join(knowledgeDir, 'state.json'),
       knowledgeSummaryDir: summaryDir,
       knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
       loopSessionId: 'loop-1',

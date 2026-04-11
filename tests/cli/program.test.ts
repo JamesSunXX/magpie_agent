@@ -1,7 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { getConfigVersionStatus } = vi.hoisted(() => ({
+  getConfigVersionStatus: vi.fn(),
+}))
+
+vi.mock('../../src/platform/config/loader.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/platform/config/loader.js')>('../../src/platform/config/loader.js')
+  return {
+    ...actual,
+    getConfigVersionStatus,
+  }
+})
 import { createProgram } from '../../src/cli/program.js'
 
 describe('CLI program', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('registers the tui command', () => {
     const program = createProgram()
 
@@ -89,5 +105,29 @@ describe('CLI program', () => {
     expect(issueFixOptionFlags).toContain('--planning-item')
     expect(issueFixOptionFlags).toContain('--planning-project')
     expect(issueFixOptionFlags).toContain('--complexity')
+  })
+
+  it('warns before command execution when config version is outdated', async () => {
+    getConfigVersionStatus.mockReturnValue({
+      path: '/tmp/config.yaml',
+      configVersion: 0,
+      expectedVersion: 1,
+      state: 'outdated',
+      message: 'Config version is outdated. Run `magpie init --upgrade --config /tmp/config.yaml`.',
+    })
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const action = vi.fn()
+    const program = createProgram()
+    program
+      .command('sample')
+      .option('-c, --config <path>')
+      .action(action)
+
+    await program.parseAsync(['node', 'magpie', 'sample', '--config', '/tmp/config.yaml'], { from: 'node' })
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Config version is outdated'))
+    expect(action).toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })

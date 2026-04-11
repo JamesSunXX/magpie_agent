@@ -91,10 +91,13 @@ describe('loop capability', () => {
     expect(result.result.session?.artifacts.knowledgeSchemaPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeIndexPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeLogPath).toBeTruthy()
+    expect(result.result.session?.artifacts.knowledgeStatePath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeSummaryDir).toBeTruthy()
     expect(existsSync(result.result.session!.artifacts.knowledgeSchemaPath)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.knowledgeStatePath!)).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
+    expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
   })
 
   it('persists a completed loop session even if knowledge promotion fails', async () => {

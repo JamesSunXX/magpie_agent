@@ -1,7 +1,13 @@
 // tests/config/init.test.ts
 import { describe, it, expect, afterEach } from 'vitest'
-import { initConfig, generateConfig, AVAILABLE_REVIEWERS } from '../../src/platform/config/init.js'
-import { existsSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'fs'
+import {
+  initConfig,
+  generateConfig,
+  AVAILABLE_REVIEWERS,
+  upgradeConfigWithResult,
+} from '../../src/platform/config/init.js'
+import { loadConfig } from '../../src/platform/config/loader.js'
+import { existsSync, rmSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import YAML from 'yaml'
@@ -20,6 +26,7 @@ describe('Config Init', () => {
     expect(existsSync(configPath)).toBe(true)
     const content = readFileSync(configPath, 'utf-8')
     expect(content).toContain('providers:')
+    expect(content).toContain('config_version:')
     expect(content).toContain('reviewers:')
     expect(content).toContain('capabilities:')
     expect(content).toContain('integrations:')
@@ -77,6 +84,140 @@ describe('Config Init', () => {
 
     expect(readFileSync(backupPath, 'utf-8')).toBe('legacy: true\n')
     expect(readFileSync(configPath, 'utf-8')).toContain('providers:')
+  })
+
+  it('upgrades existing v2 config with routing and codex binding fixes', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    const magpieDir = join(testDir, '.magpie')
+    mkdirSync(magpieDir, { recursive: true })
+    writeFileSync(configPath, `providers: {}
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  codex-cli:
+    model: codex-cli
+    prompt: review
+summarizer:
+  model: kiro
+  prompt: summarize
+analyzer:
+  model: kiro
+  prompt: analyze
+capabilities:
+  review:
+    enabled: true
+  issue_fix:
+    enabled: true
+    planner_model: codex
+    executor_model: codex
+    verify_command: "npm run test:run"
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const result = upgradeConfigWithResult(configPath)
+    const upgraded = readFileSync(configPath, 'utf-8')
+    const backupFiles = readdirSync(magpieDir).filter(name => name.startsWith('config.yaml.bak-'))
+
+    expect(result.written).toBe(true)
+    expect(result.backupPath).toBeTruthy()
+    expect(backupFiles.length).toBe(1)
+    expect(upgraded).toContain('tool: codex')
+    expect(upgraded).not.toContain('model: codex-cli')
+    expect(upgraded).toContain('routing:')
+    expect(upgraded).toContain('allow_runtime_escalation: true')
+    expect(result.changes).toContain('Converted reviewers.codex-cli from model: codex-cli to tool: codex.')
+    expect(result.changes).toContain('Added capabilities.routing defaults.')
+    expect(result.warnings).toContain('Review repo-specific verification commands before applying this config to a non-Node repository.')
+  })
+
+  it('supports dry-run upgrade without writing files', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    mkdirSync(join(testDir, '.magpie'), { recursive: true })
+    writeFileSync(configPath, `providers: {}
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  codex-cli:
+    model: codex-cli
+    prompt: review
+summarizer:
+  model: kiro
+  prompt: summarize
+analyzer:
+  model: kiro
+  prompt: analyze
+capabilities:
+  review:
+    enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const original = readFileSync(configPath, 'utf-8')
+    const result = upgradeConfigWithResult(configPath, { dryRun: true })
+
+    expect(result.written).toBe(false)
+    expect(result.backupPath).toBeUndefined()
+    expect(readFileSync(configPath, 'utf-8')).toBe(original)
+    expect(result.content).toContain('routing:')
+    expect(result.content).toContain('tool: codex')
+  })
+
+  it('upgrades legacy codex-cli route bindings so the config can still load', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    mkdirSync(join(testDir, '.magpie'), { recursive: true })
+    writeFileSync(configPath, `config_version: 1
+providers: {}
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  route-codex:
+    tool: codex-cli
+    prompt: review
+summarizer:
+  model: kiro
+  prompt: summarize
+analyzer:
+  model: kiro
+  prompt: analyze
+capabilities:
+  review:
+    enabled: true
+  routing:
+    enabled: true
+    stage_policies:
+      planning:
+        standard:
+          tool: codex-cli
+    fallback_chain:
+      execution:
+        standard:
+          - tool: codex-cli
+  issue_fix:
+    enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const result = upgradeConfigWithResult(configPath)
+    const upgraded = readFileSync(configPath, 'utf-8')
+
+    expect(upgraded).not.toContain('tool: codex-cli')
+    expect(upgraded).toContain('tool: codex')
+    expect(result.changes).toContain('Converted reviewers.route-codex from tool: codex-cli to tool: codex.')
+    expect(result.changes).toContain('Converted capabilities.routing.stage_policies.planning.standard from tool: codex-cli to tool: codex.')
+    expect(result.changes).toContain('Converted capabilities.routing.fallback_chain.execution.standard[0] from tool: codex-cli to tool: codex.')
+    expect(() => loadConfig(configPath)).not.toThrow()
   })
 
   it('should render interactive notification values when provided', () => {

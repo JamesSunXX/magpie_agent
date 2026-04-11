@@ -19,6 +19,7 @@
     "test:run": "vitest run",
     "test:notifications": "vitest run tests/platform/notifications/providers/feishu-webhook.test.ts tests/platform/notifications/providers/imessage.test.ts tests/platform/notifications/providers/macos.test.ts tests/platform/notifications/factory.test.ts",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:config-version": "node scripts/check-config-version.mjs",
     "smoke:notifications": "tsx scripts/smoke-notifications.ts"
   },
   "keywords": [],

@@ -324,6 +324,38 @@ describe('init CLI command helpers', () => {
     errorSpy.mockRestore()
   })
 
+  it('upgrades config via --upgrade with dry-run and custom path', async () => {
+    const upgradeConfigWithResult = vi.fn(() => ({
+      configPath: '/tmp/custom.yaml',
+      written: false,
+      changes: ['Added capabilities.routing defaults.'],
+      warnings: ['Review repo-specific verification commands before applying this config to a non-Node repository.'],
+      content: 'capabilities:\n  routing:\n    enabled: true\n',
+    }))
+
+    vi.doMock('../../src/platform/config/init.js', () => ({
+      AVAILABLE_REVIEWERS: [],
+      initConfigWithResult: vi.fn(),
+      upgradeConfigWithResult,
+    }))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { initCommand } = await import('../../src/cli/commands/init.js')
+
+    await initCommand.parseAsync(['node', 'init', '--upgrade', '--dry-run', '--config', '/tmp/custom.yaml'], { from: 'node' })
+
+    expect(upgradeConfigWithResult).toHaveBeenCalledWith('/tmp/custom.yaml', { dryRun: true })
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Dry run'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Added capabilities.routing defaults.'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Review repo-specific verification commands'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('capabilities:'))
+    expect(errorSpy).not.toHaveBeenCalled()
+
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
   it('prints an error and exits when init fails', async () => {
     vi.doMock('../../src/platform/config/init.js', () => ({
       AVAILABLE_REVIEWERS: [],

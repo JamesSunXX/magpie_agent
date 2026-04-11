@@ -14,6 +14,15 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
+export const CURRENT_CONFIG_VERSION = 2
+
+export interface ConfigVersionStatus {
+  path: string
+  configVersion?: number
+  expectedVersion: number
+  state: 'current' | 'outdated' | 'newer'
+  message?: string
+}
 
 function ensureBuiltInRouteReviewers(config: MagpieConfigV2): void {
   const reviewers = config.reviewers || {}
@@ -141,7 +150,70 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 }
 
 export function getConfigPath(customPath?: string): string {
-  return customPath || join(getMagpieHomeDir(), 'config.yaml')
+  if (customPath) {
+    return customPath
+  }
+
+  const localConfigPath = join(process.cwd(), '.magpie', 'config.yaml')
+  if (existsSync(localConfigPath)) {
+    return localConfigPath
+  }
+
+  return join(getMagpieHomeDir(), 'config.yaml')
+}
+
+export function getConfigVersionStatus(configPath?: string): ConfigVersionStatus {
+  const path = getConfigPath(configPath)
+
+  if (!existsSync(path)) {
+    return {
+      path,
+      expectedVersion: CURRENT_CONFIG_VERSION,
+      state: 'current',
+    }
+  }
+
+  try {
+    const content = readFileSync(path, 'utf-8')
+    const parsed = parse(content) as Record<string, unknown> | null
+    const rawVersion = parsed && typeof parsed === 'object' ? parsed.config_version : undefined
+    const configVersion = typeof rawVersion === 'number' && Number.isFinite(rawVersion)
+      ? rawVersion
+      : undefined
+
+    if (configVersion === CURRENT_CONFIG_VERSION) {
+      return {
+        path,
+        configVersion,
+        expectedVersion: CURRENT_CONFIG_VERSION,
+        state: 'current',
+      }
+    }
+
+    if (configVersion !== undefined && configVersion > CURRENT_CONFIG_VERSION) {
+      return {
+        path,
+        configVersion,
+        expectedVersion: CURRENT_CONFIG_VERSION,
+        state: 'newer',
+        message: `Config version ${configVersion} is newer than this CLI expects (${CURRENT_CONFIG_VERSION}). Check whether Magpie itself needs an update before continuing.`,
+      }
+    }
+
+    return {
+      path,
+      configVersion,
+      expectedVersion: CURRENT_CONFIG_VERSION,
+      state: 'outdated',
+      message: `Config version is outdated or missing. Run \`magpie init --upgrade --config ${path}\` to update it.`,
+    }
+  } catch {
+    return {
+      path,
+      expectedVersion: CURRENT_CONFIG_VERSION,
+      state: 'current',
+    }
+  }
 }
 
 function validateReviewerConfig(name: string, rc: ReviewerConfig | undefined): void {
@@ -239,6 +311,9 @@ export function loadConfig(configPath?: string): MagpieConfigV2 {
   const content = readFileSync(path, 'utf-8')
   const parsed = parse(content) as Record<string, unknown>
   const expanded = expandEnvVarsInObject(parsed) as MagpieConfigV2
+  if (expanded.config_version === undefined) {
+    expanded.config_version = CURRENT_CONFIG_VERSION
+  }
 
   validateConfig(expanded, parsed)
   return expanded

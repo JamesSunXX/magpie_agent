@@ -169,6 +169,7 @@ export interface LoopSession {
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string
+    knowledgeStatePath?: string
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
   }

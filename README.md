@@ -157,6 +157,12 @@ npm run build
 npm link
 ```
 
+启用仓库自带提交钩子：
+
+```bash
+./scripts/setup_git_hooks.sh
+```
+
 从源码运行：
 
 ```bash
@@ -176,6 +182,15 @@ magpie init
 
 # 无交互生成默认配置（claude-code + codex）
 magpie init -y
+
+# 预览将要生成的新配置，但不写文件
+magpie init --dry-run
+
+# 就地升级已有配置
+magpie init --upgrade
+
+# 先预览某个配置文件升级后的结果
+magpie init --upgrade --dry-run --config ./project/.magpie/config.yaml
 
 # 2) 打开任务工作台
 magpie tui
@@ -506,12 +521,29 @@ magpie stats --since 30
 ~/.magpie/config.yaml
 ```
 
+当前模板会写入 `config_version`。后续执行命令时，如果本地配置版本落后，CLI 会先提示你运行升级命令，但不会直接拦截当前命令。
+
+如果你改了配置契约相关代码，提交时还会额外检查：这类改动必须同步更新 `CURRENT_CONFIG_VERSION`。启用仓库钩子后，这个检查会在 `git commit` 前自动执行。
+
 推荐方式是先生成模板，再按需调整：
 
 ```bash
 magpie init
 # 或
 magpie init -y
+```
+
+如果你已经有一份 v2 配置，推荐直接走升级入口：
+
+```bash
+# 先预览，不落盘
+magpie init --upgrade --dry-run
+
+# 确认后再真正写回
+magpie init --upgrade
+
+# 指定项目内的配置文件
+magpie init --upgrade --config ./project/.magpie/config.yaml
 ```
 
 当前加载器只接受新 schema：
@@ -588,6 +620,9 @@ capabilities:
 - 默认 reviewer 由 `init` 选择结果决定；`-y` 时默认是 `claude-code` + `codex`
 - `capabilities.loop.reuse_current_branch: true` 时，如果当前已经在非 `main/master` 分支上，loop/harness 会直接沿用当前分支并继续按阶段自动提交；如果当前在 `main/master`，仍会自动新建 `sch/...` 分支
 - `init` 会在已有配置存在时自动备份旧文件为 `config.yaml.bak-<timestamp>`
+- `init --upgrade` 当前会补齐自动路由默认项、修正常见旧 binding（例如 `codex-cli`），并保留已有 reviewer / prompt / 通知配置
+- `init --upgrade` 当前只支持已经是 v2 schema 的配置；如果是更老的 legacy 配置，仍建议直接重新生成
+- `init --upgrade` 会提示你复查仓库相关的校验命令；一期版本不会自动判断仓库是 Go、Node 还是 Python
 - 通知配置会同时生成 `macos_local`、`feishu_team`、`imessage_local`、`imessage_remote` provider 模板
 - `init` 交互模式会额外引导填写 `integrations.planning` 和 `integrations.operations` 的默认 provider 与关键字段
 
