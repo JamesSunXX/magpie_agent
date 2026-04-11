@@ -1,0 +1,33 @@
+# Capability Reference
+
+这份文档只回答三件事：每类能力是干嘛的、从哪个命令进、主要代码在哪。
+
+## 核心命令
+
+| 能力 | 命令入口 | 主要代码位置 | 备注 |
+| --- | --- | --- | --- |
+| 评审 | `magpie review` | `src/cli/commands/review.ts`、`src/capabilities/review/` | 支持 PR、本地改动、分支、文件、仓库级扫描 |
+| 讨论 | `magpie discuss` | `src/cli/commands/discuss.ts`、`src/capabilities/discuss/` | 多模型讨论，可选对抗视角 |
+| TRD 生成 | `magpie trd` | `src/cli/commands/trd.ts`、`src/capabilities/trd/` | 从 PRD Markdown 生成 TRD |
+| 闭环执行 | `magpie loop` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 围绕目标分阶段推进 |
+| Harness | `magpie harness` | `src/cli/commands/harness.ts`、`src/capabilities/workflows/harness/` | 需求到交付的闭环入口 |
+| Workflow | `magpie workflow ...` | `src/cli/commands/workflow.ts`、`src/capabilities/workflows/` | `issue-fix`、`docs-sync`、`post-merge-regression` 等 |
+| TUI | `magpie tui` | `src/cli/commands/tui.ts`、`src/tui/` | 任务工作台 |
+| 初始化 | `magpie init` | `src/cli/commands/init.ts`、`src/platform/config/` | 生成或升级配置 |
+| 统计 | `magpie stats` | `src/cli/commands/stats.ts`、`src/capabilities/stats/` | 当前仍偏轻量 |
+
+## 支撑模块
+
+| 模块 | 主要位置 | 负责什么 |
+| --- | --- | --- |
+| CLI 注册 | `src/cli/program.ts` | 统一挂载所有命令 |
+| 运行基础 | `src/core/` | 上下文、状态、仓库访问、辩论等公共能力 |
+| 平台集成 | `src/platform/` | 配置、provider、通知、规划、操作集成 |
+| 历史兼容 | `src/commands/`、`src/orchestrator/`、`src/providers/` | 旧路径和兼容逻辑 |
+
+## 改动对照
+
+- 新增或改命令：同时检查 `src/cli/commands/`、本文件、`README.md`
+- 改能力行为：同时检查对应 `src/capabilities/` 和 `ARCHITECTURE.md`
+- 改 provider、通知、配置：同时检查 `src/platform/` 与相关说明
+- 改较大流程：补 `docs/plans/` 新文档，不要只把结论埋在提交里

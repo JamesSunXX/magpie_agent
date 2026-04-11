@@ -22,4 +22,5 @@ jobs:
       - run: npm run test:coverage
       - run: npx tsc --noEmit
       - run: npm run check:boundaries
+      - run: npm run check:docs
       - run: npm run dev -- --help

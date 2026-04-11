@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
+    "check:docs": "node scripts/check-docs-structure.mjs",
     "dev": "node --import tsx src/cli.ts",
     "lint": "eslint .",
     "test": "vitest",

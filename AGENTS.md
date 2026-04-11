@@ -1,65 +1,47 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-`src/` contains the TypeScript CLI and core logic. Key areas include `src/commands/` (CLI commands), `src/orchestrator/` (debate flow), `src/providers/` (LLM backends), `src/context-gatherer/`, and `src/reporter/`.
+## Start Here
 
-`tests/` mirrors source areas with Vitest suites (for example, `src/orchestrator/*` -> `tests/orchestrator/*`).
+- Read [`docs/README.md`](./docs/README.md) for the document map.
+- Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) before changing structure or moving code.
+- Read [`docs/references/capabilities.md`](./docs/references/capabilities.md) before changing a command or capability.
 
-`dist/` is compiler output from `tsc`; do not edit it manually. Planning/design docs live in `docs/plans/`.
+## Project Layout
 
-## Build, Test, and Development Commands
-- `npm install`: install dependencies.
-- `npm run dev -- review 12345`: run CLI from source with `tsx` for local development.
-- `npm test`: run tests in watch mode.
-- `npm run test:run`: run tests once (preferred for CI and pre-PR checks).
-- `npm run build`: compile TypeScript (`src/` -> `dist/`) and surface strict type errors.
-- `npm link`: optionally expose local `magpie` binary globally after a successful build.
+- `src/cli/`: command entrypoints
+- `src/capabilities/`: current main capability implementations
+- `src/core/`: shared runtime foundations
+- `src/platform/`: providers, config, and external integrations
+- `tests/`: Vitest suites mirroring source areas
+- `docs/`: project knowledge and design history
+- `dist/`: TypeScript build output, do not edit manually
 
-## Coding Style & Naming Conventions
-- Language/tooling: TypeScript (`module: NodeNext`, `strict: true`).
-- Style in existing code: 2-space indentation, single quotes, no semicolons.
-- Filenames use kebab-case (`issue-parser.ts`, `repo-orchestrator.ts`).
-- Test files use `*.test.ts` and should map to the module they verify.
-- Keep imports ESM-compatible and prefer `import type` for type-only imports.
+## Working Rules
 
-## Testing Guidelines
-- Framework: Vitest.
-- Place tests under matching folders in `tests/`.
-- Prefer focused unit tests with explicit mocked providers (`vi.fn()`), then add e2e coverage in `tests/e2e/` when command flow changes.
-- Run targeted checks during development, for example: `npm test -- tests/orchestrator/orchestrator.test.ts`.
-- Before submitting changes, run at least `npm run test:run` and `npm run build`.
+- Run `npm run test:run` and `npm run build` before handing work back.
+- New or changed code should keep at least 80% line coverage in the files you touch. Check with `npm run test:coverage`.
+- When changing commands, capabilities, or project structure, update the matching docs and run `npm run check:docs`.
+- Planning and design docs live in `docs/plans/` and use `YYYY-MM-DD-<topic>.md`.
+- Keep comments focused on why, not what.
 
-### Coverage Requirements
-- **New/modified files must have ≥ 80% line coverage.** Check with: `npm run test:coverage`
-- Write tests **before** implementation when possible — verify new tests fail first, then implement.
-- If a change touches an existing file with low coverage, add tests for the lines you changed at minimum.
-- CI enforces `npm run test:coverage`; review the coverage table in the output to confirm your files meet the threshold.
+## Development Commands
 
-## Commit & Pull Request Guidelines
-- Follow Conventional Commits seen in history: `feat: ...`, `fix: ...`, `docs: ...`, optionally with scope (`feat(config): ...`) and issue refs (`(#8)`).
-- Keep commits focused and atomic; avoid mixing refactors with behavior changes.
-- PRs should include:
-  - concise problem statement and approach,
-  - testing evidence (command + result),
-  - linked issue(s),
-  - sample CLI output/screenshots for UX-facing changes.
+- `npm run dev -- --help`
+- `npm run test:run`
+- `npm run test:coverage`
+- `npm run build`
+- `npm run lint`
+- `npm run check:boundaries`
+- `npm run check:docs`
 
-## Documentation Guidelines
-- Design docs and plans go in `docs/plans/` with date prefix: `YYYY-MM-DD-<topic>.md`.
-- When adding a new capability or workflow, update `README.md` (capability list and usage section).
-- When changing CLI flags or commands, update the relevant help text in `src/commands/` and the README.
-- Inline code comments: explain **why**, not **what**. Skip obvious comments.
-- Public functions/types that form module boundaries should have JSDoc with a one-line summary.
+## Change Mapping
 
-## Security & Configuration Tips
+- Command or CLI UX changes: update `README.md` and `docs/references/capabilities.md`
+- Architecture or module-boundary changes: update `ARCHITECTURE.md`
+- Workflow expectations or contributor rules: update `AGENTS.md`
+
+## Security
+
 - Never commit API keys or `.env` secrets.
 - Configure providers via `~/.magpie/config.yaml` and environment variables.
-- Use the `mock` provider for safe local workflow testing when real model calls are unnecessary.
-
-## Project Basic Skills
-- Baseline skill file: `~/.codex/skills/project-baseline/SKILL.md`
-- Default autonomous loop mode in this project:
-  - use `codex` as loop model
-  - run with `--no-wait-human`
-  - set `MAGPIE_CODEX_TIMEOUT_MS` (recommended `120000`) to avoid indefinite hangs
-  - monitor execution in real time and report status changes
+- Use the `mock` provider when real model calls are unnecessary.
