@@ -54,6 +54,15 @@ describe('Config Init', () => {
     expect(content).toContain('server_url: "${BLUEBUBBLES_SERVER_URL}"')
     expect(content).toContain('password: "${BLUEBUBBLES_PASSWORD}"')
     expect(content).toContain('chat_guid:${BLUEBUBBLES_CHAT_GUID}')
+    expect(content).toContain('stage_ai:')
+    expect(content).toContain('provider: "codex"')
+    expect(content).toContain('include_loop: true')
+    expect(content).toContain('include_harness: true')
+    expect(content).toContain('stage_entered: [feishu_team]')
+    expect(content).toContain('stage_completed: [feishu_team]')
+    expect(content).toContain('stage_failed: [feishu_team]')
+    expect(content).toContain('stage_paused: [feishu_team]')
+    expect(content).toContain('stage_resumed: [feishu_team]')
   })
 
   it('should include planning and operations integration templates', () => {
@@ -129,8 +138,13 @@ integrations:
     expect(upgraded).not.toContain('model: codex-cli')
     expect(upgraded).toContain('routing:')
     expect(upgraded).toContain('allow_runtime_escalation: true')
+    expect(upgraded).toContain('stage_ai:')
+    expect(upgraded).toContain('provider: codex')
+    expect(upgraded).toContain('stage_entered:')
+    expect(upgraded).toContain('- feishu_team')
     expect(result.changes).toContain('Converted reviewers.codex-cli from model: codex-cli to tool: codex.')
     expect(result.changes).toContain('Added capabilities.routing defaults.')
+    expect(result.changes).toContain('Filled missing integrations.notifications defaults.')
     expect(result.warnings).toContain('Review repo-specific verification commands before applying this config to a non-Node repository.')
   })
 
@@ -168,6 +182,8 @@ integrations:
     expect(readFileSync(configPath, 'utf-8')).toBe(original)
     expect(result.content).toContain('routing:')
     expect(result.content).toContain('tool: codex')
+    expect(result.content).toContain('stage_ai:')
+    expect(result.content).toContain('stage_resumed:')
   })
 
   it('upgrades legacy codex-cli route bindings so the config can still load', () => {
@@ -245,6 +261,55 @@ integrations:
     expect(content).toContain('server_url: "https://bluebubbles.example.com"')
     expect(content).toContain('password: "bb-password"')
     expect(content).toContain('- "chat_guid:iMessage;-;+8613800138000"')
+  })
+
+  it('loads stage-aware notification config from generated yaml', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    mkdirSync(join(testDir, '.magpie'), { recursive: true })
+    writeFileSync(configPath, `providers: {}
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  route-codex:
+    tool: codex
+    prompt: review
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  review:
+    enabled: true
+integrations:
+  notifications:
+    enabled: true
+    stage_ai:
+      enabled: true
+      provider: codex
+      max_summary_chars: 700
+      include_loop: true
+      include_harness: false
+    routes:
+      stage_entered:
+        - feishu_team
+    providers:
+      feishu_team:
+        type: feishu-webhook
+        webhook_url: https://example.com/hook
+`, 'utf-8')
+
+    const config = loadConfig(configPath)
+    expect(config.integrations.notifications?.stage_ai?.enabled).toBe(true)
+    expect(config.integrations.notifications?.stage_ai?.provider).toBe('codex')
+    expect(config.integrations.notifications?.stage_ai?.max_summary_chars).toBe(700)
+    expect(config.integrations.notifications?.stage_ai?.include_loop).toBe(true)
+    expect(config.integrations.notifications?.stage_ai?.include_harness).toBe(false)
+    expect(config.integrations.notifications?.routes?.stage_entered).toEqual(['feishu_team'])
+    expect(config.integrations.notifications?.routes?.stage_completed).toBeUndefined()
   })
 
   it('should render interactive planning and operations values when provided', () => {

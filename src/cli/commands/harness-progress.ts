@@ -1,6 +1,10 @@
 import { readFile } from 'fs/promises'
 import type { WorkflowSession } from '../../capabilities/workflows/shared/runtime.js'
 import type { HarnessRuntimeEvent } from '../../capabilities/workflows/harness/progress.js'
+import type { LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
+
+type HarnessDisplayEvent = Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>
+type LoopDisplayEvent = Pick<LoopRuntimeEvent, 'ts' | 'event' | 'stage' | 'cycle' | 'summary' | 'provider' | 'progressType'>
 
 export interface HarnessProgressReporterOptions {
   log?: (line: string) => void
@@ -18,13 +22,26 @@ export interface FollowHarnessEventStreamOptions {
   once?: boolean
 }
 
-export function formatHarnessEventLine(event: Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>): string {
-  const parts = [String(event.timestamp || '').trim(), event.type]
+export function formatHarnessEventLine(
+  event: HarnessDisplayEvent | LoopDisplayEvent
+): string {
+  const loopEvent = event as Partial<LoopDisplayEvent>
+  const harnessEvent = event as Partial<HarnessDisplayEvent>
+  const parts = [
+    String(harnessEvent.timestamp || loopEvent.ts || '').trim(),
+    String(harnessEvent.type || loopEvent.event || '').trim(),
+  ]
   if (event.stage) {
     parts.push(`stage=${event.stage}`)
   }
   if (Number.isFinite(event.cycle)) {
     parts.push(`cycle=${event.cycle}`)
+  }
+  if (loopEvent.provider) {
+    parts.push(`provider=${loopEvent.provider}`)
+  }
+  if (loopEvent.progressType) {
+    parts.push(`progress=${loopEvent.progressType}`)
   }
   if (event.summary) {
     parts.push(event.summary)
@@ -115,6 +132,7 @@ export async function followHarnessEventStream(options: FollowHarnessEventStream
 
   let session = options.initialSession
   let eventsPath = session.artifacts.eventsPath
+  let loopEventsPath = session.artifacts.loopEventsPath
   if (!eventsPath) {
     log('No persisted event stream for this session.')
     return
@@ -123,15 +141,28 @@ export async function followHarnessEventStream(options: FollowHarnessEventStream
   log(`Watching ${options.sessionId} for new events. Press Ctrl+C to stop.`)
 
   let processedLines = 0
+  let processedLoopLines = 0
   let lastOutputAt = Date.now()
 
   while (true) {
     const content = await readFile(eventsPath, 'utf-8').catch(() => '')
     const { consumedLines, printed } = consumeHarnessEventLines(content, processedLines, log)
+    const loopContent = loopEventsPath
+      ? await readFile(loopEventsPath, 'utf-8').catch(() => '')
+      : ''
+    const { consumedLines: consumedLoopLines, printed: printedLoop } = consumeHarnessEventLines(
+      loopContent,
+      processedLoopLines,
+      log
+    )
     if (printed > 0) {
       lastOutputAt = Date.now()
     }
+    if (printedLoop > 0) {
+      lastOutputAt = Date.now()
+    }
     processedLines = consumedLines
+    processedLoopLines = consumedLoopLines
 
     if (options.once) {
       return
@@ -148,6 +179,7 @@ export async function followHarnessEventStream(options: FollowHarnessEventStream
       if (nextSession.artifacts.eventsPath) {
         eventsPath = nextSession.artifacts.eventsPath
       }
+      loopEventsPath = nextSession.artifacts.loopEventsPath
     }
 
     if (Date.now() - lastOutputAt >= idleHeartbeatMs) {
@@ -178,7 +210,7 @@ function consumeHarnessEventLines(
     }
 
     try {
-      const event = JSON.parse(line) as HarnessRuntimeEvent
+      const event = JSON.parse(line) as HarnessRuntimeEvent | LoopRuntimeEvent
       log(formatHarnessEventLine(event))
       nextProcessed++
       printed++

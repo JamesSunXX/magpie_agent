@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions, ProviderProgressEvent } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 
 export class CodexCliProvider implements AIProvider {
@@ -46,7 +46,7 @@ export class CodexCliProvider implements AIProvider {
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
     const { prompt: finalPrompt, codexImageFiles } = this.preparePromptAndImages(prompt, options)
-    const result = await this.runCodex(finalPrompt, codexImageFiles)
+    const result = await this.runCodex(finalPrompt, codexImageFiles, options?.onProgress)
     this.session.markMessageSent()
     return result
   }
@@ -128,7 +128,78 @@ export class CodexCliProvider implements AIProvider {
     return text
   }
 
-  private runCodex(prompt: string, imageFiles: string[]): Promise<string> {
+  private handleProgressEvent(event: Record<string, unknown>, onProgress?: (event: ProviderProgressEvent) => void): void {
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string' && this.sessionEnabled) {
+      this.session.sessionId = event.thread_id
+    }
+
+    if (!onProgress || typeof event.type !== 'string') {
+      return
+    }
+
+    const type = event.type
+    if (type === 'item.completed' && event.item && typeof event.item === 'object' && (event.item as { type?: string }).type === 'agent_message') {
+      return
+    }
+
+    let summary: string | undefined
+    let details: Record<string, unknown> | undefined
+    const item = event.item && typeof event.item === 'object'
+      ? event.item as Record<string, unknown>
+      : undefined
+    const itemType = typeof item?.type === 'string' ? item.type : undefined
+
+    if (type === 'thread.started') {
+      summary = 'Codex session started.'
+    } else if (type === 'turn.started') {
+      summary = 'Codex turn started.'
+    } else if (type === 'turn.completed') {
+      summary = 'Codex turn completed.'
+    } else if (type === 'error' && typeof event.message === 'string') {
+      summary = event.message
+    } else if (type === 'item.started' && itemType) {
+      summary = `${itemType} started.`
+      details = { itemType }
+    } else if (type === 'item.completed' && itemType) {
+      summary = `${itemType} completed.`
+      details = { itemType }
+    } else {
+      summary = type
+    }
+
+    onProgress({
+      provider: this.name,
+      kind: type,
+      ...(summary ? { summary } : {}),
+      ...(details ? { details } : {}),
+    })
+  }
+
+  private flushJsonLines(
+    lineBuf: string,
+    onProgress?: (event: ProviderProgressEvent) => void
+  ): { remainder: string } {
+    const lines = lineBuf.split('\n')
+    const remainder = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        this.handleProgressEvent(JSON.parse(trimmed) as Record<string, unknown>, onProgress)
+      } catch {
+        // Ignore non-JSON output from the CLI.
+      }
+    }
+
+    return { remainder }
+  }
+
+  private runCodex(
+    prompt: string,
+    imageFiles: string[],
+    onProgress?: (event: ProviderProgressEvent) => void
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const args = this.buildArgs(imageFiles)
       const child = spawn('codex', args, {
@@ -141,6 +212,7 @@ export class CodexCliProvider implements AIProvider {
       let settled = false
       const startTime = Date.now()
       let lastActivity = Date.now()
+      let lineBuf = ''
       const checkInterval = this.getTimeoutCheckInterval()
       const timeoutChecker = this.timeout > 0 ? setInterval(() => {
         const elapsed = Date.now() - startTime
@@ -155,7 +227,10 @@ export class CodexCliProvider implements AIProvider {
 
       child.stdout.on('data', (data) => {
         lastActivity = Date.now()
-        output += data.toString()
+        const chunk = data.toString()
+        output += chunk
+        lineBuf += chunk
+        lineBuf = this.flushJsonLines(lineBuf, onProgress).remainder
       })
 
       child.stderr.on('data', (data) => {
@@ -167,6 +242,13 @@ export class CodexCliProvider implements AIProvider {
         if (timeoutChecker) clearInterval(timeoutChecker)
         if (settled) return
         settled = true
+        if (lineBuf.trim()) {
+          try {
+            this.handleProgressEvent(JSON.parse(lineBuf.trim()) as Record<string, unknown>, onProgress)
+          } catch {
+            // Ignore trailing non-JSON output.
+          }
+        }
         if (code !== 0) {
           reject(new Error(`Codex CLI exited with code ${code}: ${error}`))
         } else {
@@ -242,11 +324,14 @@ export class CodexCliProvider implements AIProvider {
         const trimmed = line.trim()
         if (!trimmed) continue
         try {
-          const event = JSON.parse(trimmed)
-          if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
-            this.session.sessionId = event.thread_id
-          } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
-            pushChunk(event.item.text)
+          const event = JSON.parse(trimmed) as Record<string, unknown>
+          this.handleProgressEvent(event)
+          if (event.type === 'item.completed'
+            && event.item
+            && typeof event.item === 'object'
+            && (event.item as { type?: string }).type === 'agent_message'
+            && typeof (event.item as { text?: string }).text === 'string') {
+            pushChunk((event.item as { text: string }).text)
           }
         } catch {
           // Not valid JSON, ignore
@@ -264,11 +349,14 @@ export class CodexCliProvider implements AIProvider {
       // Process any remaining data in line buffer
       if (lineBuf.trim()) {
         try {
-          const event = JSON.parse(lineBuf.trim())
-          if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
-            this.session.sessionId = event.thread_id
-          } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
-            pushChunk(event.item.text)
+          const event = JSON.parse(lineBuf.trim()) as Record<string, unknown>
+          this.handleProgressEvent(event)
+          if (event.type === 'item.completed'
+            && event.item
+            && typeof event.item === 'object'
+            && (event.item as { type?: string }).type === 'agent_message'
+            && typeof (event.item as { text?: string }).text === 'string') {
+            pushChunk((event.item as { text: string }).text)
           }
         } catch {
           // ignore

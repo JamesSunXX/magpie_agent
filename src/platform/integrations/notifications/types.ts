@@ -1,4 +1,9 @@
 export type NotificationEventType =
+  | 'stage_entered'
+  | 'stage_completed'
+  | 'stage_failed'
+  | 'stage_paused'
+  | 'stage_resumed'
   | 'human_confirmation_required'
   | 'loop_paused'
   | 'loop_resumed'

@@ -5,6 +5,7 @@ import { CodexCliProvider } from '../../src/providers/codex.js'
 let killSpy: ReturnType<typeof vi.fn> | null = null
 let originalTimeoutEnv: string | undefined
 let emitStderrHeartbeat = false
+let completeAfterMs: number | null = null
 
 vi.mock('child_process', () => ({
   spawn: vi.fn(() => {
@@ -34,6 +35,17 @@ vi.mock('child_process', () => ({
         child.stderr.emit('data', Buffer.from('retrying'))
       }, 20)
     }
+    if (completeAfterMs !== null) {
+      setTimeout(() => {
+        if (heartbeat) {
+          clearInterval(heartbeat)
+        }
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        ))
+        child.emit('close', 0)
+      }, completeAfterMs)
+    }
 
     return child
   }),
@@ -50,6 +62,7 @@ afterEach(() => {
     process.env.MAGPIE_CODEX_TIMEOUT_MS = originalTimeoutEnv
   }
   emitStderrHeartbeat = false
+  completeAfterMs = null
   killSpy = null
 })
 
@@ -70,9 +83,10 @@ describe('CodexCliProvider timeout', () => {
     expect(provider.timeout).toBe(15 * 60 * 1000)
   })
 
-  it('still times out when codex keeps writing stderr heartbeat logs', async () => {
+  it('still times out while codex keeps writing heartbeat logs', async () => {
     process.env.MAGPIE_CODEX_TIMEOUT_MS = '120'
     emitStderrHeartbeat = true
+    completeAfterMs = 450
     const provider = new CodexCliProvider()
     const promise = provider.chat([{ role: 'user', content: 'timeout-with-heartbeat' }])
 

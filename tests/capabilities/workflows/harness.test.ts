@@ -170,6 +170,247 @@ describe('harness workflow', () => {
   afterEach(() => {
     vi.clearAllMocks()
     knowledgeMocks.failPromote = false
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('dispatches stage-aware notifications for harness outer stages', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-notify-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath, {
+      loopPlannerModel: 'claude-code',
+      loopExecutorModel: 'claude-code',
+      issueFixPlannerModel: 'claude-code',
+      issueFixExecutorModel: 'claude-code',
+    })
+
+    const configContent = readFileSync(configPath, 'utf-8').replace(
+      'integrations:\n  notifications:\n    enabled: false\n',
+      `integrations:\n  notifications:\n    enabled: true\n    stage_ai:\n      enabled: true\n      provider: mock\n      max_summary_chars: 900\n      include_loop: true\n      include_harness: true\n    routes:\n      stage_entered: [feishu_team]\n      stage_completed: [feishu_team]\n    providers:\n      feishu_team:\n        type: feishu-webhook\n        webhook_url: https://example.com/hook\n`
+    )
+    writeFileSync(configPath, configContent, 'utf-8')
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    mockClaudeAuthFailure()
+    process.env.MAGPIE_MOCK_RESPONSE = 'not-json'
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-1' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
+      expect(events).toContain('"type":"stage_changed"')
+      expect(events).toContain('"type":"stage_entered","stage":"queued"')
+      expect(events).toContain('"type":"stage_entered","stage":"developing"')
+      expect(fetchMock).toHaveBeenCalled()
+      const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      const firstText = firstBody.content.post.zh_cn.content[0][0].text as string
+      expect(firstBody.content.post.zh_cn.title).toContain('[stage_entered]')
+      expect(firstText).toContain('AI: kiro / kiro')
+      expect(firstText).not.toContain('claude-code')
+    } finally {
+      delete process.env.MAGPIE_MOCK_RESPONSE
+    }
+  })
+
+  it('marks developing stage as failed when loop development fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-failed-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    const configContent = readFileSync(configPath, 'utf-8').replace(
+      'integrations:\n  notifications:\n    enabled: false\n',
+      `integrations:\n  notifications:\n    enabled: true\n    stage_ai:\n      enabled: true\n      provider: mock\n      max_summary_chars: 900\n      include_loop: true\n      include_harness: true\n    routes:\n      stage_entered: [feishu_team]\n      stage_completed: [feishu_team]\n      stage_failed: [feishu_team]\n    providers:\n      feishu_team:\n        type: feishu-webhook\n        webhook_url: https://example.com/hook\n`
+    )
+    writeFileSync(configPath, configContent, 'utf-8')
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'failed', session: { id: 'loop-1' } },
+          output: {} as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
+      expect(events).toContain('"type":"stage_failed","stage":"developing","summary":"Harness failed during loop development stage."')
+      expect(events).not.toContain('"type":"stage_completed","stage":"developing"')
+      expect(fetchMock).toHaveBeenCalled()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('forwards nested loop progress and persists loop event artifacts early', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-progress-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, _input, ctx) => {
+      if (module.name === 'loop') {
+        const observer = ctx.metadata?.loopProgress as {
+          onSessionUpdate?: (session: Record<string, unknown>) => void
+          onEvent?: (event: Record<string, unknown>) => void
+        }
+        observer.onSessionUpdate?.({
+          id: 'loop-live',
+          artifacts: {
+            eventsPath: '/tmp/loop-live-events.jsonl',
+            workspaceMode: 'current',
+            workspacePath: dir,
+          },
+        })
+        observer.onEvent?.({
+          ts: '2026-04-11T00:00:01.000Z',
+          event: 'provider_progress',
+          stage: 'code_development',
+          provider: 'codex',
+          progressType: 'turn.started',
+          summary: 'Codex turn started.',
+        })
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'completed',
+            session: {
+              id: 'loop-live',
+              artifacts: {
+                eventsPath: '/tmp/loop-live-events.jsonl',
+                workspaceMode: 'current',
+                workspacePath: dir,
+              },
+            },
+          },
+          output: { summary: 'loop ok' } as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (_input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (_input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const onSessionUpdate = vi.fn()
+    const onEvent = vi.fn()
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+      metadata: {
+        harnessProgress: {
+          onSessionUpdate,
+          onEvent,
+        },
+      },
+    })
+    const prepared = await prepareHarnessInput({
+      goal: 'Deliver checkout v2',
+      prdPath: join(dir, 'docs', 'prd.md'),
+    }, ctx)
+
+    const result = await executeHarness(prepared, ctx)
+
+    expect(result.session?.artifacts.loopSessionId).toBe('loop-live')
+    expect(result.session?.artifacts.loopEventsPath).toBe('/tmp/loop-live-events.jsonl')
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'provider_progress',
+      summary: 'Codex turn started.',
+      provider: 'codex',
+      progressType: 'turn.started',
+    }))
   })
 
   it('completes when adversarial models approve and tests pass', async () => {

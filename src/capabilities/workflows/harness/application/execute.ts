@@ -23,6 +23,8 @@ import type { MergedIssue } from '../../../../core/debate/types.js'
 import type { HarnessCycle, HarnessPreparedInput, HarnessResult, HarnessStage } from '../types.js'
 import { selectHarnessProviders } from './provider-selection.js'
 import { getHarnessProgressObserver } from '../progress.js'
+import { createNotificationRouter } from '../../../../platform/integrations/notifications/factory.js'
+import { dispatchStageNotification } from '../../../../platform/integrations/notifications/stage-dispatch.js'
 import {
   createTaskKnowledge,
   promoteKnowledgeCandidates,
@@ -43,6 +45,72 @@ interface DecisionJson {
   decision?: 'approved' | 'revise'
   rationale?: string
   requiredActions?: string[]
+}
+
+function describeHarnessActor(
+  binding: { tool?: string; model?: string; agent?: string },
+  fallbackId: string,
+  role: string
+): { id: string; role: string } {
+  return {
+    id: binding.agent || binding.model || binding.tool || fallbackId,
+    role,
+  }
+}
+
+function buildHarnessAiRoster(
+  config: MagpieConfigV2,
+  reviewerIds: string[],
+  stage: HarnessStage
+): Array<{ id: string; role: string }> {
+  if (stage === 'reviewing' || stage === 'completed' || stage === 'failed') {
+    const reviewers = reviewerIds
+      .map((reviewerId) => {
+        const reviewer = config.reviewers?.[reviewerId]
+        if (!reviewer) return null
+        return {
+          id: reviewer.agent || reviewer.model || reviewer.tool || reviewerId,
+          role: reviewerId === reviewerIds[0]
+            ? '负责主审和结论收敛'
+            : reviewerId === reviewerIds[reviewerIds.length - 1]
+              ? '负责风险挑战和系统性复核'
+              : '负责补充交叉评审意见',
+        }
+      })
+      .filter((item): item is { id: string; role: string } => item !== null)
+
+    if (reviewers.length > 0) {
+      return reviewers
+    }
+  }
+
+  return [
+    describeHarnessActor({
+      tool: config.capabilities.loop?.planner_tool,
+      model: config.capabilities.loop?.planner_model,
+      agent: config.capabilities.loop?.planner_agent,
+    }, 'loop-planner', '负责开发阶段规划、判断和推进策略'),
+    describeHarnessActor({
+      tool: config.capabilities.loop?.executor_tool,
+      model: config.capabilities.loop?.executor_model,
+      agent: config.capabilities.loop?.executor_agent,
+    }, 'loop-executor', '负责开发阶段的实际执行与改动落地'),
+  ]
+}
+
+function nextHarnessAction(stage: HarnessStage, cycle?: number): string {
+  switch (stage) {
+    case 'queued':
+      return '选择本轮可用模型并进入开发阶段。'
+    case 'developing':
+      return '运行 loop 开发阶段并等待产出。'
+    case 'reviewing':
+      return cycle ? `运行第 ${cycle} 轮评审并决定是否继续修复。` : '运行评审并决定是否继续修复。'
+    case 'completed':
+      return '本次 harness 已完成，无后续动作。'
+    case 'failed':
+      return '检查失败原因并决定是否重试。'
+  }
 }
 
 function buildHarnessPlanSummary(goal: string): string {
@@ -469,6 +537,7 @@ export async function executeHarness(
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
   const config = loadConfig(ctx.configPath)
+  const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
   const sessionDir = sessionDirFor('harness', sessionId)
@@ -527,6 +596,8 @@ export async function executeHarness(
       ...knowledgeArtifacts,
     },
   }
+  let harnessConfig: MagpieConfigV2 = config
+  let reviewerIds: string[] = []
 
   const persistSession = async (
     patch: HarnessSessionPatch = {}
@@ -589,12 +660,94 @@ export async function executeHarness(
     }
   }
 
+  const emitStageEntered = async (
+    stage: HarnessStage,
+    summary: string,
+    details?: Record<string, unknown>
+  ): Promise<void> => {
+    const enteredNotification = await dispatchStageNotification({
+      config: harnessConfig,
+      cwd: resolve(ctx.cwd),
+      eventsPath,
+      router: notificationRouter,
+      input: {
+        eventType: 'stage_entered',
+        sessionId,
+        capability: 'harness',
+        runTitle: prepared.goal,
+        stage,
+        summary,
+        nextAction: nextHarnessAction(stage, details?.cycle as number | undefined),
+        aiRoster: buildHarnessAiRoster(harnessConfig, reviewerIds, stage),
+      },
+      severity: stage === 'failed' ? 'error' : 'info',
+      metadata: { stage, ...(details || {}) },
+      dedupeKey: `stage_entered:${sessionId}:${stage}:${Date.now()}`,
+    })
+    await appendEvent('stage_entered', {
+      stage,
+      summary,
+      details: {
+        occurrence: enteredNotification.occurrence,
+        delivered: enteredNotification.dispatch?.delivered ?? 0,
+        attempted: enteredNotification.dispatch?.attempted ?? 0,
+        ...(details || {}),
+      },
+    })
+  }
+
   const transitionStage = async (
     stage: HarnessStage,
     summary: string,
     eventType = 'stage_changed',
     details?: Record<string, unknown>
   ): Promise<void> => {
+    const previousStage = session.currentStage
+    if (previousStage) {
+      const previousEventType = stage === 'failed' || previousStage === 'failed'
+        ? 'stage_failed'
+        : 'stage_completed'
+      const previousStageSummary = previousEventType === 'stage_failed'
+        ? summary
+        : session.summary
+      const previousStageBlocker = previousEventType === 'stage_failed'
+        ? summary
+        : previousStage === 'failed'
+          ? session.summary
+          : undefined
+      const completedNotification = await dispatchStageNotification({
+        config: harnessConfig,
+        cwd: resolve(ctx.cwd),
+        eventsPath,
+        router: notificationRouter,
+        input: {
+          eventType: previousEventType,
+          sessionId,
+          capability: 'harness',
+          runTitle: prepared.goal,
+          stage: previousStage,
+          summary: previousStageSummary,
+          blocker: previousStageBlocker,
+          nextAction: nextHarnessAction(stage, details?.cycle as number | undefined),
+          aiRoster: buildHarnessAiRoster(harnessConfig, reviewerIds, previousStage as HarnessStage),
+        },
+        severity: previousEventType === 'stage_failed' ? 'error' : 'info',
+        metadata: { previousStage, nextStage: stage, ...(details || {}) },
+        dedupeKey: `${previousEventType}:${sessionId}:${previousStage}:${Date.now()}`,
+      })
+      await appendEvent(previousEventType, {
+        stage: previousStage,
+        summary: previousStageSummary,
+        details: {
+          occurrence: completedNotification.occurrence,
+          delivered: completedNotification.dispatch?.delivered ?? 0,
+          attempted: completedNotification.dispatch?.attempted ?? 0,
+          nextStage: stage,
+          ...(details || {}),
+        },
+      })
+    }
+
     await persistSession({
       currentStage: stage,
       summary,
@@ -615,6 +768,7 @@ export async function executeHarness(
           ? 'None.'
           : 'Stage in progress.',
     }, `Harness state moved to ${stage}.`)
+    await emitStageEntered(stage, summary, details)
     await appendEvent(eventType, {
       stage,
       summary,
@@ -637,22 +791,26 @@ export async function executeHarness(
     })
     : undefined
 
-  let { config: harnessConfig, reviewerIds } = applyHarnessConfigOverrides(
+  ;({ config: harnessConfig, reviewerIds } = applyHarnessConfigOverrides(
     config,
     prepared.models,
     prepared.modelsExplicit,
     routingDecision
-  )
+  ))
   const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
   await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
   if (routingDecision) {
     await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
   }
+  await emitStageEntered('queued', session.summary)
 
   if (providerSelection.record.decision === 'fallback_failed') {
     const summary = `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim()
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, providerSelectionPath)
+    await transitionStage('failed', summary, 'workflow_failed', {
+      reason: providerSelection.record.kiroCheck.reason || 'Kiro fallback unavailable.',
+    })
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
@@ -664,10 +822,6 @@ export async function executeHarness(
       nextAction: 'Inspect provider fallback details and replan.',
       currentBlocker: providerSelection.record.kiroCheck.reason || 'Kiro fallback unavailable.',
     }, 'Harness state marked failed before development started.')
-    await appendEvent('workflow_failed', {
-      stage: 'failed',
-      summary,
-    })
     await finalizeKnowledgeBestEffort(
       ['# Final Summary', '', summary].join('\n'),
       candidates,
@@ -683,6 +837,50 @@ export async function executeHarness(
   const harnessCtx = createCapabilityContext({
     cwd: ctx.cwd,
     configPath: harnessConfigPath,
+    metadata: {
+      loopProgress: {
+        onSessionUpdate: (loopSession: {
+          id: string
+          artifacts?: {
+            eventsPath?: string
+            workspaceMode?: 'current' | 'worktree'
+            workspacePath?: string
+            worktreeBranch?: string
+          }
+        }) => {
+          void persistSession({
+            artifacts: {
+              loopSessionId: loopSession.id,
+              ...(loopSession.artifacts?.eventsPath ? { loopEventsPath: loopSession.artifacts.eventsPath } : {}),
+              ...(loopSession.artifacts?.workspaceMode ? { workspaceMode: loopSession.artifacts.workspaceMode } : {}),
+              ...(loopSession.artifacts?.workspacePath ? { workspacePath: loopSession.artifacts.workspacePath } : {}),
+              ...(loopSession.artifacts?.worktreeBranch ? { worktreeBranch: loopSession.artifacts.worktreeBranch } : {}),
+            },
+          })
+        },
+        onEvent: (event: {
+          ts: string
+          event: string
+          stage?: string
+          summary?: string
+          reason?: string
+          provider?: string
+          progressType?: string
+          cycle?: number
+        }) => {
+          progressObserver?.onEvent?.({
+            sessionId,
+            timestamp: event.ts,
+            type: event.event,
+            ...(event.stage ? { stage: event.stage as HarnessStage } : {}),
+            ...(Number.isFinite(event.cycle) ? { cycle: event.cycle } : {}),
+            ...(event.summary || event.reason ? { summary: event.summary || event.reason } : {}),
+            ...(event.provider ? { provider: event.provider } : {}),
+            ...(event.progressType ? { progressType: event.progressType } : {}),
+          } as never)
+        },
+      },
+    },
   })
 
   await transitionStage('developing', 'Running loop development stage.')
@@ -699,12 +897,16 @@ export async function executeHarness(
   if (loopResult.result.status !== 'completed') {
     const summary = 'Harness failed during loop development stage.'
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)
+    await transitionStage('failed', summary, 'workflow_failed', {
+      loopSessionId: loopResult.result.session?.id,
+    })
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
       summary,
       artifacts: {
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+        ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
         ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
         ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
         ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
@@ -716,10 +918,6 @@ export async function executeHarness(
       nextAction: 'Inspect loop development failure and replan.',
       currentBlocker: 'Loop development did not complete successfully.',
     }, 'Harness state marked failed during loop development stage.')
-    await appendEvent('workflow_failed', {
-      stage: 'failed',
-      summary,
-    })
     await finalizeKnowledgeBestEffort(
       ['# Final Summary', '', summary].join('\n'),
       candidates,
@@ -733,11 +931,12 @@ export async function executeHarness(
   }
 
   await persistSession({
-    artifacts: {
-      ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
-      ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
-      ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
-      ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
+      artifacts: {
+        ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+        ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
+        ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
+        ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+        ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
     },
   })
   await updateTaskKnowledgeSummary(
@@ -796,6 +995,11 @@ export async function executeHarness(
         buildHarnessEvidence(cycleRun.cycleResult),
         `Cycle ${cycle} evidence updated.`
       )
+      await persistSession({
+        summary: cycleRun.approved
+          ? `Cycle ${cycle} approved.`
+          : `Cycle ${cycle} requested more changes.`,
+      })
       await appendEvent('cycle_completed', {
         stage: cycleRun.approved ? 'completed' : 'reviewing',
         cycle,
@@ -818,6 +1022,7 @@ export async function executeHarness(
     const message = err instanceof Error ? err.message : String(err)
     const summary = `Harness failed during review cycle: ${message}`
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, roundsPath)
+    await transitionStage('failed', summary, 'workflow_failed', { error: message })
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
@@ -829,11 +1034,6 @@ export async function executeHarness(
       nextAction: 'Inspect the failing review cycle and replan.',
       currentBlocker: message,
     }, 'Harness state marked failed during review cycle.')
-    await appendEvent('workflow_failed', {
-      stage: 'failed',
-      summary,
-      details: { error: message },
-    })
     await finalizeKnowledgeBestEffort(
       ['# Final Summary', '', summary].join('\n'),
       candidates,
@@ -852,6 +1052,9 @@ export async function executeHarness(
     summary,
     roundsPath
   )
+  await transitionStage(approved ? 'completed' : 'failed', summary, approved ? 'workflow_completed' : 'workflow_failed', {
+    totalCycles: cycles.length,
+  })
   await persistSession({
     status: approved ? 'completed' : 'failed',
     currentStage: approved ? 'completed' : 'failed',
@@ -863,13 +1066,6 @@ export async function executeHarness(
     nextAction: approved ? 'No further action.' : 'Inspect unresolved review findings and retry.',
     currentBlocker: approved ? 'None.' : 'Harness did not receive approval.',
   }, `Harness state marked ${approved ? 'completed' : 'failed'}.`)
-  await appendEvent(approved ? 'workflow_completed' : 'workflow_failed', {
-    stage: approved ? 'completed' : 'failed',
-    summary,
-    details: {
-      totalCycles: cycles.length,
-    },
-  })
   await finalizeKnowledgeBestEffort(
     [
       '# Final Summary',

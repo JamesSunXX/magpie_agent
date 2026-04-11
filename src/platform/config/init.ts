@@ -200,6 +200,30 @@ function buildRouteReviewerDefaults() {
   }
 }
 
+function buildDefaultNotificationsConfig() {
+  return {
+    enabled: false,
+    default_timeout_ms: 5000,
+    stage_ai: {
+      enabled: false,
+      provider: 'codex',
+      max_summary_chars: 900,
+      include_loop: true,
+      include_harness: true,
+    },
+    routes: {
+      stage_entered: ['feishu_team'],
+      stage_completed: ['feishu_team'],
+      stage_failed: ['feishu_team'],
+      stage_paused: ['feishu_team'],
+      stage_resumed: ['feishu_team'],
+      human_confirmation_required: ['macos_local', 'feishu_team'],
+      loop_failed: ['feishu_team'],
+      loop_completed: ['feishu_team'],
+    },
+  }
+}
+
 function indentBlock(text: string, spaces = 6): string {
   const prefix = ' '.repeat(spaces)
   return text.split('\n').map(line => `${prefix}${line}`).join('\n')
@@ -448,6 +472,15 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
 
   const capabilities = isObjectRecord(upgraded.capabilities) ? upgraded.capabilities : {}
   upgraded.capabilities = capabilities
+
+  const integrations = isObjectRecord(upgraded.integrations) ? upgraded.integrations : {}
+  upgraded.integrations = integrations
+  if (!isObjectRecord(integrations.notifications)) {
+    integrations.notifications = buildDefaultNotificationsConfig()
+    changes.push('Added integrations.notifications defaults.')
+  } else if (deepMergeMissing(integrations.notifications, buildDefaultNotificationsConfig())) {
+    changes.push('Filled missing integrations.notifications defaults.')
+  }
 
   if (!isObjectRecord(capabilities.routing)) {
     capabilities.routing = buildDefaultRoutingConfig()
@@ -721,7 +754,18 @@ integrations:
   notifications:
     enabled: false
     default_timeout_ms: 5000
+    stage_ai:
+      enabled: false
+      provider: "codex"
+      max_summary_chars: 900
+      include_loop: true
+      include_harness: true
     routes:
+      stage_entered: [feishu_team]
+      stage_completed: [feishu_team]
+      stage_failed: [feishu_team]
+      stage_paused: [feishu_team]
+      stage_resumed: [feishu_team]
       human_confirmation_required: [macos_local, feishu_team]
       loop_failed: [feishu_team]
       loop_completed: [feishu_team]

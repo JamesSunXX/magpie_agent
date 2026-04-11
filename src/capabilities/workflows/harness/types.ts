@@ -66,6 +66,7 @@ export interface HarnessResult {
       knowledgeSummaryDir?: string
       knowledgeCandidatesPath?: string
       loopSessionId?: string
+      loopEventsPath?: string
     }
   }
 }

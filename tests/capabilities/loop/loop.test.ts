@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
+import type { ProviderBindingInput, AIProvider } from '../../../src/platform/providers/index.js'
 
 const planningMocks = vi.hoisted(() => ({
   createPlanContext: vi.fn().mockResolvedValue({
@@ -33,6 +34,14 @@ const knowledgeMocks = vi.hoisted(() => ({
   failPromote: false,
 }))
 
+const providerMocks = vi.hoisted(() => ({
+  factory: null as null | ((
+    input: ProviderBindingInput,
+    config: unknown,
+    actual: typeof import('../../../src/platform/providers/index.js')
+  ) => AIProvider),
+}))
+
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
   createPlanningRouter: vi.fn(() => ({
     createPlanContext: planningMocks.createPlanContext,
@@ -57,9 +66,54 @@ vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
   }
 })
 
+vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/platform/providers/index.js')>()
+  return {
+    ...actual,
+    createConfiguredProvider: vi.fn((input: ProviderBindingInput, config: unknown) => {
+      if (providerMocks.factory) {
+        return providerMocks.factory(input, config, actual)
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }),
+  }
+})
+
 describe('loop capability', () => {
   afterEach(() => {
     knowledgeMocks.failPromote = false
+    providerMocks.factory = null
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('dispatches stage-aware notifications for entered and completed stages', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-notify-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: true\n    stage_ai:\n      enabled: true\n      provider: mock\n      max_summary_chars: 900\n      include_loop: true\n      include_harness: true\n    routes:\n      stage_entered: [feishu_team]\n      stage_completed: [feishu_team]\n    providers:\n      feishu_team:\n        type: feishu-webhook\n        webhook_url: https://example.com/hook\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(events).toContain('"event":"stage_entered"')
+    expect(events).toContain('"event":"stage_completed"')
+    expect(fetchMock).toHaveBeenCalled()
   })
 
   it('runs a minimal dry-run loop session with mock providers', async () => {
@@ -98,6 +152,66 @@ describe('loop capability', () => {
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
+  })
+
+  it('persists codex progress events to the loop event stream', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'codex',
+          chat: vi.fn(async (_messages, _systemPrompt, options) => {
+            options?.onProgress?.({
+              provider: 'codex',
+              kind: 'turn.started',
+              summary: 'Codex turn started.',
+            })
+            options?.onProgress?.({
+              provider: 'codex',
+              kind: 'item.started',
+              summary: 'Running shell command.',
+              details: {
+                itemType: 'exec_command',
+              },
+            })
+            return '# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-codex-progress-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: codex\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Expose codex progress',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    expect(events).toContain('"event":"provider_progress"')
+    expect(events).toContain('"provider":"codex"')
+    expect(events).toContain('"progressType":"turn.started"')
+    expect(events).toContain('"summary":"Codex turn started."')
+    expect(events).toContain('"progressType":"item.started"')
   })
 
   it('persists a completed loop session even if knowledge promotion fails', async () => {

@@ -13,11 +13,20 @@ export interface ChatImageInput {
   label?: string
 }
 
+export interface ProviderProgressEvent {
+  provider: string
+  kind: string
+  summary?: string
+  details?: Record<string, unknown>
+}
+
 export interface ChatOptions {
   /** Disable tool use for this call (e.g., for pure text extraction) */
   disableTools?: boolean
   /** Optional images for multimodal models */
   images?: ChatImageInput[]
+  /** Optional callback for provider-native progress events */
+  onProgress?: (event: ProviderProgressEvent) => void
 }
 
 export interface AIProvider {

@@ -158,11 +158,24 @@ export interface LoopConfig {
 }
 
 export type NotificationEventType =
+  | 'stage_entered'
+  | 'stage_completed'
+  | 'stage_failed'
+  | 'stage_paused'
+  | 'stage_resumed'
   | 'human_confirmation_required'
   | 'loop_paused'
   | 'loop_resumed'
   | 'loop_failed'
   | 'loop_completed'
+
+export interface StageAiNotificationConfig {
+  enabled?: boolean
+  provider?: string
+  max_summary_chars?: number
+  include_loop?: boolean
+  include_harness?: boolean
+}
 
 export interface MacosNotificationProviderConfig {
   type: 'macos'
@@ -210,6 +223,7 @@ export type NotificationProviderConfig =
 export interface NotificationsIntegrationConfig {
   enabled?: boolean
   default_timeout_ms?: number
+  stage_ai?: StageAiNotificationConfig
   routes?: Partial<Record<NotificationEventType, string[]>>
   providers?: Record<string, NotificationProviderConfig>
 }

@@ -258,6 +258,45 @@ describe('CodexCliProvider behavior', () => {
     })()).rejects.toThrow('Failed to run codex CLI: stream spawn failed')
   })
 
+  it('emits normalized progress events while parsing codex JSONL output', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"thread.started","thread_id":"thread-progress"}\n' +
+          '{"type":"turn.started"}\n' +
+          '{"type":"item.started","item":{"type":"exec_command"}}\n' +
+          '{"type":"error","message":"Reconnecting..."}\n' +
+          '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'
+        ))
+        setImmediate(() => child.emit('close', 0))
+      }
+    })
+
+    const progress = vi.fn()
+    const provider = new CodexCliProvider()
+    provider.startSession('progress')
+
+    const result = await provider.chat(
+      [{ role: 'user', content: 'show progress' }],
+      undefined,
+      { onProgress: progress }
+    )
+
+    expect(result).toBe('done')
+    expect(provider.sessionId).toBe('thread-progress')
+    expect(progress.mock.calls.map(([event]) => event)).toEqual([
+      { provider: 'codex', kind: 'thread.started', summary: 'Codex session started.' },
+      { provider: 'codex', kind: 'turn.started', summary: 'Codex turn started.' },
+      {
+        provider: 'codex',
+        kind: 'item.started',
+        summary: 'exec_command started.',
+        details: { itemType: 'exec_command' },
+      },
+      { provider: 'codex', kind: 'error', summary: 'Reconnecting...' },
+    ])
+  })
+
   it('accepts timeout=0 to disable timeout checks', async () => {
     process.env.MAGPIE_CODEX_TIMEOUT_MS = '0'
     scenarios.push({

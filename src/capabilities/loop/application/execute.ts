@@ -16,9 +16,10 @@ import { loadConfig } from '../../../platform/config/loader.js'
 import { getMagpieHomeDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
-import type { LoopConfig, LoopStageName } from '../../../config/types.js'
+import type { LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
+import { dispatchStageNotification } from '../../../platform/integrations/notifications/stage-dispatch.js'
 import { createPlanningRouter } from '../../../platform/integrations/planning/factory.js'
 import {
   buildPlanningContextBlock,
@@ -45,6 +46,7 @@ import {
   type KnowledgeArtifacts,
   type KnowledgeCandidate,
 } from '../../../knowledge/runtime.js'
+import { getLoopProgressObserver, type LoopProgressObserver } from '../progress.js'
 
 const DEFAULT_STAGES: LoopStageName[] = [
   'prd_review',
@@ -99,6 +101,44 @@ interface WorktreeResolution {
   workspacePath: string
   worktreeBranch?: string
   failureReason?: string
+}
+
+function describeLoopActor(binding: {
+  tool?: string
+  model?: string
+  agent?: string
+}, fallbackId: string, role: string): { id: string; role: string } {
+  return {
+    id: binding.agent || binding.model || binding.tool || fallbackId,
+    role,
+  }
+}
+
+function buildLoopAiRoster(
+  runtime: LoopRuntimeConfig,
+  stage: LoopStageName
+): Array<{ id: string; role: string }> {
+  return [
+    describeLoopActor({
+      tool: runtime.plannerTool,
+      model: runtime.plannerModel,
+      agent: runtime.plannerAgent,
+    }, 'planner', '负责阶段判断、风险评估和必要时的重试建议'),
+    describeLoopActor({
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
+      agent: runtime.executorAgent,
+    }, 'executor', `负责执行 ${stage} 阶段的实际工作`),
+  ]
+}
+
+function nextLoopAction(session: LoopSession, stageIndex: number, paused = false): string {
+  if (paused) {
+    return '等待人工确认后再继续当前阶段。'
+  }
+  return session.stages[stageIndex + 1]
+    ? `继续进入 ${session.stages[stageIndex + 1]} 阶段。`
+    : '收尾并结束本次 loop。'
 }
 
 function generateId(): string {
@@ -352,9 +392,28 @@ function resolveClickTarget(fallback: 'vscode' | 'file', notifications: unknown)
   return fallback
 }
 
-async function appendEvent(path: string, payload: Record<string, unknown>): Promise<void> {
+async function appendObservedEvent(
+  path: string,
+  sessionId: string,
+  payload: Record<string, unknown>,
+  observer?: LoopProgressObserver
+): Promise<void> {
+  const event = { ts: new Date().toISOString(), ...payload }
   await mkdir(dirname(path), { recursive: true })
-  await appendFile(path, `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}\n`, 'utf-8')
+  await appendFile(path, `${JSON.stringify(event)}\n`, 'utf-8')
+  observer?.onEvent?.({
+    sessionId,
+    ...event,
+  } as never)
+}
+
+async function saveLoopSessionWithObserver(
+  stateManager: StateManager,
+  session: LoopSession,
+  observer?: LoopProgressObserver
+): Promise<void> {
+  await stateManager.saveLoopSession(session)
+  observer?.onSessionUpdate?.(session)
 }
 
 function buildBranchName(prefix: string, cwd: string): string | null {
@@ -555,6 +614,10 @@ async function markSessionFailed(
   reason: string,
   stateManager: StateManager,
   notificationRouter: ReturnType<typeof createNotificationRouter>,
+  config: MagpieConfig,
+  runtime: LoopRuntimeConfig,
+  runCwd: string,
+  progressObserver?: LoopProgressObserver,
 ): Promise<LoopExecutionResult> {
   session.currentStageIndex = session.stages.indexOf(stage)
   if (session.currentStageIndex < 0) {
@@ -568,8 +631,36 @@ async function markSessionFailed(
     nextAction: 'Inspect failure details and replan.',
     currentBlocker: reason,
   }, `Loop failed at stage ${stage}.`)
-  await stateManager.saveLoopSession(session)
-  await appendEvent(session.artifacts.eventsPath, { event: 'loop_failed', stage, reason })
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+  const stageNotification = await dispatchStageNotification({
+    config,
+    cwd: runCwd,
+    eventsPath: session.artifacts.eventsPath,
+    router: notificationRouter,
+    input: {
+      eventType: 'stage_failed',
+      sessionId: session.id,
+      capability: 'loop',
+      runTitle: session.goal,
+      stage,
+      summary: `阶段失败：${reason}`,
+      blocker: reason,
+      nextAction: '检查失败原因并重新规划后再继续。',
+      aiRoster: buildLoopAiRoster(runtime, stage),
+    },
+    severity: 'error',
+    metadata: { stage, reason },
+    dedupeKey: `stage_failed:${session.id}:${stage}:${Date.now()}`,
+  })
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+    event: 'stage_failed',
+    stage,
+    reason,
+    occurrence: stageNotification.occurrence,
+    delivered: stageNotification.dispatch?.delivered ?? 0,
+    attempted: stageNotification.dispatch?.attempted ?? 0,
+  }, progressObserver)
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_failed', stage, reason }, progressObserver)
   await finalizeLoopKnowledge(session, false, [
     '# Final Summary',
     '',
@@ -681,6 +772,7 @@ async function runSingleStage(
   notificationsConfig: unknown,
   runCwd: string,
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  progressObserver?: LoopProgressObserver,
 ): Promise<StageRunResult> {
   const stageArtifactPath = join(session.artifacts.sessionDir, `${stage}.md`)
   let stageReport = ''
@@ -701,7 +793,20 @@ async function runSingleStage(
     stageReport = `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`
   } else {
     const stagePrompt = buildStagePrompt(stage, session, tasks, knowledgeContext)
-    const response = await executor.chat([{ role: 'user', content: stagePrompt }])
+    const progressWrites: Array<Promise<void>> = []
+    const response = await executor.chat([{ role: 'user', content: stagePrompt }], undefined, {
+      onProgress: (event) => {
+        progressWrites.push(appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: 'provider_progress',
+          stage,
+          provider: event.provider,
+          progressType: event.kind,
+          ...(event.summary ? { summary: event.summary } : {}),
+          ...(event.details ? { details: event.details } : {}),
+        }, progressObserver))
+      },
+    })
+    await Promise.all(progressWrites)
     stageReport = response
     await mkdir(dirname(stageArtifactPath), { recursive: true })
     await writeFile(stageArtifactPath, response, 'utf-8')
@@ -794,12 +899,13 @@ async function runSingleStage(
   }
 
   const dispatch = await router.dispatch(event)
-  await appendEvent(session.artifacts.eventsPath, {
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
     event: event.type,
+    stage,
     actionUrl,
     delivered: dispatch.delivered,
     attempted: dispatch.attempted,
-  })
+  }, progressObserver)
 
   if (!waitHuman) {
     return {
@@ -938,12 +1044,14 @@ async function continueSession(
   prepared: LoopPreparedInput,
   runCwd: string,
   runtime: LoopRuntimeConfig,
+  config: MagpieConfig,
   planner: AIProvider,
   executor: AIProvider,
   notificationRouter: ReturnType<typeof createNotificationRouter>,
   notificationsConfig: unknown,
   stateManager: StateManager,
-  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  progressObserver?: LoopProgressObserver,
 ): Promise<LoopExecutionResult> {
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
@@ -953,6 +1061,32 @@ async function continueSession(
       nextAction: `Execute ${stage}.`,
       currentBlocker: 'Stage in progress.',
     }, `Loop state moved to ${stage}.`)
+    const enteredNotification = await dispatchStageNotification({
+      config,
+      cwd: runCwd,
+      eventsPath: session.artifacts.eventsPath,
+      router: notificationRouter,
+      input: {
+        eventType: 'stage_entered',
+        sessionId: session.id,
+        capability: 'loop',
+        runTitle: session.goal,
+        stage,
+        summary: `开始执行 ${stage} 阶段。`,
+        nextAction: nextLoopAction(session, i),
+        aiRoster: buildLoopAiRoster(runtime, stage),
+      },
+      severity: 'info',
+      metadata: { stage },
+      dedupeKey: `stage_entered:${session.id}:${stage}:${Date.now()}`,
+    })
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'stage_entered',
+      stage,
+      occurrence: enteredNotification.occurrence,
+      delivered: enteredNotification.dispatch?.delivered ?? 0,
+      attempted: enteredNotification.dispatch?.attempted ?? 0,
+    }, progressObserver)
     let stageRun: StageRunResult
     try {
       stageRun = await runSingleStage(
@@ -968,10 +1102,11 @@ async function continueSession(
         notificationsConfig,
         runCwd,
         commandSafety,
+        progressObserver,
       )
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      return markSessionFailed(session, stage, reason, stateManager, notificationRouter)
+      return markSessionFailed(session, stage, reason, stateManager, notificationRouter, config, runtime, runCwd, progressObserver)
     }
 
     session.stageResults.push(stageRun.stageResult)
@@ -1020,8 +1155,35 @@ async function continueSession(
     if (stageRun.paused) {
       session.currentStageIndex = i
       session.status = 'paused_for_human'
-      await stateManager.saveLoopSession(session)
-      await appendEvent(session.artifacts.eventsPath, { event: 'loop_paused', stage })
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+      const pausedNotification = await dispatchStageNotification({
+        config,
+        cwd: runCwd,
+        eventsPath: session.artifacts.eventsPath,
+        router: notificationRouter,
+        input: {
+          eventType: 'stage_paused',
+          sessionId: session.id,
+          capability: 'loop',
+          runTitle: session.goal,
+          stage,
+          summary: `阶段 ${stage} 已暂停，等待人工确认。`,
+          blocker: '等待人工确认。',
+          nextAction: '人工确认后恢复当前阶段。',
+          aiRoster: buildLoopAiRoster(runtime, stage),
+        },
+        severity: 'warning',
+        metadata: { stage },
+        dedupeKey: `stage_paused:${session.id}:${stage}:${Date.now()}`,
+      })
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'stage_paused',
+        stage,
+        occurrence: pausedNotification.occurrence,
+        delivered: pausedNotification.dispatch?.delivered ?? 0,
+        attempted: pausedNotification.dispatch?.attempted ?? 0,
+      }, progressObserver)
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_paused', stage }, progressObserver)
 
       await notificationRouter.dispatch({
         type: 'loop_paused',
@@ -1040,27 +1202,72 @@ async function continueSession(
     }
 
     if (stageRun.failed) {
-      return markSessionFailed(session, stage, 'Stage execution reported failure', stateManager, notificationRouter)
+      return markSessionFailed(
+        session,
+        stage,
+        stageRun.stageResult.summary || 'Stage execution reported failure',
+        stateManager,
+        notificationRouter,
+        config,
+        runtime,
+        runCwd,
+        progressObserver
+      )
     }
+
+    const completedNotification = await dispatchStageNotification({
+      config,
+      cwd: runCwd,
+      eventsPath: session.artifacts.eventsPath,
+      router: notificationRouter,
+      input: {
+        eventType: 'stage_completed',
+        sessionId: session.id,
+        capability: 'loop',
+        runTitle: session.goal,
+        stage,
+        summary: stageRun.stageResult.summary,
+        blocker: stageRun.stageResult.risks[0],
+        nextAction: nextLoopAction(session, i),
+        aiRoster: buildLoopAiRoster(runtime, stage),
+      },
+      severity: 'info',
+      metadata: {
+        stage,
+        success: stageRun.stageResult.success,
+        confidence: stageRun.stageResult.confidence,
+        retryCount: stageRun.stageResult.retryCount,
+      },
+      dedupeKey: `stage_completed:${session.id}:${stage}:${Date.now()}`,
+    })
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'stage_completed',
+      stage,
+      occurrence: completedNotification.occurrence,
+      delivered: completedNotification.dispatch?.delivered ?? 0,
+      attempted: completedNotification.dispatch?.attempted ?? 0,
+      success: stageRun.stageResult.success,
+      confidence: stageRun.stageResult.confidence,
+    }, progressObserver)
 
     session.currentStageIndex = i + 1
     if (runtime.autoCommit && session.branchName && stageRun.stageResult.success && prepared.dryRun !== true) {
       const commitResult = commitIfChanged(stage, runCwd, session.branchName)
-      await appendEvent(session.artifacts.eventsPath, {
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
         event: 'auto_commit',
         stage,
         committed: commitResult.committed,
         ...(commitResult.reason ? { reason: commitResult.reason } : {}),
-      })
+      }, progressObserver)
     }
 
-    await stateManager.saveLoopSession(session)
+    await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   }
 
   session.status = 'completed'
   session.updatedAt = new Date()
-  await stateManager.saveLoopSession(session)
-  await appendEvent(session.artifacts.eventsPath, { event: 'loop_completed' })
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_completed' }, progressObserver)
   await finalizeLoopKnowledge(
     session,
     true,
@@ -1143,6 +1350,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
+  const progressObserver = getLoopProgressObserver(ctx)
 
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
   const sessionDir = join(getMagpieHomeDir(), 'loop-sessions', sessionId)
@@ -1257,40 +1465,44 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     },
   }
 
-  await stateManager.saveLoopSession(session)
-  await appendEvent(eventsPath, { event: 'loop_started', goal: prepared.goal })
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+  await appendObservedEvent(eventsPath, session.id, { event: 'loop_started', goal: prepared.goal }, progressObserver)
   if (workspaceMode === 'worktree') {
-    await appendEvent(eventsPath, {
+    await appendObservedEvent(eventsPath, session.id, {
       event: 'worktree_created',
       workspacePath,
       branch: branchName,
-    })
+    }, progressObserver)
   }
   if (worktreeFailureReason) {
-    await appendEvent(eventsPath, {
+    await appendObservedEvent(eventsPath, session.id, {
       event: 'worktree_failed',
       reason: worktreeFailureReason,
-    })
+    }, progressObserver)
     return markSessionFailed(
       session,
       session.stages[0] || 'prd_review',
       worktreeFailureReason,
       stateManager,
-      notificationRouter
+      notificationRouter,
+      config,
+      loopRuntime,
+      workspacePath,
+      progressObserver
     )
   }
   if (reusedCurrentBranch && branchName) {
-    await appendEvent(eventsPath, {
+    await appendObservedEvent(eventsPath, session.id, {
       event: 'auto_commit_branch_reused',
       branch: branchName,
-    })
+    }, progressObserver)
   }
   if (loopRuntime.autoCommit && prepared.dryRun !== true && !branchName) {
     ctx.logger.warn('[loop] Auto-commit disabled because branch creation failed; changes will remain on the current branch.')
-    await appendEvent(eventsPath, {
+    await appendObservedEvent(eventsPath, session.id, {
       event: 'auto_commit_disabled',
       reason: 'branch_creation_failed',
-    })
+    }, progressObserver)
   }
 
   return continueSession(
@@ -1298,12 +1510,14 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     prepared,
     workspacePath,
     loopRuntime,
+    config,
     planner,
     executor,
     notificationRouter,
     config.integrations.notifications,
     stateManager,
-    commandSafety
+    commandSafety,
+    progressObserver
   )
 }
 
@@ -1314,6 +1528,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
+  const progressObserver = getLoopProgressObserver(ctx)
 
   const all = await stateManager.listLoopSessions()
   const matches = all.filter((item) => item.id === prepared.sessionId || item.id.startsWith(prepared.sessionId || ''))
@@ -1404,6 +1619,35 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   }
 
   if (session.status === 'paused_for_human') {
+    const resumedNotification = await dispatchStageNotification({
+      config,
+      cwd: session.artifacts.workspacePath || ctx.cwd,
+      eventsPath: session.artifacts.eventsPath,
+      router: notificationRouter,
+      input: {
+        eventType: 'stage_resumed',
+        sessionId: session.id,
+        capability: 'loop',
+        runTitle: session.goal,
+        stage: session.stages[session.currentStageIndex] || 'unknown',
+        summary: `恢复执行 ${session.stages[session.currentStageIndex] || 'current'} 阶段。`,
+        nextAction: '继续当前阶段并处理上一次暂停留下的问题。',
+        aiRoster: buildLoopAiRoster(
+          loopRuntime,
+          session.stages[session.currentStageIndex] || session.stages[0] || 'prd_review'
+        ),
+      },
+      severity: 'info',
+      metadata: { stageIndex: session.currentStageIndex },
+      dedupeKey: `stage_resumed:${session.id}:${session.currentStageIndex}:${Date.now()}`,
+    })
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'stage_resumed',
+      stage: session.stages[session.currentStageIndex] || 'unknown',
+      occurrence: resumedNotification.occurrence,
+      delivered: resumedNotification.dispatch?.delivered ?? 0,
+      attempted: resumedNotification.dispatch?.attempted ?? 0,
+    }, progressObserver)
     await notificationRouter.dispatch({
       type: 'loop_resumed',
       sessionId: session.id,
@@ -1416,19 +1660,21 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
 
   session.status = 'running'
   session.updatedAt = new Date()
-  await stateManager.saveLoopSession(session)
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
 
   return continueSession(
     session,
     prepared,
     session.artifacts.workspacePath || ctx.cwd,
     loopRuntime,
+    config,
     planner,
     executor,
     notificationRouter,
     config.integrations.notifications,
     stateManager,
-    commandSafety
+    commandSafety,
+    progressObserver
   )
 }
 

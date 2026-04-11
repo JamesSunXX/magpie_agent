@@ -29,6 +29,18 @@ describe('harness progress helpers', () => {
     })).toBe('2026-04-11T00:00:00.000Z cycle_completed stage=reviewing cycle=2 Cycle 2 approved.')
   })
 
+  it('formats nested loop provider progress events for terminal output', () => {
+    expect(formatHarnessEventLine({
+      sessionId: 'harness-1',
+      ts: '2026-04-11T00:00:01.000Z',
+      event: 'provider_progress',
+      stage: 'code_development',
+      provider: 'codex',
+      progressType: 'item.started',
+      summary: 'Running shell command.',
+    } as never)).toBe('2026-04-11T00:00:01.000Z provider_progress stage=code_development provider=codex progress=item.started Running shell command.')
+  })
+
   it('prints session discovery, streamed events, and idle heartbeats', () => {
     const log = vi.fn()
     let now = new Date('2026-04-11T00:00:00.000Z').getTime()
@@ -122,6 +134,51 @@ describe('harness progress helpers', () => {
     expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
     expect(log).toHaveBeenCalledWith('Watching harness-1 for new events. Press Ctrl+C to stop.')
     expect(log).toHaveBeenCalledWith('2026-04-11T00:00:10.000Z workflow_completed stage=completed Harness approved after 1 cycle(s).')
+
+    rmSync(dir, { recursive: true, force: true })
+    vi.useFakeTimers()
+  })
+
+  it('prints nested loop events when a harness session references a loop stream', async () => {
+    vi.useRealTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-follow-nested-'))
+    const harnessEventsPath = join(dir, 'harness-events.jsonl')
+    const loopEventsPath = join(dir, 'loop-events.jsonl')
+    writeFileSync(harnessEventsPath, `${JSON.stringify({
+      timestamp: '2026-04-11T00:00:00.000Z',
+      type: 'workflow_started',
+      stage: 'queued',
+      summary: 'Harness workflow started.',
+    })}\n`, 'utf-8')
+    writeFileSync(loopEventsPath, `${JSON.stringify({
+      ts: '2026-04-11T00:00:03.000Z',
+      event: 'provider_progress',
+      stage: 'code_development',
+      provider: 'codex',
+      progressType: 'turn.started',
+      summary: 'Codex turn started.',
+    })}\n`, 'utf-8')
+
+    const log = vi.fn()
+
+    await followHarnessEventStream({
+      sessionId: 'harness-1',
+      initialSession: {
+        ...sessionFixture(),
+        status: 'completed',
+        artifacts: {
+          eventsPath: harnessEventsPath,
+          loopSessionId: 'loop-1',
+          loopEventsPath,
+        },
+      },
+      log,
+      loadSession: vi.fn().mockResolvedValue(null),
+      once: true,
+    })
+
+    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
+    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:03.000Z provider_progress stage=code_development provider=codex progress=turn.started Codex turn started.')
 
     rmSync(dir, { recursive: true, force: true })
     vi.useFakeTimers()
