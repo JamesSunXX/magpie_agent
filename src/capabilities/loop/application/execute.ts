@@ -33,6 +33,8 @@ import {
   appendHumanConfirmationItem,
   findHumanConfirmationDecision,
 } from '../domain/human-confirmation.js'
+import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
+import { resolveAutoCommitProviderBinding } from '../domain/auto-commit-provider-binding.js'
 import { generateLoopPlan } from '../domain/planner.js'
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
 import {
@@ -62,6 +64,7 @@ interface LoopRuntimeConfig {
   executorTool?: string
   executorModel: string
   executorAgent?: string
+  autoCommitModel?: string
   stages: LoopStageName[]
   confidenceThreshold: number
   retriesPerStage: number
@@ -113,6 +116,7 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     executorTool: config?.executor_tool,
     executorModel: config?.executor_model || 'codex',
     executorAgent: config?.executor_agent,
+    autoCommitModel: config?.auto_commit_model?.trim() || undefined,
     stages: config?.stages && config.stages.length > 0 ? config.stages : DEFAULT_STAGES,
     confidenceThreshold: config?.confidence_threshold ?? 0.78,
     retriesPerStage: config?.retries_per_stage ?? 2,
@@ -509,11 +513,12 @@ function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
   }
 }
 
-function commitIfChanged(
+async function commitIfChanged(
   stage: LoopStageName,
   cwd: string,
+  provider: AIProvider,
   expectedBranch?: string,
-): { committed: boolean; reason?: string } {
+): Promise<{ committed: boolean; reason?: string; message?: string; source?: 'ai' | 'fallback' }> {
   try {
     if (expectedBranch) {
       const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
@@ -537,9 +542,17 @@ function commitIfChanged(
     }
 
     execFileSync('git', ['add', '-A'], { stdio: 'pipe', cwd })
-    execFileSync('git', ['commit', '-m', `feat(loop): 完成${stage}`], { stdio: 'pipe', cwd })
+    const commitMessage = await generateAutoCommitMessage({
+      cwd,
+      stage,
+      provider,
+    })
+    execFileSync('git', ['commit', '-m', commitMessage.message], { stdio: 'pipe', cwd })
     return {
       committed: true,
+      message: commitMessage.message,
+      source: commitMessage.source,
+      ...(commitMessage.reason ? { reason: commitMessage.reason } : {}),
     }
   } catch (error) {
     return {
@@ -940,6 +953,7 @@ async function continueSession(
   runtime: LoopRuntimeConfig,
   planner: AIProvider,
   executor: AIProvider,
+  autoCommitProvider: AIProvider,
   notificationRouter: ReturnType<typeof createNotificationRouter>,
   notificationsConfig: unknown,
   stateManager: StateManager,
@@ -1045,11 +1059,13 @@ async function continueSession(
 
     session.currentStageIndex = i + 1
     if (runtime.autoCommit && session.branchName && stageRun.stageResult.success && prepared.dryRun !== true) {
-      const commitResult = commitIfChanged(stage, runCwd, session.branchName)
+      const commitResult = await commitIfChanged(stage, runCwd, autoCommitProvider, session.branchName)
       await appendEvent(session.artifacts.eventsPath, {
         event: 'auto_commit',
         stage,
         committed: commitResult.committed,
+        ...(commitResult.message ? { message: commitResult.message } : {}),
+        ...(commitResult.source ? { source: commitResult.source } : {}),
         ...(commitResult.reason ? { reason: commitResult.reason } : {}),
       })
     }
@@ -1140,6 +1156,12 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     model: loopRuntime.executorModel,
     agent: loopRuntime.executorAgent,
   }, config)
+  const autoCommitProvider = createConfiguredProvider(resolveAutoCommitProviderBinding({
+    autoCommitModel: loopRuntime.autoCommitModel,
+    executorTool: loopRuntime.executorTool,
+    executorModel: loopRuntime.executorModel,
+    executorAgent: loopRuntime.executorAgent,
+  }), config)
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
@@ -1300,6 +1322,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     loopRuntime,
     planner,
     executor,
+    autoCommitProvider,
     notificationRouter,
     config.integrations.notifications,
     stateManager,
@@ -1386,6 +1409,12 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     model: loopRuntime.executorModel,
     agent: loopRuntime.executorAgent,
   }, config)
+  const autoCommitProvider = createConfiguredProvider(resolveAutoCommitProviderBinding({
+    autoCommitModel: loopRuntime.autoCommitModel,
+    executorTool: loopRuntime.executorTool,
+    executorModel: loopRuntime.executorModel,
+    executorAgent: loopRuntime.executorAgent,
+  }), config)
   const planningContext = await planningRouter.createPlanContext({
     itemKey: planningItemKey,
     title: session.goal,
@@ -1425,6 +1454,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     loopRuntime,
     planner,
     executor,
+    autoCommitProvider,
     notificationRouter,
     config.integrations.notifications,
     stateManager,
