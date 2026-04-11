@@ -1,8 +1,8 @@
 // tests/state/state-manager.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { StateManager } from '../../src/state/state-manager.js'
-import type { ReviewSession, FeatureAnalysis } from '../../src/state/types.js'
-import { mkdtemp, rm } from 'fs/promises'
+import type { ReviewSession, FeatureAnalysis, LoopSession } from '../../src/state/types.js'
+import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -16,6 +16,7 @@ describe('StateManager', () => {
   })
 
   afterEach(async () => {
+    delete process.env.MAGPIE_HOME
     await rm(tempDir, { recursive: true, force: true })
   })
 
@@ -154,5 +155,249 @@ describe('StateManager', () => {
     expect(allSessions[0].id).toBe('paused-1')
     expect(allSessions[1].id).toBe('in-progress-1')
     expect(allSessions[2].id).toBe('complete-1')
+  })
+
+  it('should preserve existing loop artifacts when later saves omit tmux details', async () => {
+    await manager.initLoopSessions()
+    process.env.MAGPIE_HOME = tempDir
+
+    const initialSession: LoopSession = {
+      id: 'loop-123',
+      title: 'Loop session',
+      goal: 'Ship checkout safely',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:00:00.000Z'),
+      status: 'running',
+      currentStageIndex: 0,
+      stages: ['plan'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: '/tmp/loop-123',
+        eventsPath: '/tmp/events.jsonl',
+        planPath: '/tmp/plan.json',
+        humanConfirmationPath: '/tmp/human_confirmation.md',
+        tmuxSession: 'magpie-loop-123',
+        tmuxWindow: '@1',
+        tmuxPane: '%1',
+      },
+    }
+
+    await manager.saveLoopSession(initialSession)
+
+    const laterSession: LoopSession = {
+      ...initialSession,
+      updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+      artifacts: {
+        sessionDir: '/tmp/loop-123',
+        eventsPath: '/tmp/events.jsonl',
+        planPath: '/tmp/plan.json',
+        humanConfirmationPath: '/tmp/human_confirmation.md',
+      },
+    }
+
+    await manager.saveLoopSession(laterSession)
+
+    const raw = await readFile(join(tempDir, 'loop-sessions', 'loop-123.json'), 'utf-8')
+    const persisted = JSON.parse(raw) as { artifacts: Record<string, string> }
+    expect(persisted.artifacts.tmuxSession).toBe('magpie-loop-123')
+    expect(persisted.artifacts.tmuxWindow).toBe('@1')
+    expect(persisted.artifacts.tmuxPane).toBe('%1')
+  })
+
+  it('should save, load, and list discuss sessions', async () => {
+    process.env.MAGPIE_HOME = tempDir
+    await manager.initDiscussions()
+
+    await manager.saveDiscussSession({
+      id: 'discuss-1',
+      title: 'Should complex runs use worktrees?',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:10:00.000Z'),
+      status: 'completed',
+      reviewerIds: ['claude'],
+      rounds: [
+        {
+          roundNumber: 1,
+          topic: 'Complex worktree routing',
+          analysis: 'Evaluate isolation tradeoffs.',
+          timestamp: new Date('2026-04-11T00:05:00.000Z'),
+          messages: [
+            {
+              reviewerId: 'claude',
+              content: 'Prefer isolation for complex runs.',
+              timestamp: new Date('2026-04-11T00:05:00.000Z'),
+            },
+          ],
+          summaries: [
+            {
+              reviewerId: 'claude',
+              summary: 'Prefer isolated worktrees.',
+            },
+          ],
+          conclusion: 'Prefer isolated worktrees.',
+          tokenUsage: [],
+        },
+      ],
+    })
+
+    await manager.saveDiscussSession({
+      id: 'discuss-2',
+      title: 'Status rendering',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:20:00.000Z'),
+      status: 'active',
+      reviewerIds: ['claude'],
+      rounds: [],
+    })
+
+    const loaded = await manager.loadDiscussSession('discuss-1')
+    const listed = await manager.listDiscussSessions()
+
+    expect(loaded?.createdAt).toBeInstanceOf(Date)
+    expect(loaded?.rounds[0]?.timestamp).toBeInstanceOf(Date)
+    expect(loaded?.rounds[0]?.messages[0]?.timestamp).toBeInstanceOf(Date)
+    expect(listed.map((session) => session.id)).toEqual(['discuss-2', 'discuss-1'])
+  })
+
+  it('should save, load, and list trd sessions', async () => {
+    process.env.MAGPIE_HOME = tempDir
+    await manager.initTrdSessions()
+
+    await manager.saveTrdSession({
+      id: 'trd-1',
+      title: 'Control plane TRD',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:15:00.000Z'),
+      stage: 'completed',
+      reviewerIds: ['claude'],
+      domains: [],
+      artifacts: {
+        domainOverviewPath: '/tmp/domain-overview.md',
+        draftDomainsPath: '/tmp/draft-domains.md',
+        confirmedDomainsPath: '/tmp/confirmed-domains.md',
+        trdPath: '/tmp/trd.md',
+        openQuestionsPath: '/tmp/questions.md',
+        partialDir: '/tmp/partials',
+      },
+      rounds: [
+        {
+          roundNumber: 1,
+          prompt: 'Freeze the API before parallel work starts.',
+          summary: 'Freeze API contracts before parallel work.',
+          timestamp: new Date('2026-04-11T00:05:00.000Z'),
+        },
+      ],
+    })
+
+    await manager.saveTrdSession({
+      id: 'trd-2',
+      title: 'Runtime TRD',
+      prdPath: '/tmp/prd-2.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:30:00.000Z'),
+      stage: 'overview_drafted',
+      reviewerIds: ['claude'],
+      domains: [],
+      artifacts: {
+        domainOverviewPath: '/tmp/domain-overview-2.md',
+        draftDomainsPath: '/tmp/draft-domains-2.md',
+        confirmedDomainsPath: '/tmp/confirmed-domains-2.md',
+        trdPath: '/tmp/trd-2.md',
+        openQuestionsPath: '/tmp/questions-2.md',
+        partialDir: '/tmp/partials-2',
+      },
+      rounds: [],
+    })
+
+    const loaded = await manager.loadTrdSession('trd-1')
+    const listed = await manager.listTrdSessions()
+
+    expect(loaded?.updatedAt).toBeInstanceOf(Date)
+    expect(loaded?.rounds[0]?.timestamp).toBeInstanceOf(Date)
+    expect(listed.map((session) => session.id)).toEqual(['trd-2', 'trd-1'])
+  })
+
+  it('should save, load, and list loop sessions', async () => {
+    process.env.MAGPIE_HOME = tempDir
+    await manager.initLoopSessions()
+
+    await manager.saveLoopSession({
+      id: 'loop-a',
+      title: 'First loop',
+      goal: 'Ship feature A',
+      prdPath: '/tmp/prd-a.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:10:00.000Z'),
+      status: 'completed',
+      currentStageIndex: 1,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [
+        {
+          stage: 'prd_review',
+          success: true,
+          confidence: 0.92,
+          summary: 'Reviewed.',
+          risks: [],
+          retryCount: 0,
+          artifacts: ['/tmp/review.md'],
+          timestamp: new Date('2026-04-11T00:05:00.000Z'),
+        },
+      ],
+      humanConfirmations: [
+        {
+          id: 'confirm-1',
+          sessionId: 'loop-a',
+          stage: 'prd_review',
+          status: 'approved',
+          decision: 'approved',
+          reason: 'Looks good.',
+          artifacts: ['/tmp/review.md'],
+          nextAction: 'Continue.',
+          createdAt: new Date('2026-04-11T00:06:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:07:00.000Z'),
+        },
+      ],
+      artifacts: {
+        sessionDir: '/tmp/loop-a',
+        eventsPath: '/tmp/events-a.jsonl',
+        planPath: '/tmp/plan-a.json',
+        humanConfirmationPath: '/tmp/human-a.md',
+      },
+    })
+
+    await manager.saveLoopSession({
+      id: 'loop-b',
+      title: 'Second loop',
+      goal: 'Ship feature B',
+      prdPath: '/tmp/prd-b.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:20:00.000Z'),
+      status: 'running',
+      currentStageIndex: 0,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: '/tmp/loop-b',
+        eventsPath: '/tmp/events-b.jsonl',
+        planPath: '/tmp/plan-b.json',
+        humanConfirmationPath: '/tmp/human-b.md',
+      },
+    })
+
+    const loaded = await manager.loadLoopSession('loop-a')
+    const listed = await manager.listLoopSessions()
+
+    expect(loaded?.createdAt).toBeInstanceOf(Date)
+    expect(loaded?.stageResults[0]?.timestamp).toBeInstanceOf(Date)
+    expect(loaded?.humanConfirmations[0]?.createdAt).toBeInstanceOf(Date)
+    expect(loaded?.humanConfirmations[0]?.updatedAt).toBeInstanceOf(Date)
+    expect(listed.map((session) => session.id)).toEqual(['loop-b', 'loop-a'])
   })
 })

@@ -66,7 +66,16 @@ magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
 
 # 7) harness 闭环
 magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
+
+# 8) 需要后台托管时显式交给 tmux
+magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 ```
+
+补充说明：
+
+- `loop run` 和 `harness submit` 支持 `--host foreground|tmux`
+- 命中 `complex` 的 `loop` 运行会优先尝试在 `.worktrees/` 或 `worktrees/` 里隔离执行
+- `harness status` 和 `harness attach` 会显示实际工作目录和 tmux 会话信息
 
 从源码运行：
 

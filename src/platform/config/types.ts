@@ -252,7 +252,14 @@ export interface LocalCommandsOperationsProviderConfig {
   max_buffer_bytes?: number
 }
 
-export type OperationsProviderConfig = LocalCommandsOperationsProviderConfig
+export interface TmuxOperationsProviderConfig extends Omit<LocalCommandsOperationsProviderConfig, 'type'> {
+  type: 'tmux'
+  session_prefix?: string
+}
+
+export type OperationsProviderConfig =
+  | LocalCommandsOperationsProviderConfig
+  | TmuxOperationsProviderConfig
 
 export interface OperationsIntegrationConfig {
   enabled?: boolean

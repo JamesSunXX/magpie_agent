@@ -367,6 +367,191 @@ describe('harness workflow', () => {
     expect(result.session?.status).toBe('completed')
   })
 
+  it('persists loop workspace metadata onto the harness session', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-workspace-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'completed',
+            session: {
+              id: 'loop-worktree',
+              artifacts: {
+                workspaceMode: 'worktree',
+                workspacePath: '/tmp/worktrees/sch/run-1',
+                worktreeBranch: 'sch/run-1',
+              },
+            },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(result.session?.artifacts.loopSessionId).toBe('loop-worktree')
+      expect(result.session?.artifacts.workspaceMode).toBe('worktree')
+      expect(result.session?.artifacts.workspacePath).toBe('/tmp/worktrees/sch/run-1')
+      expect(result.session?.artifacts.worktreeBranch).toBe('sch/run-1')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('forwards host and complexity overrides into the nested loop run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-input-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    let capturedLoopInput: Record<string, unknown> | undefined
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        capturedLoopInput = input as Record<string, unknown>
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'completed',
+            session: {
+              id: 'loop-override',
+              artifacts: {},
+            },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        complexity: 'complex',
+        host: 'tmux',
+      }, ctx)
+
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(capturedLoopInput).toEqual(expect.objectContaining({
+        mode: 'run',
+        goal: 'Deliver checkout v2',
+        complexity: 'complex',
+        host: 'tmux',
+      }))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('fails after max cycles when model keeps requesting revisions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-fail-'))
     const magpieHome = join(dir, '.magpie-home')

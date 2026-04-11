@@ -72,6 +72,47 @@ describe('workflow shared runtime helpers', () => {
     expect(await listWorkflowSessions('harness')).toEqual([])
   })
 
+  it('preserves existing workflow artifacts when later saves omit tmux details', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-merge-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    await persistWorkflowSession({
+      id: 'harness-a',
+      capability: 'harness',
+      title: 'First session',
+      createdAt: new Date('2026-04-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T09:00:00.000Z'),
+      status: 'in_progress',
+      currentStage: 'queued',
+      summary: 'Queued.',
+      artifacts: {
+        eventsPath: '/tmp/events.jsonl',
+        tmuxSession: 'magpie-harness-a',
+        tmuxWindow: '@1',
+        tmuxPane: '%1',
+      },
+    })
+
+    await persistWorkflowSession({
+      id: 'harness-a',
+      capability: 'harness',
+      title: 'First session',
+      createdAt: new Date('2026-04-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T09:05:00.000Z'),
+      status: 'completed',
+      currentStage: 'completed',
+      summary: 'Done.',
+      artifacts: {
+        eventsPath: '/tmp/events.jsonl',
+      },
+    })
+
+    const loaded = await loadWorkflowSession('harness', 'harness-a')
+    expect(loaded?.artifacts.tmuxSession).toBe('magpie-harness-a')
+    expect(loaded?.artifacts.tmuxWindow).toBe('@1')
+    expect(loaded?.artifacts.tmuxPane).toBe('%1')
+  })
+
   it('appends workflow events to the persisted jsonl stream', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-events-'))
     process.env.MAGPIE_HOME = magpieHome

@@ -90,6 +90,13 @@ interface StageRunResult {
   testOutput: string
 }
 
+interface WorktreeResolution {
+  workspaceMode: 'current' | 'worktree'
+  workspacePath: string
+  worktreeBranch?: string
+  failureReason?: string
+}
+
 function generateId(): string {
   return randomBytes(6).toString('hex')
 }
@@ -427,13 +434,7 @@ async function appendEvent(path: string, payload: Record<string, unknown>): Prom
   await appendFile(path, `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}\n`, 'utf-8')
 }
 
-function ensureBranch(prefix: string, cwd: string): string | null {
-  try {
-    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
-  } catch {
-    return null
-  }
-
+function buildBranchName(prefix: string, cwd: string): string | null {
   const normalizedPrefix = prefix.startsWith('sch/') ? prefix : `sch/${prefix.replace(/^\/+/, '')}`
   const sanitizedPrefix = normalizedPrefix
     .replace(/[^a-zA-Z0-9/_\-.]/g, '-')
@@ -450,6 +451,21 @@ function ensureBranch(prefix: string, cwd: string): string | null {
   try {
     execFileSync('git', ['check-ref-format', '--branch', branchName], { stdio: 'pipe', cwd })
   } catch {
+    return null
+  }
+
+  return branchName
+}
+
+function ensureBranch(prefix: string, cwd: string): string | null {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+  } catch {
+    return null
+  }
+
+  const branchName = buildBranchName(prefix, cwd)
+  if (!branchName) {
     return null
   }
 
@@ -480,6 +496,94 @@ function getCurrentBranch(cwd: string): string | null {
 function shouldReuseCurrentBranch(branchName: string | null): branchName is string {
   if (!branchName) return false
   return branchName !== 'main' && branchName !== 'master'
+}
+
+function resolveExecutionHost(prepared: LoopPreparedInput): 'foreground' | 'tmux' {
+  if (prepared.host === 'tmux' || process.env.MAGPIE_EXECUTION_HOST === 'tmux') {
+    return 'tmux'
+  }
+  return 'foreground'
+}
+
+function resolveTmuxArtifacts(): Pick<LoopSession['artifacts'], 'tmuxSession' | 'tmuxWindow' | 'tmuxPane'> {
+  return {
+    tmuxSession: process.env.MAGPIE_TMUX_SESSION || undefined,
+    tmuxWindow: process.env.MAGPIE_TMUX_WINDOW || undefined,
+    tmuxPane: process.env.MAGPIE_TMUX_PANE || undefined,
+  }
+}
+
+function resolveWorktreeDirectory(cwd: string): string | null {
+  if (existsSync(join(cwd, '.worktrees'))) return '.worktrees'
+  if (existsSync(join(cwd, 'worktrees'))) return 'worktrees'
+  return null
+}
+
+function isIgnoredPath(cwd: string, relativePath: string): boolean {
+  for (const candidate of [relativePath, join(relativePath, '.magpie-ignore-probe')]) {
+    try {
+      execFileSync('git', ['check-ignore', candidate], { cwd, stdio: 'pipe' })
+      return true
+    } catch {
+      continue
+    }
+  }
+
+  return false
+}
+
+function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+  } catch {
+    return {
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      failureReason: 'worktree requires a git repository',
+    }
+  }
+
+  const directory = resolveWorktreeDirectory(cwd)
+  if (!directory) {
+    return {
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      failureReason: 'No worktree directory found. Create .worktrees/ or worktrees/ first.',
+    }
+  }
+
+  if (!isIgnoredPath(cwd, directory)) {
+    return {
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      failureReason: `Worktree directory ${directory} is not ignored by git.`,
+    }
+  }
+
+  const branchName = buildBranchName(prefix, cwd)
+  if (!branchName) {
+    return {
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      failureReason: 'Failed to generate a valid worktree branch name.',
+    }
+  }
+
+  const workspacePath = join(cwd, directory, branchName)
+  try {
+    execFileSync('git', ['worktree', 'add', workspacePath, '-b', branchName], { cwd, stdio: 'pipe' })
+    return {
+      workspaceMode: 'worktree',
+      workspacePath,
+      worktreeBranch: branchName,
+    }
+  } catch (error) {
+    return {
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      failureReason: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 function commitIfChanged(
@@ -1050,6 +1154,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const executionHost = resolveExecutionHost(prepared)
   const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
     ? createRoutingDecision({
       goal: prepared.goal,
@@ -1090,12 +1195,11 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
 
-  const sessionId = generateId()
+  const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
   const sessionDir = join(getMagpieHomeDir(), 'loop-sessions', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
-  const humanConfirmationPath = resolve(ctx.cwd, loopRuntime.humanConfirmationFile)
 
   await mkdir(sessionDir, { recursive: true })
   const knowledgeArtifacts = await createTaskKnowledge({
@@ -1148,8 +1252,19 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   })
 
   let branchName: string | undefined
+  let workspaceMode: 'current' | 'worktree' = 'current'
+  let workspacePath = ctx.cwd
+  let worktreeFailureReason: string | undefined
+  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
+  if (shouldUseWorktree) {
+    const worktree = ensureWorktree(loopRuntime.autoBranchPrefix, ctx.cwd)
+    workspaceMode = worktree.workspaceMode
+    workspacePath = worktree.workspacePath
+    branchName = worktree.worktreeBranch
+    worktreeFailureReason = worktree.failureReason
+  }
   let reusedCurrentBranch = false
-  if (loopRuntime.autoCommit && prepared.dryRun !== true) {
+  if (loopRuntime.autoCommit && prepared.dryRun !== true && workspaceMode !== 'worktree' && !worktreeFailureReason) {
     const currentBranch = loopRuntime.reuseCurrentBranch
       ? getCurrentBranch(ctx.cwd)
       : null
@@ -1160,6 +1275,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       branchName = ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined
     }
   }
+  const humanConfirmationPath = resolve(workspacePath, loopRuntime.humanConfirmationFile)
 
   const session: LoopSession = {
     id: sessionId,
@@ -1179,6 +1295,11 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     artifacts: {
       sessionDir,
       repoRootPath: ctx.cwd,
+      workspaceMode,
+      workspacePath,
+      ...(branchName ? { worktreeBranch: branchName } : {}),
+      executionHost,
+      ...resolveTmuxArtifacts(),
       eventsPath,
       planPath,
       humanConfirmationPath,
@@ -1189,6 +1310,26 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await stateManager.saveLoopSession(session)
   await appendEvent(eventsPath, { event: 'loop_started', goal: prepared.goal })
+  if (workspaceMode === 'worktree') {
+    await appendEvent(eventsPath, {
+      event: 'worktree_created',
+      workspacePath,
+      branch: branchName,
+    })
+  }
+  if (worktreeFailureReason) {
+    await appendEvent(eventsPath, {
+      event: 'worktree_failed',
+      reason: worktreeFailureReason,
+    })
+    return markSessionFailed(
+      session,
+      session.stages[0] || 'prd_review',
+      worktreeFailureReason,
+      stateManager,
+      notificationRouter
+    )
+  }
   if (reusedCurrentBranch && branchName) {
     await appendEvent(eventsPath, {
       event: 'auto_commit_branch_reused',
@@ -1206,7 +1347,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   return continueSession(
     session,
     prepared,
-    ctx.cwd,
+    workspacePath,
     loopRuntime,
     planner,
     executor,
@@ -1329,7 +1470,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   return continueSession(
     session,
     prepared,
-    ctx.cwd,
+    session.artifacts.workspacePath || ctx.cwd,
     loopRuntime,
     planner,
     executor,

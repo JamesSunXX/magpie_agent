@@ -95,16 +95,24 @@ describe('CLI program', () => {
     const workflow = program.commands.find((command) => command.name() === 'workflow')
     const loopRun = loop?.commands.find((subcommand) => subcommand.name() === 'run')
     const issueFix = workflow?.commands.find((subcommand) => subcommand.name() === 'issue-fix')
+    const workflowHarness = workflow?.commands.find((subcommand) => subcommand.name() === 'harness')
+    const topLevelHarness = program.commands.find((command) => command.name() === 'harness')
+      ?.commands.find((subcommand) => subcommand.name() === 'submit')
 
     const loopOptionFlags = loopRun?.options.map((option) => option.long) || []
     const issueFixOptionFlags = issueFix?.options.map((option) => option.long) || []
+    const workflowHarnessFlags = workflowHarness?.options.map((option) => option.long) || []
+    const topLevelHarnessFlags = topLevelHarness?.options.map((option) => option.long) || []
 
     expect(loopOptionFlags).toContain('--planning-item')
     expect(loopOptionFlags).toContain('--planning-project')
     expect(loopOptionFlags).toContain('--complexity')
+    expect(loopOptionFlags).toContain('--host')
     expect(issueFixOptionFlags).toContain('--planning-item')
     expect(issueFixOptionFlags).toContain('--planning-project')
     expect(issueFixOptionFlags).toContain('--complexity')
+    expect(workflowHarnessFlags).toContain('--host')
+    expect(topLevelHarnessFlags).toContain('--host')
   })
 
   it('warns before command execution when config version is outdated', async () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
+const launchMagpieInTmux = vi.fn()
 const progressReporterMocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
@@ -18,6 +19,10 @@ vi.mock('../../src/core/capability/registry.js', () => ({
 
 vi.mock('../../src/capabilities/index.js', () => ({
   createDefaultCapabilityRegistry,
+}))
+
+vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
+  launchMagpieInTmux,
 }))
 
 vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
@@ -45,6 +50,12 @@ describe('capability runtime CLI commands', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
+    launchMagpieInTmux.mockResolvedValue({
+      sessionId: 'workflow-harness-tmux-1',
+      tmuxSession: 'magpie-workflow-harness-tmux-1',
+      tmuxWindow: '@1',
+      tmuxPane: '%1',
+    })
     runCapability.mockResolvedValue({
       output: { summary: 'done' },
       result: { payload: { exitCode: 0 } },
@@ -82,6 +93,67 @@ describe('capability runtime CLI commands', () => {
     expect(logSpy).toHaveBeenCalledWith('Provider selection: /tmp/provider-selection.json')
     expect(logSpy).toHaveBeenCalledWith('Routing: /tmp/routing-decision.json')
     logSpy.mockRestore()
+  })
+
+  it('forwards host overrides through workflow harness', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        host: 'tmux',
+      }),
+      expect.any(Object)
+    )
+    logSpy.mockRestore()
+  })
+
+  it('launches workflow harness in tmux when requested outside the test host', async () => {
+    const previousVitest = process.env.VITEST
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+    process.env.VITEST = ''
+
+    try {
+      const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+      await workflowCommand.parseAsync(
+        ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux', '--review-rounds', '2'],
+        { from: 'node' }
+      )
+
+      expect(launchMagpieInTmux).toHaveBeenCalledWith({
+        capability: 'harness',
+        cwd: process.cwd(),
+        configPath: undefined,
+        argv: [
+          'workflow',
+          'harness',
+          'Deliver checkout v2',
+          '--prd',
+          '/tmp/prd.md',
+          '--host',
+          'foreground',
+          '--review-rounds',
+          '2',
+        ],
+      })
+      expect(runCapability).not.toHaveBeenCalled()
+      expect(logSpy).toHaveBeenCalledWith('Session: workflow-harness-tmux-1')
+      expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+      expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-workflow-harness-tmux-1 window=@1 pane=%1')
+    } finally {
+      process.env.VITEST = previousVitest
+      logSpy.mockRestore()
+    }
   })
 
   it('streams workflow harness progress updates before completion', async () => {

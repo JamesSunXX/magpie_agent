@@ -59,8 +59,19 @@ export function sessionDirFor(capability: WorkflowCapability, id: string): strin
 
 export async function persistWorkflowSession(session: WorkflowSession): Promise<void> {
   const dir = sessionDirFor(session.capability, session.id)
+  const sessionPath = join(dir, 'session.json')
   await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8')
+  try {
+    const existingRaw = await readFile(sessionPath, 'utf-8')
+    const existing = JSON.parse(existingRaw) as { artifacts?: Record<string, string> }
+    session.artifacts = {
+      ...(existing.artifacts || {}),
+      ...session.artifacts,
+    }
+  } catch {
+    // Nothing persisted yet, so there is nothing to merge.
+  }
+  await writeFile(sessionPath, JSON.stringify(session, null, 2), 'utf-8')
 }
 
 function reviveWorkflowSession(content: string): WorkflowSession {

@@ -13,6 +13,8 @@ import type {
   PostMergeRegressionResult,
   PostMergeRegressionSummary,
 } from '../../capabilities/workflows/post-merge-regression/types.js'
+import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
+import { launchMagpieInTmux } from './tmux-launch.js'
 
 const workflowCommand = new Command('workflow')
   .description('AI-native engineering workflows')
@@ -91,8 +93,37 @@ workflowCommand
   .option('--test-command <command>', 'Override unit test command used by harness')
   .option('--models <models...>', 'Model list for adversarial confirmation (default: gemini-cli kiro)')
   .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
+  .option('--host <host>', 'Execution host (foreground|tmux)')
   .action(async (goal: string, options) => {
     try {
+      if (options.host === 'tmux' && !process.env.VITEST) {
+        const launch = await launchMagpieInTmux({
+          capability: 'harness',
+          cwd: process.cwd(),
+          configPath: options.config,
+          argv: [
+            'workflow',
+            'harness',
+            goal,
+            '--prd',
+            options.prd,
+            '--host',
+            'foreground',
+            ...(options.config ? ['--config', options.config] : []),
+            ...(Number.isFinite(options.maxCycles) ? ['--max-cycles', String(options.maxCycles)] : []),
+            ...(Number.isFinite(options.reviewRounds) ? ['--review-rounds', String(options.reviewRounds)] : []),
+            ...(options.testCommand ? ['--test-command', options.testCommand] : []),
+            ...(Array.isArray(options.models) && options.models.length > 0 ? ['--models', ...options.models] : []),
+            ...(options.complexity ? ['--complexity', options.complexity] : []),
+          ],
+        })
+
+        console.log(`Session: ${launch.sessionId}`)
+        console.log('Host: tmux')
+        console.log(`Tmux: session=${launch.tmuxSession} window=${launch.tmuxWindow || '-'} pane=${launch.tmuxPane || '-'}`)
+        return
+      }
+
       const registry = createDefaultCapabilityRegistry()
       const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
         registry,
@@ -117,6 +148,7 @@ workflowCommand
             testCommand: options.testCommand,
             models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
             complexity: options.complexity,
+            host: options.host as ExecutionHost | undefined,
           }, ctx)
         } finally {
           progressReporter.stop()
@@ -134,6 +166,15 @@ workflowCommand
           if (output.details.artifacts.eventsPath) {
             console.log(`Events: ${output.details.artifacts.eventsPath}`)
           }
+        }
+        if (output.details.artifacts.workspacePath) {
+          console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+        }
+        if (output.details.artifacts.executionHost) {
+          console.log(`Host: ${output.details.artifacts.executionHost}`)
+        }
+        if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
+          console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
         }
         console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
         console.log(`Rounds: ${output.details.artifacts.roundsPath}`)

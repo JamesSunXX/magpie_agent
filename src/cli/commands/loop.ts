@@ -11,8 +11,10 @@ import type {
   LoopSummaryOutput,
 } from '../../capabilities/loop/types.js'
 import type { ComplexityTier } from '../../config/types.js'
+import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
+import { launchMagpieInTmux } from './tmux-launch.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -22,6 +24,7 @@ interface SharedLoopOptions {
   planningItem?: string
   planningProject?: string
   complexity?: ComplexityTier
+  host?: ExecutionHost
 }
 
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
@@ -58,6 +61,15 @@ async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): 
     console.log(`Status: ${session.status}`)
     if (session.branchName) {
       console.log(`Branch: ${session.branchName}`)
+    }
+    if (session.artifacts.workspacePath) {
+      console.log(`Workspace: ${session.artifacts.workspacePath} (${session.artifacts.workspaceMode || 'current'})`)
+    }
+    if (session.artifacts.executionHost) {
+      console.log(`Host: ${session.artifacts.executionHost}`)
+    }
+    if (session.artifacts.tmuxSession || session.artifacts.tmuxWindow || session.artifacts.tmuxPane) {
+      console.log(`Tmux: session=${session.artifacts.tmuxSession || '-'} window=${session.artifacts.tmuxWindow || '-'} pane=${session.artifacts.tmuxPane || '-'}`)
     }
     console.log(`Human confirmation file: ${session.artifacts.humanConfirmationPath}`)
     await printKnowledgeSummary(session.artifacts)
@@ -120,10 +132,40 @@ loopCommand
   .option('--no-wait-human', 'Do not wait for human confirmation; pause and exit')
   .option('--dry-run', 'Do not execute mutating stage actions')
   .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
+  .option('--host <host>', 'Execution host (foreground|tmux)')
   .option('--planning-item <key>', 'Override planning item key for remote context lookup')
   .option('--planning-project <key>', 'Override planning project key for remote context lookup')
   .option('--max-iterations <number>', 'Maximum iterations when waiting for human decision', (v) => Number.parseInt(v, 10))
   .action(async (goal: string, options: SharedLoopOptions & { prd: string }) => {
+    if (options.host === 'tmux' && !process.env.VITEST) {
+      const launch = await launchMagpieInTmux({
+        capability: 'loop',
+        cwd: process.cwd(),
+        configPath: options.config,
+        argv: [
+          'loop',
+          'run',
+          goal,
+          '--prd',
+          options.prd,
+          '--host',
+          'foreground',
+          ...(options.config ? ['--config', options.config] : []),
+          ...(options.waitHuman === false ? ['--no-wait-human'] : []),
+          ...(options.dryRun ? ['--dry-run'] : []),
+          ...(options.complexity ? ['--complexity', options.complexity] : []),
+          ...(options.planningItem ? ['--planning-item', options.planningItem] : []),
+          ...(options.planningProject ? ['--planning-project', options.planningProject] : []),
+          ...(Number.isFinite(options.maxIterations) ? ['--max-iterations', String(options.maxIterations)] : []),
+        ],
+      })
+
+      console.log(`Session: ${launch.sessionId}`)
+      console.log('Host: tmux')
+      console.log(`Tmux: session=${launch.tmuxSession} window=${launch.tmuxWindow || '-'} pane=${launch.tmuxPane || '-'}`)
+      return
+    }
+
     await runLoop({
       mode: 'run',
       goal,
@@ -134,6 +176,7 @@ loopCommand
       dryRun: options.dryRun,
       maxIterations: Number.isFinite(options.maxIterations) ? options.maxIterations : undefined,
       complexity: options.complexity,
+      host: options.host,
     }, options)
   })
 

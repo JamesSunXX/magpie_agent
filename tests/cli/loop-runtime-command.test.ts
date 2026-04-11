@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
+const launchMagpieInTmux = vi.fn()
 
 vi.mock('../../src/core/capability/runner.js', () => ({
   runCapability,
@@ -16,11 +17,21 @@ vi.mock('../../src/capabilities/index.js', () => ({
   createDefaultCapabilityRegistry,
 }))
 
+vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
+  launchMagpieInTmux,
+}))
+
 describe('loop CLI runtime command', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
     getTypedCapability.mockReturnValue({ name: 'loop' })
+    launchMagpieInTmux.mockResolvedValue({
+      sessionId: 'loop-tmux-1',
+      tmuxSession: 'magpie-loop-tmux-1',
+      tmuxWindow: '@1',
+      tmuxPane: '%1',
+    })
   })
 
   it('runs loop run through the capability runtime', async () => {
@@ -59,6 +70,85 @@ describe('loop CLI runtime command', () => {
     expect(logSpy).toHaveBeenCalledWith('Branch: sch/loop-1')
     expect(logSpy).toHaveBeenCalledWith('Human confirmation file: /tmp/human_confirmation.md')
     logSpy.mockRestore()
+  })
+
+  it('forwards host overrides and prints workspace metadata', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'Loop completed successfully.',
+        details: {
+          id: 'loop-1',
+          status: 'completed',
+          branchName: 'sch/loop-1',
+          artifacts: {
+            humanConfirmationPath: '/tmp/human_confirmation.md',
+            workspaceMode: 'worktree',
+            workspacePath: '/tmp/.worktrees/sch/loop-1',
+            worktreeBranch: 'sch/loop-1',
+            executionHost: 'tmux',
+            tmuxSession: 'magpie-loop-1',
+            tmuxWindow: '@1',
+            tmuxPane: '%1',
+          },
+        },
+      },
+    })
+
+    const { loopCommand } = await import('../../src/cli/commands/loop.js')
+    await loopCommand.parseAsync(
+      ['node', 'loop', 'run', 'Ship checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'loop' },
+      expect.objectContaining({
+        host: 'tmux',
+      }),
+      expect.any(Object)
+    )
+    expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/loop-1 (worktree)')
+    expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+    expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-loop-1 window=@1 pane=%1')
+    logSpy.mockRestore()
+  })
+
+  it('launches loop runs in tmux when requested outside the test host', async () => {
+    const previousVitest = process.env.VITEST
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    process.env.VITEST = ''
+
+    try {
+      const { loopCommand } = await import('../../src/cli/commands/loop.js')
+      await loopCommand.parseAsync(
+        ['node', 'loop', 'run', 'Ship checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux', '--no-wait-human'],
+        { from: 'node' }
+      )
+
+      expect(launchMagpieInTmux).toHaveBeenCalledWith({
+        capability: 'loop',
+        cwd: process.cwd(),
+        configPath: undefined,
+        argv: [
+          'loop',
+          'run',
+          'Ship checkout v2',
+          '--prd',
+          '/tmp/prd.md',
+          '--host',
+          'foreground',
+          '--no-wait-human',
+        ],
+      })
+      expect(runCapability).not.toHaveBeenCalled()
+      expect(logSpy).toHaveBeenCalledWith('Session: loop-tmux-1')
+      expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+      expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-loop-tmux-1 window=@1 pane=%1')
+    } finally {
+      process.env.VITEST = previousVitest
+      logSpy.mockRestore()
+    }
   })
 
   it('runs loop resume through the capability runtime', async () => {

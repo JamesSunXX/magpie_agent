@@ -12,6 +12,8 @@ import type { HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary 
 import { createHarnessProgressReporter, followHarnessEventStream } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
+import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
+import { launchMagpieInTmux } from './tmux-launch.js'
 
 interface HarnessCommandOptions {
   config?: string
@@ -20,6 +22,7 @@ interface HarnessCommandOptions {
   testCommand?: string
   models?: string[]
   complexity?: HarnessInput['complexity']
+  host?: ExecutionHost
 }
 
 function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typeof loadWorkflowSession>>>): Partial<KnowledgeState> {
@@ -84,6 +87,15 @@ async function runHarness(input: HarnessInput, options: HarnessCommandOptions): 
         console.log(`Events: ${output.details.artifacts.eventsPath}`)
       }
     }
+    if (output.details.artifacts.workspacePath) {
+      console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+    }
+    if (output.details.artifacts.executionHost) {
+      console.log(`Host: ${output.details.artifacts.executionHost}`)
+    }
+    if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
+      console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
+    }
     console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
     console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
     console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
@@ -112,8 +124,37 @@ harnessCommand
   .option('--test-command <command>', 'Override unit test command used by harness')
   .option('--models <models...>', 'Model list for adversarial confirmation (default: gemini-cli kiro)')
   .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
+  .option('--host <host>', 'Execution host (foreground|tmux)')
   .action(async (goal: string, options: HarnessCommandOptions & { prd: string }) => {
     try {
+      if (options.host === 'tmux' && !process.env.VITEST) {
+        const launch = await launchMagpieInTmux({
+          capability: 'harness',
+          cwd: process.cwd(),
+          configPath: options.config,
+          argv: [
+            'harness',
+            'submit',
+            goal,
+            '--prd',
+            options.prd,
+            '--host',
+            'foreground',
+            ...(options.config ? ['--config', options.config] : []),
+            ...(Number.isFinite(options.maxCycles) ? ['--max-cycles', String(options.maxCycles)] : []),
+            ...(Number.isFinite(options.reviewRounds) ? ['--review-rounds', String(options.reviewRounds)] : []),
+            ...(options.testCommand ? ['--test-command', options.testCommand] : []),
+            ...(Array.isArray(options.models) && options.models.length > 0 ? ['--models', ...options.models] : []),
+            ...(options.complexity ? ['--complexity', options.complexity] : []),
+          ],
+        })
+
+        console.log(`Session: ${launch.sessionId}`)
+        console.log('Host: tmux')
+        console.log(`Tmux: session=${launch.tmuxSession} window=${launch.tmuxWindow || '-'} pane=${launch.tmuxPane || '-'}`)
+        return
+      }
+
       await runHarness({
         goal,
         prdPath: options.prd,
@@ -122,6 +163,7 @@ harnessCommand
         testCommand: options.testCommand,
         models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
         complexity: options.complexity,
+        host: options.host,
       }, options)
     } catch (error) {
       console.error(`harness failed: ${error instanceof Error ? error.message : error}`)
@@ -146,6 +188,15 @@ harnessCommand
     if (session.currentStage) {
       console.log(`Stage: ${session.currentStage}`)
     }
+    if (session.artifacts.workspacePath) {
+      console.log(`Workspace: ${session.artifacts.workspacePath} (${session.artifacts.workspaceMode || 'current'})`)
+    }
+    if (session.artifacts.executionHost) {
+      console.log(`Host: ${session.artifacts.executionHost}`)
+    }
+    if (session.artifacts.tmuxSession || session.artifacts.tmuxWindow || session.artifacts.tmuxPane) {
+      console.log(`Tmux: session=${session.artifacts.tmuxSession || '-'} window=${session.artifacts.tmuxWindow || '-'} pane=${session.artifacts.tmuxPane || '-'}`)
+    }
     console.log(`Summary: ${session.summary}`)
     console.log(`Updated: ${session.updatedAt.toISOString()}`)
     if (session.artifacts.eventsPath) {
@@ -169,6 +220,15 @@ harnessCommand
 
     console.log(`Session: ${session.id}`)
     console.log(`Status: ${session.status}`)
+    if (session.artifacts.workspacePath) {
+      console.log(`Workspace: ${session.artifacts.workspacePath} (${session.artifacts.workspaceMode || 'current'})`)
+    }
+    if (session.artifacts.executionHost) {
+      console.log(`Host: ${session.artifacts.executionHost}`)
+    }
+    if (session.artifacts.tmuxSession || session.artifacts.tmuxWindow || session.artifacts.tmuxPane) {
+      console.log(`Tmux: session=${session.artifacts.tmuxSession || '-'} window=${session.artifacts.tmuxWindow || '-'} pane=${session.artifacts.tmuxPane || '-'}`)
+    }
     await printKnowledgeSummary(session.artifacts)
     await followHarnessEventStream({
       sessionId,

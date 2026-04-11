@@ -3,6 +3,7 @@ import type { ReviewFocus } from '../orchestrator/repo-orchestrator.js'
 import type { ReviewIssue } from '../reporter/types.js'
 import type { DomainBoundary } from '../trd/types.js'
 import type { LoopStageName, ComplexityTier } from '../config/types.js'
+import type { ExecutionHost } from '../platform/integrations/operations/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -166,6 +167,13 @@ export interface LoopSession {
     humanConfirmationPath: string
     routingDecisionPath?: string
     repoRootPath?: string
+    workspaceMode?: 'current' | 'worktree'
+    workspacePath?: string
+    worktreeBranch?: string
+    executionHost?: ExecutionHost
+    tmuxSession?: string
+    tmuxWindow?: string
+    tmuxPane?: string
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string

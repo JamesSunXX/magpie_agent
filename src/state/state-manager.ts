@@ -4,6 +4,21 @@ import { join } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
 import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession, LoopSession } from './types.js'
 
+async function mergePersistedLoopArtifacts(filePath: string, session: LoopSession): Promise<LoopSession> {
+  try {
+    const existingRaw = await readFile(filePath, 'utf-8')
+    const existing = JSON.parse(existingRaw) as { artifacts?: Record<string, string> }
+    session.artifacts = {
+      ...(existing.artifacts || {}),
+      ...session.artifacts,
+    }
+  } catch {
+    // Nothing persisted yet, so there is nothing to merge.
+  }
+
+  return session
+}
+
 export class StateManager {
   private baseDir: string
   private magpieDir: string
@@ -220,7 +235,8 @@ export class StateManager {
   async saveLoopSession(session: LoopSession): Promise<void> {
     await mkdir(this.loopSessionsDir, { recursive: true })
     const filePath = join(this.loopSessionsDir, `${session.id}.json`)
-    await writeFile(filePath, JSON.stringify(session, null, 2))
+    const mergedSession = await mergePersistedLoopArtifacts(filePath, session)
+    await writeFile(filePath, JSON.stringify(mergedSession, null, 2))
   }
 
   async loadLoopSession(id: string): Promise<LoopSession | null> {

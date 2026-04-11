@@ -470,7 +470,7 @@ export async function executeHarness(
 ): Promise<HarnessResult> {
   const config = loadConfig(ctx.configPath)
   const progressObserver = getHarnessProgressObserver(ctx)
-  const sessionId = generateWorkflowId('harness')
+  const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
   const sessionDir = sessionDirFor('harness', sessionId)
   const roundsPath = join(sessionDir, 'rounds.json')
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
@@ -520,6 +520,10 @@ export async function executeHarness(
       providerSelectionPath,
       routingDecisionPath,
       eventsPath,
+      executionHost: prepared.host === 'tmux' || process.env.MAGPIE_EXECUTION_HOST === 'tmux' ? 'tmux' : 'foreground',
+      ...(process.env.MAGPIE_TMUX_SESSION ? { tmuxSession: process.env.MAGPIE_TMUX_SESSION } : {}),
+      ...(process.env.MAGPIE_TMUX_WINDOW ? { tmuxWindow: process.env.MAGPIE_TMUX_WINDOW } : {}),
+      ...(process.env.MAGPIE_TMUX_PANE ? { tmuxPane: process.env.MAGPIE_TMUX_PANE } : {}),
       ...knowledgeArtifacts,
     },
   }
@@ -688,6 +692,8 @@ export async function executeHarness(
     goal: prepared.goal,
     prdPath: prepared.prdPath,
     waitHuman: false,
+    complexity: prepared.complexity,
+    host: prepared.host,
   }, harnessCtx)
 
   if (loopResult.result.status !== 'completed') {
@@ -699,6 +705,9 @@ export async function executeHarness(
       summary,
       artifacts: {
         ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+        ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
+        ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+        ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
       },
     })
     await updateTaskKnowledgeState(knowledgeArtifacts, {
@@ -726,6 +735,9 @@ export async function executeHarness(
   await persistSession({
     artifacts: {
       ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+      ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
+      ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+      ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
     },
   })
   await updateTaskKnowledgeSummary(

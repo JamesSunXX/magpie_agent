@@ -4,6 +4,8 @@ export interface OperationsEvidenceRun {
   output: string
 }
 
+export type ExecutionHost = 'foreground' | 'tmux'
+
 export interface OperationsEvidence {
   providerId?: string
   runs: OperationsEvidenceRun[]
@@ -15,9 +17,24 @@ export interface OperationsCollectionInput {
   commands: string[]
 }
 
+export interface OperationsLaunchInput {
+  cwd: string
+  command: string
+  sessionName: string
+}
+
+export interface OperationsLaunchResult {
+  providerId?: string
+  executionHost: ExecutionHost
+  sessionName: string
+  windowId?: string
+  paneId?: string
+}
+
 export interface OperationsProvider {
   id: string
   collectEvidence(input: OperationsCollectionInput): Promise<OperationsEvidence>
+  launchCommand?(input: OperationsLaunchInput): Promise<OperationsLaunchResult>
 }
 
 export interface LocalCommandsOperationsProviderConfig {
@@ -27,7 +44,14 @@ export interface LocalCommandsOperationsProviderConfig {
   max_buffer_bytes?: number
 }
 
-export type OperationsProviderConfig = LocalCommandsOperationsProviderConfig
+export interface TmuxOperationsProviderConfig extends Omit<LocalCommandsOperationsProviderConfig, 'type'> {
+  type: 'tmux'
+  session_prefix?: string
+}
+
+export type OperationsProviderConfig =
+  | LocalCommandsOperationsProviderConfig
+  | TmuxOperationsProviderConfig
 
 export interface OperationsIntegrationConfig {
   enabled?: boolean

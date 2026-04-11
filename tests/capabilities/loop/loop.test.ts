@@ -407,6 +407,123 @@ describe('loop capability', () => {
     expect(existsSync(markerPath)).toBe(false)
   })
 
+  it('creates an isolated worktree for complex runs and persists workspace metadata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.worktrees'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, '.gitignore'), '.worktrees/*\n', 'utf-8')
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md .gitignore', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const beforeBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+      complexity: 'complex',
+    }, ctx)
+
+    const afterBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
+    expect(result.result.session?.artifacts.workspacePath).toContain(`${dir}/.worktrees/`)
+    expect(result.result.session?.artifacts.workspacePath).not.toBe(dir)
+    expect(result.result.session?.artifacts.worktreeBranch).toMatch(/^sch\//)
+    expect(result.result.session?.branchName).toBe(result.result.session?.artifacts.worktreeBranch)
+    expect(existsSync(join(result.result.session!.artifacts.workspacePath!, '.git'))).toBe(true)
+    expect(result.result.session?.artifacts.humanConfirmationPath).toBe(
+      join(result.result.session!.artifacts.workspacePath!, 'human_confirmation.md')
+    )
+    expect(afterBranch).toBe(beforeBranch)
+  })
+
+  it('writes human confirmation files inside the isolated worktree when a complex run pauses', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-human-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.worktrees'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, '.gitignore'), '.worktrees/\n', 'utf-8')
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md .gitignore', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: summarize\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 1\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "always"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+      complexity: 'complex',
+    }, ctx)
+
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
+    expect(result.result.session?.artifacts.humanConfirmationPath).toBe(
+      join(result.result.session!.artifacts.workspacePath!, 'human_confirmation.md')
+    )
+    expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(true)
+    expect(existsSync(join(dir, 'human_confirmation.md'))).toBe(false)
+  })
+
+  it('fails complex runs when the worktree directory is not ignored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-ignore-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.worktrees'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+      complexity: 'complex',
+    }, ctx)
+
+    expect(result.result.status).toBe('failed')
+    expect(result.result.session?.artifacts.workspaceMode).toBe('current')
+    expect(readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')).toContain('worktree')
+  })
+
   it('skips mock tests by default when no mock command is configured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-default-mock-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })

@@ -1,5 +1,6 @@
 import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
+import type { ExecutionHost } from '../../../platform/integrations/operations/types.js'
 
 export type HarnessStage =
   | 'queued'
@@ -16,6 +17,7 @@ export interface HarnessInput {
   testCommand?: string
   models?: string[]
   complexity?: ComplexityTier
+  host?: ExecutionHost
 }
 
 export interface HarnessPreparedInput extends HarnessInput {
@@ -49,6 +51,13 @@ export interface HarnessResult {
       providerSelectionPath: string
       routingDecisionPath: string
       eventsPath: string
+      workspaceMode?: 'current' | 'worktree'
+      workspacePath?: string
+      worktreeBranch?: string
+      executionHost?: ExecutionHost
+      tmuxSession?: string
+      tmuxWindow?: string
+      tmuxPane?: string
       repoRootPath?: string
       knowledgeSchemaPath?: string
       knowledgeIndexPath?: string

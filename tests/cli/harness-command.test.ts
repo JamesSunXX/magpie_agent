@@ -8,6 +8,7 @@ const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
 const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
+const launchMagpieInTmux = vi.fn()
 const progressReporterMocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
@@ -28,6 +29,10 @@ vi.mock('../../src/capabilities/index.js', () => ({
 vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   listWorkflowSessions,
   loadWorkflowSession,
+}))
+
+vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
+  launchMagpieInTmux,
 }))
 
 vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
@@ -57,6 +62,12 @@ describe('top-level harness CLI command', () => {
     process.exitCode = 0
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
     getTypedCapability.mockReturnValue({ name: 'harness' })
+    launchMagpieInTmux.mockResolvedValue({
+      sessionId: 'harness-tmux-1',
+      tmuxSession: 'magpie-harness-tmux-1',
+      tmuxWindow: '@1',
+      tmuxPane: '%1',
+    })
     runCapability.mockResolvedValue({
       output: {
         summary: 'Harness approved after 1 cycle(s).',
@@ -104,6 +115,91 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Session: harness-1')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
     logSpy.mockRestore()
+  })
+
+  it('forwards host overrides and prints workspace metadata', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'Harness approved after 1 cycle(s).',
+        details: {
+          id: 'harness-1',
+          status: 'completed',
+          currentStage: 'completed',
+          artifacts: {
+            harnessConfigPath: '/tmp/harness.config.yaml',
+            roundsPath: '/tmp/rounds.json',
+            providerSelectionPath: '/tmp/provider-selection.json',
+            routingDecisionPath: '/tmp/routing-decision.json',
+            eventsPath: '/tmp/events.jsonl',
+            workspaceMode: 'worktree',
+            workspacePath: '/tmp/.worktrees/sch/harness-1',
+            worktreeBranch: 'sch/harness-1',
+            executionHost: 'tmux',
+            tmuxSession: 'magpie-harness-1',
+            tmuxWindow: '@1',
+            tmuxPane: '%1',
+          },
+        },
+      },
+      result: { status: 'completed' },
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        host: 'tmux',
+      }),
+      expect.any(Object)
+    )
+    expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/harness-1 (worktree)')
+    expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+    expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
+    logSpy.mockRestore()
+  })
+
+  it('launches submit in tmux when requested outside the test host', async () => {
+    const previousVitest = process.env.VITEST
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    process.env.VITEST = ''
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md', '--host', 'tmux', '--max-cycles', '2'],
+        { from: 'node' }
+      )
+
+      expect(launchMagpieInTmux).toHaveBeenCalledWith({
+        capability: 'harness',
+        cwd: process.cwd(),
+        configPath: undefined,
+        argv: [
+          'harness',
+          'submit',
+          'Ship checkout v2',
+          '--prd',
+          '/tmp/prd.md',
+          '--host',
+          'foreground',
+          '--max-cycles',
+          '2',
+        ],
+      })
+      expect(runCapability).not.toHaveBeenCalled()
+      expect(logSpy).toHaveBeenCalledWith('Session: harness-tmux-1')
+      expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+      expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-tmux-1 window=@1 pane=%1')
+    } finally {
+      process.env.VITEST = previousVitest
+      logSpy.mockRestore()
+    }
   })
 
   it('streams harness progress updates before completion', async () => {
@@ -172,6 +268,9 @@ describe('top-level harness CLI command', () => {
     expect(loadWorkflowSession).toHaveBeenCalledWith('harness', 'harness-1')
     expect(logSpy).toHaveBeenCalledWith('Status: in_progress')
     expect(logSpy).toHaveBeenCalledWith('Stage: reviewing')
+    expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/harness-1 (worktree)')
+    expect(logSpy).toHaveBeenCalledWith('Host: tmux')
+    expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Knowledge: '))
     logSpy.mockRestore()
@@ -444,15 +543,21 @@ function loadWorkflowSessionsDetail(): void {
     status: 'in_progress',
     currentStage: 'reviewing',
     summary: 'Running review cycle 1.',
-    artifacts: {
-      harnessConfigPath: '/tmp/harness.config.yaml',
-      roundsPath: '/tmp/rounds.json',
-      providerSelectionPath: '/tmp/provider-selection.json',
-      routingDecisionPath: '/tmp/routing-decision.json',
-      eventsPath: '/tmp/events.jsonl',
-      knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
-      knowledgeIndexPath: join(knowledgeDir, 'index.md'),
-      knowledgeLogPath: join(knowledgeDir, 'log.md'),
+      artifacts: {
+        harnessConfigPath: '/tmp/harness.config.yaml',
+        roundsPath: '/tmp/rounds.json',
+        providerSelectionPath: '/tmp/provider-selection.json',
+        routingDecisionPath: '/tmp/routing-decision.json',
+        eventsPath: '/tmp/events.jsonl',
+        workspaceMode: 'worktree',
+        workspacePath: '/tmp/.worktrees/sch/harness-1',
+        executionHost: 'tmux',
+        tmuxSession: 'magpie-harness-1',
+        tmuxWindow: '@1',
+        tmuxPane: '%1',
+        knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
+        knowledgeIndexPath: join(knowledgeDir, 'index.md'),
+        knowledgeLogPath: join(knowledgeDir, 'log.md'),
       knowledgeStatePath: join(knowledgeDir, 'state.json'),
       knowledgeSummaryDir: summaryDir,
       knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),

@@ -1,4 +1,10 @@
-import type { OperationsCollectionInput, OperationsEvidence, OperationsProvider } from './types.js'
+import type {
+  OperationsCollectionInput,
+  OperationsEvidence,
+  OperationsLaunchInput,
+  OperationsLaunchResult,
+  OperationsProvider,
+} from './types.js'
 
 export interface OperationsRouterOptions {
   enabled: boolean
@@ -30,5 +36,16 @@ export class OperationsRouter {
     }
 
     return provider.collectEvidence(input)
+  }
+
+  async launchCommand(providerId: string, input: OperationsLaunchInput): Promise<OperationsLaunchResult> {
+    const provider = this.options.providers[providerId]
+    if (!provider) {
+      throw new Error(`Operations provider not configured: ${providerId}`)
+    }
+    if (typeof provider.launchCommand !== 'function') {
+      throw new Error(`Operations provider does not support detached launch: ${providerId}`)
+    }
+    return provider.launchCommand(input)
   }
 }
