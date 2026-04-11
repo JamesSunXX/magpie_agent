@@ -4,6 +4,9 @@ import { join } from 'path'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { ensureKiroInstall, resolveInstalledKiroAgent } from './kiro-install.js'
+import { withRetry } from '../utils/retry.js'
+
+const KIRO_RETRY_BACKOFF_MS = [1000, 2000]
 
 export class KiroProvider implements AIProvider {
     name = 'kiro'
@@ -63,7 +66,7 @@ export class KiroProvider implements AIProvider {
         const prompt = this.session.shouldSendFullHistory()
             ? this.session.buildPrompt(messages, systemPrompt)
             : this.session.buildPromptLastOnly(messages)
-        const result = await this.runKiro(this.attachImageRefs(prompt, options))
+        const result = await this.retryKiro(() => this.runKiro(this.attachImageRefs(prompt, options)))
         this.session.markMessageSent()
         return result
     }
@@ -72,7 +75,7 @@ export class KiroProvider implements AIProvider {
         const prompt = this.session.shouldSendFullHistory()
             ? this.session.buildPrompt(messages, systemPrompt)
             : this.session.buildPromptLastOnly(messages)
-        yield* this.runKiroStream(prompt)
+        yield* this.runKiroStreamWithRetry(prompt)
         this.session.markMessageSent()
     }
 
@@ -100,6 +103,34 @@ export class KiroProvider implements AIProvider {
         if (this.timeout <= 0) return 0
         // Keep timeout checks responsive while avoiding tight polling loops.
         return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
+    }
+
+    private async retryKiro<T>(fn: () => Promise<T>): Promise<T> {
+        return withRetry(fn, {
+            backoffMs: KIRO_RETRY_BACKOFF_MS,
+            shouldRetry: (error) => this.isRetryableKiroError(error),
+        })
+    }
+
+    private isRetryableKiroError(error: unknown): boolean {
+        const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+        return message.includes('dispatch failure')
+            || message.includes('failed to send the request')
+            || message.includes('error sending request for url')
+            || message.includes('having trouble responding right now')
+            || message.includes('timeout')
+    }
+
+    private formatCliExitError(code: number | null, stderr: string): Error {
+        const cleanError = this.stripAnsiCodes(stderr).trim()
+        if (!cleanError) {
+            return new Error(`kiro-cli exited with code ${code}`)
+        }
+        return new Error(`kiro-cli exited with code ${code}: ${cleanError}`)
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     private async runKiro(prompt: string): Promise<string> {
@@ -150,7 +181,7 @@ export class KiroProvider implements AIProvider {
                 if (settled) return
                 settled = true
                 if (code !== 0) {
-                    reject(new Error(`kiro-cli exited with code ${code}: ${error}`))
+                    reject(this.formatCliExitError(code, error))
                 } else {
                     resolve(this.stripAnsiCodes(output).trim())
                 }
@@ -165,7 +196,30 @@ export class KiroProvider implements AIProvider {
         })
     }
 
-    private async *runKiroStream(prompt: string): AsyncGenerator<string, void, unknown> {
+    private async *runKiroStreamWithRetry(prompt: string): AsyncGenerator<string, void, unknown> {
+        for (let attempt = 0; ; attempt++) {
+            let yieldedOutput = false
+            try {
+                for await (const chunk of this.runKiroStreamOnce(prompt)) {
+                    yieldedOutput = true
+                    yield chunk
+                }
+                return
+            } catch (error) {
+                const canRetry = (
+                    !yieldedOutput
+                    && attempt < KIRO_RETRY_BACKOFF_MS.length
+                    && this.isRetryableKiroError(error)
+                )
+                if (!canRetry) {
+                    throw error
+                }
+                await this.sleep(KIRO_RETRY_BACKOFF_MS[attempt]!)
+            }
+        }
+    }
+
+    private async *runKiroStreamOnce(prompt: string): AsyncGenerator<string, void, unknown> {
         const agent = await this.resolveAgent()
 
         // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
@@ -187,6 +241,7 @@ export class KiroProvider implements AIProvider {
         let resolveNext: ((value: { chunk: string | null }) => void) | null = null
         let done = false
         let error: Error | null = null
+        let stderrOutput = ''
         let lastActivity = Date.now()
         const checkInterval = this.getTimeoutCheckInterval()
 
@@ -216,15 +271,16 @@ export class KiroProvider implements AIProvider {
             }
         })
 
-        child.stderr.on('data', (_data) => {
+        child.stderr.on('data', (data) => {
             lastActivity = Date.now()  // Activity on stderr also counts
+            stderrOutput += data.toString()
         })
 
         child.on('close', (code) => {
             if (timeoutChecker) clearInterval(timeoutChecker)
             done = true
             if (code !== 0 && !error) {
-                error = new Error(`kiro-cli exited with code ${code}`)
+                error = this.formatCliExitError(code, stderrOutput)
             }
             if (resolveNext) {
                 resolveNext({ chunk: null })

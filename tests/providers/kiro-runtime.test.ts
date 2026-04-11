@@ -27,6 +27,7 @@ let originalTimeoutEnv: string | undefined
 describe('KiroProvider runtime behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockSpawn.mockReset()
     originalTimeoutEnv = process.env.MAGPIE_KIRO_TIMEOUT_MS
     delete process.env.MAGPIE_KIRO_TIMEOUT_MS
   })
