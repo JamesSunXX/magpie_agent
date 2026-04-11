@@ -9,9 +9,10 @@
 | 评审 | `magpie review` | `src/cli/commands/review.ts`、`src/capabilities/review/` | 支持 PR、本地改动、分支、文件、仓库级扫描 |
 | 讨论 | `magpie discuss` | `src/cli/commands/discuss.ts`、`src/capabilities/discuss/` | 多模型讨论，可选对抗视角 |
 | TRD 生成 | `magpie trd` | `src/cli/commands/trd.ts`、`src/capabilities/trd/` | 从 PRD Markdown 生成 TRD |
-| 闭环执行 | `magpie loop` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 围绕目标分阶段推进 |
-| Harness | `magpie harness` | `src/cli/commands/harness.ts`、`src/capabilities/workflows/harness/` | 需求到交付的闭环入口 |
-| Workflow | `magpie workflow ...` | `src/cli/commands/workflow.ts`、`src/capabilities/workflows/` | `issue-fix`、`docs-sync`、`post-merge-regression` 等 |
+| 闭环执行 | `magpie loop run|resume|inspect|list` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 支持 `--host foreground|tmux`，可查看知识摘要 |
+| Harness | `magpie harness submit|status|attach|inspect|list` | `src/cli/commands/harness.ts`、`src/capabilities/workflows/harness/` | 需求到交付的闭环入口，支持 `--host foreground|tmux` |
+| Workflow | `magpie workflow issue-fix|docs-sync|harness|post-merge-regression` | `src/cli/commands/workflow.ts`、`src/capabilities/workflows/` | `workflow harness` 为兼容入口，`docs-sync` 依赖当前可用配置 |
+| 记忆 | `magpie memory show|edit|promote` | `src/cli/commands/memory.ts`、`src/knowledge/`、`src/memory/` | 查看、编辑、提炼长期记忆 |
 | TUI | `magpie tui` | `src/cli/commands/tui.ts`、`src/tui/` | 任务工作台 |
 | 初始化 | `magpie init` | `src/cli/commands/init.ts`、`src/platform/config/` | 生成或升级配置 |
 | 统计 | `magpie stats` | `src/cli/commands/stats.ts`、`src/capabilities/stats/` | 当前仍偏轻量 |
@@ -23,11 +24,13 @@
 | CLI 注册 | `src/cli/program.ts` | 统一挂载所有命令 |
 | 运行基础 | `src/core/` | 上下文、状态、仓库访问、辩论等公共能力 |
 | 平台集成 | `src/platform/` | 配置、provider、通知、规划、操作集成 |
+| 知识与记忆 | `src/knowledge/`、`src/memory/` | 会话知识、长期记忆、提炼与展示 |
 | 历史兼容 | `src/commands/`、`src/orchestrator/`、`src/providers/` | 旧路径和兼容逻辑 |
 
 ## 改动对照
 
 - 新增或改命令：同时检查 `src/cli/commands/`、本文件、`README.md`
-- 改能力行为：同时检查对应 `src/capabilities/` 和 `ARCHITECTURE.md`
+- 改能力行为、会话输出或入口参数：同时检查对应 `src/capabilities/`、本文件和 `ARCHITECTURE.md`
 - 改 provider、通知、配置：同时检查 `src/platform/` 与相关说明
+- 改知识卡、长期记忆或提炼流程：同时检查 `src/knowledge/`、`src/memory/` 与本文件
 - 改较大流程：补 `docs/plans/` 新文档，不要只把结论埋在提交里
