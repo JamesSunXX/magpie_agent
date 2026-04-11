@@ -4,5 +4,4 @@ coverage/
 *.log
 .env
 .DS_Store
-docs
 .magpie
