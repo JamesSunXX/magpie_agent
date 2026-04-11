@@ -49,6 +49,12 @@ export interface HarnessResult {
       providerSelectionPath: string
       routingDecisionPath: string
       eventsPath: string
+      repoRootPath?: string
+      knowledgeSchemaPath?: string
+      knowledgeIndexPath?: string
+      knowledgeLogPath?: string
+      knowledgeSummaryDir?: string
+      knowledgeCandidatesPath?: string
       loopSessionId?: string
     }
   }

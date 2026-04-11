@@ -22,6 +22,14 @@ import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../.
 import type { MergedIssue } from '../../../../core/debate/types.js'
 import type { HarnessCycle, HarnessPreparedInput, HarnessResult, HarnessStage } from '../types.js'
 import { selectHarnessProviders } from './provider-selection.js'
+import { getHarnessProgressObserver } from '../progress.js'
+import {
+  createTaskKnowledge,
+  promoteKnowledgeCandidates,
+  updateTaskKnowledgeSummary,
+  writeTaskKnowledgeFinal,
+  type KnowledgeCandidate,
+} from '../../../../knowledge/runtime.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
 const HARNESS_REVIEWER_PROMPTS = [
@@ -34,6 +42,95 @@ interface DecisionJson {
   decision?: 'approved' | 'revise'
   rationale?: string
   requiredActions?: string[]
+}
+
+function buildHarnessPlanSummary(goal: string): string {
+  return [
+    '# Plan',
+    '',
+    `Goal: ${goal}`,
+    '',
+    '- Run loop development first.',
+    '- Run adversarial review, adjudication, and unit test evaluation per cycle.',
+    '- Stop when reviewers approve and tests pass, otherwise auto-fix and continue.',
+  ].join('\n')
+}
+
+function buildHarnessCycleSummary(cycle: HarnessCycle): string {
+  return [
+    `# Cycle ${cycle.cycle}`,
+    '',
+    `Issue count: ${cycle.issueCount}`,
+    `Blocking issues: ${cycle.blockingIssueCount}`,
+    `Tests passed: ${cycle.testsPassed ? 'yes' : 'no'}`,
+    `Decision: ${cycle.modelDecision}`,
+    '',
+    cycle.modelRationale,
+    '',
+    'Artifacts:',
+    `- Review: ${cycle.reviewOutputPath}`,
+    `- Adjudication: ${cycle.adjudicationOutputPath}`,
+    `- Unit test eval: ${cycle.unitTestEvalPath}`,
+    ...(cycle.issueFixSessionId ? [`- Issue fix session: ${cycle.issueFixSessionId}`] : []),
+  ].join('\n')
+}
+
+function buildHarnessOpenIssues(cycle: HarnessCycle): string {
+  if (cycle.blockingIssueCount === 0 && cycle.testsPassed) {
+    return '# Open Issues\n\n- None.\n'
+  }
+
+  return [
+    '# Open Issues',
+    '',
+    cycle.blockingIssueCount > 0
+      ? `- ${cycle.blockingIssueCount} blocking review issue(s) still need attention.`
+      : '- Review blockers cleared.',
+    cycle.testsPassed
+      ? '- Test gate is passing.'
+      : '- Unit tests are still failing or did not complete cleanly.',
+    cycle.modelDecision === 'approved'
+      ? '- Model gate approved the change.'
+      : '- Model gate still requests revision.',
+  ].join('\n')
+}
+
+function buildHarnessEvidence(cycle: HarnessCycle): string {
+  return [
+    '# Evidence',
+    '',
+    `- Review output: ${cycle.reviewOutputPath}`,
+    `- Adjudication output: ${cycle.adjudicationOutputPath}`,
+    `- Unit test evaluation: ${cycle.unitTestEvalPath}`,
+  ].join('\n')
+}
+
+function buildHarnessCandidates(
+  goal: string,
+  sessionId: string,
+  approved: boolean,
+  summary: string,
+  evidencePath: string
+): KnowledgeCandidate[] {
+  if (approved) {
+    return [{
+      type: 'decision',
+      title: goal,
+      summary,
+      sourceSessionId: sessionId,
+      evidencePath,
+      status: 'candidate',
+    }]
+  }
+
+  return [{
+    type: 'failure-pattern',
+    title: summary,
+    summary,
+    sourceSessionId: sessionId,
+    evidencePath,
+    status: 'candidate',
+  }]
 }
 
 function cloneConfig(config: MagpieConfigV2): MagpieConfigV2 {
@@ -371,6 +468,7 @@ export async function executeHarness(
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
   const config = loadConfig(ctx.configPath)
+  const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = generateWorkflowId('harness')
   const sessionDir = sessionDirFor('harness', sessionId)
   const roundsPath = join(sessionDir, 'rounds.json')
@@ -380,6 +478,19 @@ export async function executeHarness(
   const eventsPath = join(sessionDir, 'events.jsonl')
 
   await mkdir(sessionDir, { recursive: true })
+  const knowledgeArtifacts = await createTaskKnowledge({
+    sessionDir,
+    capability: 'harness',
+    sessionId,
+    title: prepared.goal.slice(0, 80),
+    goal: prepared.goal,
+  })
+  await updateTaskKnowledgeSummary(
+    knowledgeArtifacts,
+    'plan',
+    buildHarnessPlanSummary(prepared.goal),
+    'Harness plan summary initialized.'
+  )
 
   type HarnessSession = NonNullable<HarnessResult['session']>
   type HarnessSessionPatch = Omit<Partial<HarnessSession>, 'artifacts'> & {
@@ -396,11 +507,13 @@ export async function executeHarness(
     currentStage: 'queued' as HarnessStage,
     summary: 'Harness workflow queued.',
     artifacts: {
+      repoRootPath: ctx.cwd,
       harnessConfigPath,
       roundsPath,
       providerSelectionPath,
       routingDecisionPath,
       eventsPath,
+      ...knowledgeArtifacts,
     },
   }
 
@@ -423,6 +536,7 @@ export async function executeHarness(
       artifacts: nextArtifacts,
     }
     await persistWorkflowSession(session)
+    progressObserver?.onSessionUpdate?.(session)
   }
 
   const appendEvent = async (
@@ -434,11 +548,34 @@ export async function executeHarness(
       details?: Record<string, unknown>
     } = {}
   ): Promise<void> => {
-    await appendWorkflowEvent('harness', sessionId, {
+    const event = {
       timestamp: new Date(),
       type,
       ...patch,
+    }
+    await appendWorkflowEvent('harness', sessionId, event)
+    progressObserver?.onEvent?.({
+      sessionId,
+      ...event,
     })
+  }
+
+  const finalizeKnowledgeBestEffort = async (
+    content: string,
+    candidates: KnowledgeCandidate[],
+    logMessage: string
+  ): Promise<void> => {
+    try {
+      await writeTaskKnowledgeFinal(
+        knowledgeArtifacts,
+        content,
+        candidates,
+        logMessage
+      )
+      await promoteKnowledgeCandidates(ctx.cwd, candidates)
+    } catch {
+      return
+    }
   }
 
   const transitionStage = async (
@@ -488,6 +625,7 @@ export async function executeHarness(
 
   if (providerSelection.record.decision === 'fallback_failed') {
     const summary = `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim()
+    const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, providerSelectionPath)
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
@@ -497,6 +635,11 @@ export async function executeHarness(
       stage: 'failed',
       summary,
     })
+    await finalizeKnowledgeBestEffort(
+      ['# Final Summary', '', summary].join('\n'),
+      candidates,
+      'Harness failed before development started.'
+    )
 
     return {
       status: 'failed',
@@ -520,6 +663,7 @@ export async function executeHarness(
 
   if (loopResult.result.status !== 'completed') {
     const summary = 'Harness failed during loop development stage.'
+    const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
@@ -532,6 +676,11 @@ export async function executeHarness(
       stage: 'failed',
       summary,
     })
+    await finalizeKnowledgeBestEffort(
+      ['# Final Summary', '', summary].join('\n'),
+      candidates,
+      'Harness failed during loop development stage.'
+    )
 
     return {
       status: 'failed',
@@ -544,6 +693,16 @@ export async function executeHarness(
       ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
     },
   })
+  await updateTaskKnowledgeSummary(
+    knowledgeArtifacts,
+    'plan',
+    [
+      buildHarnessPlanSummary(prepared.goal),
+      '',
+      loopResult.result.session?.id ? `Loop session: ${loopResult.result.session.id}` : 'Loop session: unavailable',
+    ].join('\n'),
+    'Harness linked loop session.'
+  )
 
   const testCommand = prepared.testCommand || config.capabilities.loop?.commands?.unit_test || 'npm run test:run'
   const cycles: HarnessCycle[] = []
@@ -572,6 +731,24 @@ export async function executeHarness(
       }
       cycles.push(cycleRun.cycleResult)
       await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
+      await updateTaskKnowledgeSummary(
+        knowledgeArtifacts,
+        `stage-cycle-${cycle}`,
+        buildHarnessCycleSummary(cycleRun.cycleResult),
+        `Cycle ${cycle} summary updated.`
+      )
+      await updateTaskKnowledgeSummary(
+        knowledgeArtifacts,
+        'open-issues',
+        buildHarnessOpenIssues(cycleRun.cycleResult),
+        `Cycle ${cycle} open issues updated.`
+      )
+      await updateTaskKnowledgeSummary(
+        knowledgeArtifacts,
+        'evidence',
+        buildHarnessEvidence(cycleRun.cycleResult),
+        `Cycle ${cycle} evidence updated.`
+      )
       await appendEvent('cycle_completed', {
         stage: cycleRun.approved ? 'completed' : 'reviewing',
         cycle,
@@ -593,6 +770,7 @@ export async function executeHarness(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     const summary = `Harness failed during review cycle: ${message}`
+    const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, roundsPath)
     await persistSession({
       status: 'failed',
       currentStage: 'failed',
@@ -603,12 +781,24 @@ export async function executeHarness(
       summary,
       details: { error: message },
     })
+    await finalizeKnowledgeBestEffort(
+      ['# Final Summary', '', summary].join('\n'),
+      candidates,
+      'Harness failed during review cycle.'
+    )
     return { status: 'failed', session }
   }
 
   const summary = approved
     ? `Harness approved after ${cycles.length} cycle(s).`
     : `Harness failed after ${cycles.length} cycle(s) without approval.`
+  const finalCandidates = buildHarnessCandidates(
+    prepared.goal,
+    sessionId,
+    approved,
+    summary,
+    roundsPath
+  )
   await persistSession({
     status: approved ? 'completed' : 'failed',
     currentStage: approved ? 'completed' : 'failed',
@@ -621,6 +811,19 @@ export async function executeHarness(
       totalCycles: cycles.length,
     },
   })
+  await finalizeKnowledgeBestEffort(
+    [
+      '# Final Summary',
+      '',
+      summary,
+      '',
+      cycles.length > 0
+        ? `Latest cycle decision: ${cycles[cycles.length - 1]?.modelDecision}`
+        : 'No review cycles completed.',
+    ].join('\n'),
+    finalCandidates,
+    approved ? 'Harness completed successfully.' : 'Harness finished without approval.'
+  )
 
   return {
     status: approved ? 'completed' : 'failed',

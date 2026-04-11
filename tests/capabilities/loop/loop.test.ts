@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
@@ -29,6 +29,10 @@ const plannerMocks = vi.hoisted(() => ({
   ]),
 }))
 
+const knowledgeMocks = vi.hoisted(() => ({
+  failPromote: false,
+}))
+
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
   createPlanningRouter: vi.fn(() => ({
     createPlanContext: planningMocks.createPlanContext,
@@ -40,7 +44,24 @@ vi.mock('../../../src/capabilities/loop/domain/planner.js', () => ({
   generateLoopPlan: plannerMocks.generateLoopPlan,
 }))
 
+vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/knowledge/runtime.js')>()
+  return {
+    ...actual,
+    promoteKnowledgeCandidates: vi.fn(async (...args: Parameters<typeof actual.promoteKnowledgeCandidates>) => {
+      if (knowledgeMocks.failPromote) {
+        throw new Error('knowledge promotion failed')
+      }
+      return actual.promoteKnowledgeCandidates(...args)
+    }),
+  }
+})
+
 describe('loop capability', () => {
+  afterEach(() => {
+    knowledgeMocks.failPromote = false
+  })
+
   it('runs a minimal dry-run loop session with mock providers', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -67,6 +88,38 @@ describe('loop capability', () => {
     expect(result.result.status).toBe('completed')
     expect(result.result.session).toBeDefined()
     expect(result.result.session?.stages).toEqual(['prd_review'])
+    expect(result.result.session?.artifacts.knowledgeSchemaPath).toBeTruthy()
+    expect(result.result.session?.artifacts.knowledgeIndexPath).toBeTruthy()
+    expect(result.result.session?.artifacts.knowledgeLogPath).toBeTruthy()
+    expect(result.result.session?.artifacts.knowledgeSummaryDir).toBeTruthy()
+    expect(existsSync(result.result.session!.artifacts.knowledgeSchemaPath)).toBe(true)
+    expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
+    expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
+  })
+
+  it('persists a completed loop session even if knowledge promotion fails', async () => {
+    knowledgeMocks.failPromote = true
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-knowledge-fail-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.status).toBe('completed')
   })
 
   it('syncs loop plan artifacts to the planning router when configured', async () => {

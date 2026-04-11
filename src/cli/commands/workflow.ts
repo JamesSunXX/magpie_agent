@@ -3,6 +3,7 @@ import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
+import { createHarnessProgressReporter } from './harness-progress.js'
 import type { DocsSyncInput, DocsSyncPreparedInput, DocsSyncResult, DocsSyncSummary } from '../../capabilities/workflows/docs-sync/types.js'
 import type { HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary } from '../../capabilities/workflows/harness/types.js'
 import type { IssueFixInput, IssueFixPreparedInput, IssueFixResult, IssueFixSummary } from '../../capabilities/workflows/issue-fix/types.js'
@@ -97,28 +98,47 @@ workflowCommand
         registry,
         'harness'
       )
-      const ctx = createCapabilityContext({ cwd: process.cwd(), configPath: options.config })
-      const { output, result } = await runCapability(capability, {
-        goal,
-        prdPath: options.prd,
-        maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
-        reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
-        testCommand: options.testCommand,
-        models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
-        complexity: options.complexity,
-      }, ctx)
+      const progressReporter = createHarnessProgressReporter()
+      const ctx = createCapabilityContext({
+        cwd: process.cwd(),
+        configPath: options.config,
+        metadata: {
+          harnessProgress: progressReporter,
+        },
+      })
+      progressReporter.start()
+      const { output, result } = await (async () => {
+        try {
+          return await runCapability(capability, {
+            goal,
+            prdPath: options.prd,
+            maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
+            reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
+            testCommand: options.testCommand,
+            models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
+            complexity: options.complexity,
+          }, ctx)
+        } finally {
+          progressReporter.stop()
+        }
+      })()
 
       console.log(output.summary)
       if (output.details) {
-        console.log(`Session: ${output.details.id}`)
-        if (output.details.currentStage) {
-          console.log(`Stage: ${output.details.currentStage}`)
+        if (!progressReporter.hasAnnouncedSession()) {
+          console.log(`Session: ${output.details.id}`)
+          console.log(`Status: ${output.details.status}`)
+          if (output.details.currentStage) {
+            console.log(`Stage: ${output.details.currentStage}`)
+          }
+          if (output.details.artifacts.eventsPath) {
+            console.log(`Events: ${output.details.artifacts.eventsPath}`)
+          }
         }
         console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
         console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
         console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
         console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
-        console.log(`Events: ${output.details.artifacts.eventsPath}`)
         if (output.details.artifacts.loopSessionId) {
           console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
         }

@@ -24,7 +24,13 @@ export interface WorkflowSession {
   status: WorkflowSessionStatus
   currentStage?: string
   summary: string
-  artifacts: Record<string, string>
+  artifacts: Record<string, string> & {
+    knowledgeSchemaPath?: string
+    knowledgeIndexPath?: string
+    knowledgeLogPath?: string
+    knowledgeSummaryDir?: string
+    knowledgeCandidatesPath?: string
+  }
   evidence?: unknown
 }
 

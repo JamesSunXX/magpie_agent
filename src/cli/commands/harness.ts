@@ -9,6 +9,8 @@ import {
   loadWorkflowSession,
 } from '../../capabilities/workflows/shared/runtime.js'
 import type { HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary } from '../../capabilities/workflows/harness/types.js'
+import { createHarnessProgressReporter, followHarnessEventStream } from './harness-progress.js'
+import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 
 interface HarnessCommandOptions {
   config?: string
@@ -25,24 +27,39 @@ async function runHarness(input: HarnessInput, options: HarnessCommandOptions): 
     registry,
     'harness'
   )
+  const progressReporter = createHarnessProgressReporter()
   const ctx = createCapabilityContext({
     cwd: process.cwd(),
     configPath: options.config,
+    metadata: {
+      harnessProgress: progressReporter,
+    },
   })
-  const { output, result } = await runCapability(capability, input, ctx)
+  progressReporter.start()
+  const { output, result } = await (async () => {
+    try {
+      return await runCapability(capability, input, ctx)
+    } finally {
+      progressReporter.stop()
+    }
+  })()
 
   console.log(output.summary)
   if (output.details) {
-    console.log(`Session: ${output.details.id}`)
-    console.log(`Status: ${output.details.status}`)
-    if (output.details.currentStage) {
-      console.log(`Stage: ${output.details.currentStage}`)
+    if (!progressReporter.hasAnnouncedSession()) {
+      console.log(`Session: ${output.details.id}`)
+      console.log(`Status: ${output.details.status}`)
+      if (output.details.currentStage) {
+        console.log(`Stage: ${output.details.currentStage}`)
+      }
+      if (output.details.artifacts.eventsPath) {
+        console.log(`Events: ${output.details.artifacts.eventsPath}`)
+      }
     }
     console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
     console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
     console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
     console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
-    console.log(`Events: ${output.details.artifacts.eventsPath}`)
     if (output.details.artifacts.loopSessionId) {
       console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
     }
@@ -106,13 +123,15 @@ harnessCommand
     if (session.artifacts.eventsPath) {
       console.log(`Events: ${session.artifacts.eventsPath}`)
     }
+    await printKnowledgeSummary(session.artifacts)
   })
 
 harnessCommand
   .command('attach')
   .description('Print the persisted harness event stream for a session')
   .argument('<sessionId>', 'Harness session ID')
-  .action(async (sessionId: string) => {
+  .option('--once', 'Print current events and exit')
+  .action(async (sessionId: string, options: { once?: boolean }) => {
     const session = await loadWorkflowSession('harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
@@ -122,39 +141,28 @@ harnessCommand
 
     console.log(`Session: ${session.id}`)
     console.log(`Status: ${session.status}`)
-    if (!session.artifacts.eventsPath) {
-      console.log('No persisted event stream for this session.')
+    await printKnowledgeSummary(session.artifacts)
+    await followHarnessEventStream({
+      sessionId,
+      initialSession: session,
+      loadSession: async (id) => loadWorkflowSession('harness', id),
+      once: !!options.once,
+    })
+  })
+
+harnessCommand
+  .command('inspect')
+  .description('Show the knowledge summary for a harness session')
+  .argument('<sessionId>', 'Harness session ID')
+  .action(async (sessionId: string) => {
+    const session = await loadWorkflowSession('harness', sessionId)
+    if (!session) {
+      console.error(`Harness session not found: ${sessionId}`)
+      process.exitCode = 1
       return
     }
 
-    const raw = await readFile(session.artifacts.eventsPath, 'utf-8').catch(() => '')
-    const lines = raw.trim()
-      ? raw.trim().split('\n').flatMap((line) => {
-          try {
-            return [JSON.parse(line) as {
-              timestamp?: string
-              type: string
-              stage?: string
-              cycle?: number
-              summary?: string
-            }]
-          } catch {
-            return []
-          }
-        })
-      : []
-
-    if (lines.length === 0) {
-      console.log('No persisted event stream for this session.')
-      return
-    }
-
-    for (const event of lines) {
-      const cycle = Number.isFinite(event.cycle) ? ` cycle=${event.cycle}` : ''
-      const stage = event.stage ? ` stage=${event.stage}` : ''
-      const summary = event.summary ? ` ${event.summary}` : ''
-      console.log(`${event.timestamp || ''} ${event.type}${stage}${cycle}${summary}`.trim())
-    }
+    await printKnowledgeInspectView(session.artifacts)
   })
 
 harnessCommand

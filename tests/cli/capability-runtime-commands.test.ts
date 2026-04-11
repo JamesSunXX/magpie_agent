@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
+const progressReporterMocks = vi.hoisted(() => ({
+  start: vi.fn(),
+  stop: vi.fn(),
+}))
 
 vi.mock('../../src/core/capability/runner.js', () => ({
   runCapability,
@@ -15,6 +19,27 @@ vi.mock('../../src/core/capability/registry.js', () => ({
 vi.mock('../../src/capabilities/index.js', () => ({
   createDefaultCapabilityRegistry,
 }))
+
+vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/cli/commands/harness-progress.js')>()
+  return {
+    ...actual,
+    createHarnessProgressReporter: vi.fn((...args: Parameters<typeof actual.createHarnessProgressReporter>) => {
+      const reporter = actual.createHarnessProgressReporter(...args)
+      return {
+        ...reporter,
+        start: vi.fn(() => {
+          progressReporterMocks.start()
+          reporter.start()
+        }),
+        stop: vi.fn(() => {
+          progressReporterMocks.stop()
+          reporter.stop()
+        }),
+      }
+    }),
+  }
+})
 
 describe('capability runtime CLI commands', () => {
   beforeEach(() => {
@@ -59,6 +84,61 @@ describe('capability runtime CLI commands', () => {
     logSpy.mockRestore()
   })
 
+  it('streams workflow harness progress updates before completion', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+    runCapability.mockImplementation(async (_capability, _input, ctx) => {
+      const reporter = ctx.metadata?.harnessProgress as {
+        onSessionUpdate?: (session: Record<string, unknown>) => void
+        onEvent?: (event: Record<string, unknown>) => void
+      }
+      reporter.onSessionUpdate?.({
+        id: 'harness-live',
+        status: 'in_progress',
+        currentStage: 'queued',
+        artifacts: {
+          eventsPath: '/tmp/live-events.jsonl',
+        },
+      })
+      reporter.onEvent?.({
+        sessionId: 'harness-live',
+        timestamp: '2026-04-11T00:00:05.000Z',
+        type: 'stage_changed',
+        stage: 'developing',
+        summary: 'Running loop development stage.',
+      })
+      return {
+        output: {
+          summary: 'done',
+          details: {
+            id: 'harness-live',
+            status: 'completed',
+            currentStage: 'completed',
+            artifacts: {
+              harnessConfigPath: '/tmp/harness.config.yaml',
+              roundsPath: '/tmp/rounds.json',
+              providerSelectionPath: '/tmp/provider-selection.json',
+              routingDecisionPath: '/tmp/routing-decision.json',
+              eventsPath: '/tmp/live-events.jsonl',
+            },
+          },
+        },
+        result: { status: 'completed' },
+      }
+    })
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
+    expect(logSpy).toHaveBeenCalledWith('2026-04-11T00:00:05.000Z stage_changed stage=developing Running loop development stage.')
+    logSpy.mockRestore()
+  })
+
   it('sets a failing exit code when workflow harness returns failed status', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -92,6 +172,23 @@ describe('capability runtime CLI commands', () => {
     expect(logSpy).toHaveBeenCalledWith('Harness workflow failed.')
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Harness failed:'))
     logSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it('stops workflow harness progress reporter when execution throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    getTypedCapability.mockReturnValue({ name: 'harness' })
+    runCapability.mockRejectedValue(new Error('boom'))
+
+    const { workflowCommand } = await import('../../src/cli/commands/workflow.js')
+
+    await workflowCommand.parseAsync(
+      ['node', 'workflow', 'harness', 'Deliver checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(progressReporterMocks.start).toHaveBeenCalled()
+    expect(progressReporterMocks.stop).toHaveBeenCalled()
     errorSpy.mockRestore()
   })
 

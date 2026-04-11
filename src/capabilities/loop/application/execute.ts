@@ -31,6 +31,14 @@ import {
 } from '../domain/human-confirmation.js'
 import { generateLoopPlan } from '../domain/planner.js'
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
+import {
+  createTaskKnowledge,
+  promoteKnowledgeCandidates,
+  renderKnowledgeContext,
+  updateTaskKnowledgeSummary,
+  writeTaskKnowledgeFinal,
+  type KnowledgeCandidate,
+} from '../../../knowledge/runtime.js'
 
 const DEFAULT_STAGES: LoopStageName[] = [
   'prd_review',
@@ -76,6 +84,8 @@ interface StageRunResult {
   stageResult: LoopStageResult
   paused: boolean
   failed: boolean
+  stageReport: string
+  testOutput: string
 }
 
 function generateId(): string {
@@ -217,7 +227,87 @@ function runOptionalCommand(
   }
 }
 
-function buildStagePrompt(stage: LoopStageName, session: LoopSession, tasks: LoopTask[]): string {
+function renderPlanSummary(tasks: LoopTask[]): string {
+  return [
+    '# Plan',
+    '',
+    ...tasks.map((task) => `- [${task.stage}] ${task.title}: ${task.description}`),
+  ].join('\n')
+}
+
+function renderStageKnowledge(stageRun: StageRunResult): string {
+  return [
+    `# Stage ${stageRun.stageResult.stage}`,
+    '',
+    `Success: ${stageRun.stageResult.success ? 'yes' : 'no'}`,
+    `Confidence: ${stageRun.stageResult.confidence}`,
+    '',
+    stageRun.stageResult.summary,
+    '',
+    stageRun.stageResult.risks.length > 0 ? 'Risks:' : 'Risks: none',
+    ...stageRun.stageResult.risks.map((risk) => `- ${risk}`),
+    '',
+    'Artifacts:',
+    ...(stageRun.stageResult.artifacts.length > 0
+      ? stageRun.stageResult.artifacts.map((artifact) => `- ${artifact}`)
+      : ['- None']),
+  ].join('\n')
+}
+
+function renderOpenIssues(stageRun: StageRunResult): string {
+  if (stageRun.stageResult.success && stageRun.stageResult.risks.length === 0) {
+    return '# Open Issues\n\n- None.\n'
+  }
+
+  return [
+    '# Open Issues',
+    '',
+    ...(
+      stageRun.stageResult.risks.length > 0
+        ? stageRun.stageResult.risks.map((risk) => `- ${risk}`)
+        : ['- Stage did not complete successfully.']
+    ),
+  ].join('\n')
+}
+
+function renderEvidence(stageRun: StageRunResult): string {
+  const excerpt = stageRun.testOutput
+    ? stageRun.testOutput.slice(0, 400)
+    : stageRun.stageReport.slice(0, 400)
+
+  return [
+    '# Evidence',
+    '',
+    ...stageRun.stageResult.artifacts.map((artifact) => `- ${artifact}`),
+    excerpt ? '' : undefined,
+    excerpt ? 'Excerpt:' : undefined,
+    excerpt ? excerpt : undefined,
+  ].filter(Boolean).join('\n')
+}
+
+function buildLoopCandidates(session: LoopSession, approved: boolean, summary: string, evidencePath?: string): KnowledgeCandidate[] {
+  if (approved) {
+    return [{
+      type: 'decision',
+      title: session.goal,
+      summary,
+      sourceSessionId: session.id,
+      evidencePath,
+      status: 'candidate',
+    }]
+  }
+
+  return [{
+    type: 'failure-pattern',
+    title: summary,
+    summary,
+    sourceSessionId: session.id,
+    evidencePath,
+    status: 'candidate',
+  }]
+}
+
+function buildStagePrompt(stage: LoopStageName, session: LoopSession, tasks: LoopTask[], knowledgeContext: string): string {
   const stageTasks = tasks.filter(task => task.stage === stage)
   const taskText = stageTasks.map(task => {
     const criteria = task.successCriteria.map(item => `- ${item}`).join('\n')
@@ -234,6 +324,8 @@ ${session.prdPath}
 
 Current stage tasks:
 ${taskText || '- Complete this stage with best effort.'}
+
+${knowledgeContext}
 
 Execution requirements:
 1. Make concrete progress in repository files and/or commands where needed.
@@ -443,6 +535,13 @@ async function markSessionFailed(
   session.updatedAt = new Date()
   await stateManager.saveLoopSession(session)
   await appendEvent(session.artifacts.eventsPath, { event: 'loop_failed', stage, reason })
+  await finalizeLoopKnowledge(session, false, [
+    '# Final Summary',
+    '',
+    `Loop failed at stage ${stage}.`,
+    '',
+    reason,
+  ].join('\n'), reason, session.artifacts.eventsPath, 'Loop failed.')
 
   await notificationRouter.dispatch({
     type: 'loop_failed',
@@ -458,6 +557,33 @@ async function markSessionFailed(
     status: 'failed',
     summary: `Loop failed at stage ${stage}. Session: ${session.id}. Reason: ${reason}`,
     session,
+  }
+}
+
+async function finalizeLoopKnowledge(
+  session: LoopSession,
+  approved: boolean,
+  content: string,
+  summary: string,
+  evidencePath: string | undefined,
+  logMessage: string
+): Promise<void> {
+  if (!session.artifacts.knowledgeSummaryDir) {
+    return
+  }
+
+  const candidates = buildLoopCandidates(session, approved, summary, evidencePath)
+  try {
+    await writeTaskKnowledgeFinal({
+      knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
+      knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
+      knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+      knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+      knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+    }, content, candidates, logMessage)
+    await promoteKnowledgeCandidates(session.artifacts.repoRootPath || session.artifacts.sessionDir, candidates)
+  } catch {
+    return
   }
 }
 
@@ -495,11 +621,20 @@ async function runSingleStage(
   let stageReport = ''
   let stageSucceeded = true
   let testOutput = ''
+  const knowledgeContext = session.artifacts.knowledgeSummaryDir && session.artifacts.knowledgeSchemaPath
+    ? await renderKnowledgeContext({
+      knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath,
+      knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'index.md'),
+      knowledgeLogPath: session.artifacts.knowledgeLogPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'log.md'),
+      knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+      knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'candidates.json'),
+    }, runCwd)
+    : ''
 
   if (dryRun) {
     stageReport = `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`
   } else {
-    const stagePrompt = buildStagePrompt(stage, session, tasks)
+    const stagePrompt = buildStagePrompt(stage, session, tasks, knowledgeContext)
     const response = await executor.chat([{ role: 'user', content: stagePrompt }])
     stageReport = response
     await mkdir(dirname(stageArtifactPath), { recursive: true })
@@ -541,6 +676,8 @@ async function runSingleStage(
       stageResult,
       paused: false,
       failed: !stageSucceeded,
+      stageReport,
+      testOutput,
     }
   }
 
@@ -592,6 +729,8 @@ async function runSingleStage(
       stageResult,
       paused: true,
       failed: false,
+      stageReport,
+      testOutput,
     }
   }
 
@@ -607,6 +746,8 @@ async function runSingleStage(
       stageResult,
       paused: true,
       failed: false,
+      stageReport,
+      testOutput,
     }
   }
 
@@ -620,6 +761,8 @@ async function runSingleStage(
       stageResult,
       paused: false,
       failed: !stageSucceeded,
+      stageReport,
+      testOutput,
     }
   }
 
@@ -639,7 +782,7 @@ async function runSingleStage(
       const replanOutput = await planner.chat([{ role: 'user', content: replanPrompt }])
       await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
 
-      const retried = await executor.chat([{ role: 'user', content: `${buildStagePrompt(stage, session, tasks)}\n\nAdditional guidance:\n${replanOutput}` }])
+      const retried = await executor.chat([{ role: 'user', content: `${buildStagePrompt(stage, session, tasks, knowledgeContext)}\n\nAdditional guidance:\n${replanOutput}` }])
       await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${retried}\n`, 'utf-8')
 
       if (stage === 'unit_mock_test') {
@@ -673,6 +816,8 @@ async function runSingleStage(
           stageResult,
           paused: false,
           failed: false,
+          stageReport,
+          testOutput: finalTestOutput,
         }
       }
     }
@@ -686,6 +831,8 @@ async function runSingleStage(
       stageResult,
       paused: false,
       failed: true,
+      stageReport,
+      testOutput: finalTestOutput,
     }
   }
 
@@ -693,6 +840,8 @@ async function runSingleStage(
     stageResult,
     paused: true,
     failed: false,
+    stageReport,
+    testOutput,
   }
 }
 
@@ -731,6 +880,29 @@ async function continueSession(
 
     session.stageResults.push(stageRun.stageResult)
     session.updatedAt = new Date()
+    if (session.artifacts.knowledgeSummaryDir) {
+      await updateTaskKnowledgeSummary({
+        knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
+        knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
+        knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+        knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+      }, `stage-${stage}`, renderStageKnowledge(stageRun), `Stage ${stage} summary updated.`)
+      await updateTaskKnowledgeSummary({
+        knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
+        knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
+        knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+        knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+      }, 'open-issues', renderOpenIssues(stageRun), `Stage ${stage} open issues updated.`)
+      await updateTaskKnowledgeSummary({
+        knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
+        knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
+        knowledgeLogPath: session.artifacts.knowledgeLogPath || join(session.artifacts.sessionDir, 'knowledge', 'log.md'),
+        knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
+        knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+      }, 'evidence', renderEvidence(stageRun), `Stage ${stage} evidence updated.`)
+    }
 
     if (stageRun.paused) {
       session.currentStageIndex = i
@@ -776,6 +948,20 @@ async function continueSession(
   session.updatedAt = new Date()
   await stateManager.saveLoopSession(session)
   await appendEvent(session.artifacts.eventsPath, { event: 'loop_completed' })
+  await finalizeLoopKnowledge(
+    session,
+    true,
+    [
+      '# Final Summary',
+      '',
+      `Loop completed successfully for ${session.goal}.`,
+      '',
+      `Stages completed: ${session.stages.join(', ')}`,
+    ].join('\n'),
+    `Loop completed successfully for ${session.goal}.`,
+    session.artifacts.planPath,
+    'Loop completed successfully.'
+  )
 
   await notificationRouter.dispatch({
     type: 'loop_completed',
@@ -851,6 +1037,13 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const humanConfirmationPath = resolve(ctx.cwd, loopRuntime.humanConfirmationFile)
 
   await mkdir(sessionDir, { recursive: true })
+  const knowledgeArtifacts = await createTaskKnowledge({
+    sessionDir,
+    capability: 'loop',
+    sessionId,
+    title: prepared.goal.slice(0, 60),
+    goal: prepared.goal,
+  })
   if (routingDecision) {
     await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
   }
@@ -868,6 +1061,12 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     planningContextBlock
   )
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
+  await updateTaskKnowledgeSummary(
+    knowledgeArtifacts,
+    'plan',
+    renderPlanSummary(tasks),
+    'Loop plan summary generated.'
+  )
   await planningRouter.syncPlanArtifact({
     projectKey: planningContext?.projectKey,
     itemKey: planningContext?.itemKey || planningItemKey,
@@ -912,9 +1111,11 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     routingTier: routingDecision?.tier,
     artifacts: {
       sessionDir,
+      repoRootPath: ctx.cwd,
       eventsPath,
       planPath,
       humanConfirmationPath,
+      ...knowledgeArtifacts,
       ...(routingDecision ? { routingDecisionPath } : {}),
     },
   }

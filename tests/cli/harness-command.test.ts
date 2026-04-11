@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -8,6 +8,10 @@ const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
 const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
+const progressReporterMocks = vi.hoisted(() => ({
+  start: vi.fn(),
+  stop: vi.fn(),
+}))
 
 vi.mock('../../src/core/capability/runner.js', () => ({
   runCapability,
@@ -25,6 +29,27 @@ vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   listWorkflowSessions,
   loadWorkflowSession,
 }))
+
+vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/cli/commands/harness-progress.js')>()
+  return {
+    ...actual,
+    createHarnessProgressReporter: vi.fn((...args: Parameters<typeof actual.createHarnessProgressReporter>) => {
+      const reporter = actual.createHarnessProgressReporter(...args)
+      return {
+        ...reporter,
+        start: vi.fn(() => {
+          progressReporterMocks.start()
+          reporter.start()
+        }),
+        stop: vi.fn(() => {
+          progressReporterMocks.stop()
+          reporter.stop()
+        }),
+      }
+    }),
+  }
+})
 
 describe('top-level harness CLI command', () => {
   beforeEach(() => {
@@ -45,6 +70,11 @@ describe('top-level harness CLI command', () => {
             providerSelectionPath: '/tmp/provider-selection.json',
             routingDecisionPath: '/tmp/routing-decision.json',
             eventsPath: '/tmp/events.jsonl',
+            knowledgeSchemaPath: '/tmp/knowledge/SCHEMA.md',
+            knowledgeIndexPath: '/tmp/knowledge/index.md',
+            knowledgeLogPath: '/tmp/knowledge/log.md',
+            knowledgeSummaryDir: '/tmp/knowledge/summaries',
+            knowledgeCandidatesPath: '/tmp/knowledge/candidates.json',
             loopSessionId: 'loop-1',
           },
         },
@@ -76,6 +106,59 @@ describe('top-level harness CLI command', () => {
     logSpy.mockRestore()
   })
 
+  it('streams harness progress updates before completion', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    runCapability.mockImplementation(async (_capability, _input, ctx) => {
+      const reporter = ctx.metadata?.harnessProgress as {
+        onSessionUpdate?: (session: Record<string, unknown>) => void
+        onEvent?: (event: Record<string, unknown>) => void
+      }
+      reporter.onSessionUpdate?.({
+        id: 'harness-live',
+        status: 'in_progress',
+        currentStage: 'queued',
+        artifacts: {
+          eventsPath: '/tmp/live-events.jsonl',
+        },
+      })
+      reporter.onEvent?.({
+        sessionId: 'harness-live',
+        timestamp: '2026-04-11T00:00:05.000Z',
+        type: 'stage_changed',
+        stage: 'developing',
+        summary: 'Running loop development stage.',
+      })
+      return {
+        output: {
+          summary: 'Harness approved after 1 cycle(s).',
+          details: {
+            id: 'harness-live',
+            status: 'completed',
+            currentStage: 'completed',
+            artifacts: {
+              harnessConfigPath: '/tmp/harness.config.yaml',
+              roundsPath: '/tmp/rounds.json',
+              providerSelectionPath: '/tmp/provider-selection.json',
+              routingDecisionPath: '/tmp/routing-decision.json',
+              eventsPath: '/tmp/live-events.jsonl',
+            },
+          },
+        },
+        result: { status: 'completed' },
+      }
+    })
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
+    expect(logSpy).toHaveBeenCalledWith('2026-04-11T00:00:05.000Z stage_changed stage=developing Running loop development stage.')
+    logSpy.mockRestore()
+  })
+
   it('prints a detailed status view for a persisted harness session', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     loadWorkflowSessionsDetail()
@@ -90,6 +173,24 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Status: in_progress')
     expect(logSpy).toHaveBeenCalledWith('Stage: reviewing')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Knowledge: '))
+    logSpy.mockRestore()
+  })
+
+  it('prints a knowledge-focused inspect view for a persisted harness session', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSessionsDetail()
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'inspect', 'harness-1'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('Goal: Ship checkout v2')
+    expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
+    expect(logSpy).toHaveBeenCalledWith('Open issues: Missing migration rollback drill')
+    expect(logSpy).toHaveBeenCalledWith('Candidates: decision:Prefer staged rollout')
     logSpy.mockRestore()
   })
 
@@ -146,6 +247,21 @@ describe('top-level harness CLI command', () => {
     errorSpy.mockRestore()
   })
 
+  it('stops the progress reporter when submit throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    runCapability.mockRejectedValue(new Error('boom'))
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(progressReporterMocks.start).toHaveBeenCalled()
+    expect(progressReporterMocks.stop).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
   it('prints a deterministic error when status session is missing', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     loadWorkflowSession.mockResolvedValue(null)
@@ -162,7 +278,7 @@ describe('top-level harness CLI command', () => {
     errorSpy.mockRestore()
   })
 
-  it('prints persisted events during attach', async () => {
+  it('prints persisted events during attach once', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-events-'))
     const eventsPath = join(dir, 'events.jsonl')
@@ -198,7 +314,7 @@ describe('top-level harness CLI command', () => {
     try {
       const { harnessCommand } = await import('../../src/cli/commands/harness.js')
       await harnessCommand.parseAsync(
-        ['node', 'harness', 'attach', 'harness-3'],
+        ['node', 'harness', 'attach', 'harness-3', '--once'],
         { from: 'node' }
       )
 
@@ -225,7 +341,7 @@ describe('top-level harness CLI command', () => {
 
     const { harnessCommand } = await import('../../src/cli/commands/harness.js')
     await harnessCommand.parseAsync(
-      ['node', 'harness', 'attach', 'harness-4'],
+      ['node', 'harness', 'attach', 'harness-4', '--once'],
       { from: 'node' }
     )
 
@@ -263,7 +379,7 @@ describe('top-level harness CLI command', () => {
     try {
       const { harnessCommand } = await import('../../src/cli/commands/harness.js')
       await harnessCommand.parseAsync(
-        ['node', 'harness', 'attach', 'harness-5'],
+        ['node', 'harness', 'attach', 'harness-5', '--once'],
         { from: 'node' }
       )
 
@@ -290,6 +406,27 @@ describe('top-level harness CLI command', () => {
 })
 
 function loadWorkflowSessionsDetail(): void {
+  const knowledgeDir = mkdtempSync(join(tmpdir(), 'magpie-harness-knowledge-'))
+  const summaryDir = join(knowledgeDir, 'summaries')
+  mkdirSync(summaryDir, { recursive: true })
+  writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
+  writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
+  writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+  writeFileSync(join(summaryDir, 'goal.md'), '# Goal\n\nShip checkout v2', 'utf-8')
+  writeFileSync(join(summaryDir, 'open-issues.md'), '- Missing migration rollback drill', 'utf-8')
+  writeFileSync(join(summaryDir, 'evidence.md'), '- /tmp/review.json', 'utf-8')
+  writeFileSync(join(summaryDir, 'stage-cycle-1.md'), 'Latest stage summary', 'utf-8')
+  writeFileSync(join(knowledgeDir, 'candidates.json'), JSON.stringify([
+    {
+      type: 'decision',
+      title: 'Prefer staged rollout',
+      summary: 'Use canary before full release.',
+      sourceSessionId: 'harness-1',
+      evidencePath: '/tmp/review.json',
+      status: 'candidate',
+    },
+  ], null, 2), 'utf-8')
+
   loadWorkflowSession.mockResolvedValue({
     id: 'harness-1',
     capability: 'harness',
@@ -305,6 +442,11 @@ function loadWorkflowSessionsDetail(): void {
       providerSelectionPath: '/tmp/provider-selection.json',
       routingDecisionPath: '/tmp/routing-decision.json',
       eventsPath: '/tmp/events.jsonl',
+      knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
+      knowledgeIndexPath: join(knowledgeDir, 'index.md'),
+      knowledgeLogPath: join(knowledgeDir, 'log.md'),
+      knowledgeSummaryDir: summaryDir,
+      knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
       loopSessionId: 'loop-1',
     },
   })

@@ -29,7 +29,7 @@ describe('CLI program', () => {
     ])
   })
 
-  it('registers top-level harness command with submit, status, attach, and list subcommands', () => {
+  it('registers top-level harness command with submit, status, attach, inspect, and list subcommands', () => {
     const program = createProgram()
     const harness = program.commands.find((command) => command.name() === 'harness')
 
@@ -38,6 +38,20 @@ describe('CLI program', () => {
       'submit',
       'status',
       'attach',
+      'inspect',
+      'list',
+    ])
+  })
+
+  it('registers loop inspect alongside run, resume, and list', () => {
+    const program = createProgram()
+    const loop = program.commands.find((command) => command.name() === 'loop')
+
+    expect(loop).toBeTruthy()
+    expect(loop?.commands.map((subcommand) => subcommand.name())).toEqual([
+      'run',
+      'resume',
+      'inspect',
       'list',
     ])
   })

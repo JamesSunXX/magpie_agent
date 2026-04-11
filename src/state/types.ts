@@ -165,5 +165,11 @@ export interface LoopSession {
     planPath: string
     humanConfirmationPath: string
     routingDecisionPath?: string
+    repoRootPath?: string
+    knowledgeSchemaPath?: string
+    knowledgeIndexPath?: string
+    knowledgeLogPath?: string
+    knowledgeSummaryDir?: string
+    knowledgeCandidatesPath?: string
   }
 }

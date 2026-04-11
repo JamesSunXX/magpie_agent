@@ -3,6 +3,7 @@ import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
+import { StateManager } from '../../state/state-manager.js'
 import type {
   LoopCapabilityInput,
   LoopExecutionResult,
@@ -10,6 +11,7 @@ import type {
   LoopSummaryOutput,
 } from '../../capabilities/loop/types.js'
 import type { ComplexityTier } from '../../config/types.js'
+import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -57,7 +59,23 @@ async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): 
       console.log(`Branch: ${session.branchName}`)
     }
     console.log(`Human confirmation file: ${session.artifacts.humanConfirmationPath}`)
+    await printKnowledgeSummary(session.artifacts)
   }
+}
+
+async function loadLoopSessionByPrefix(sessionId: string, cwd: string) {
+  const stateManager = new StateManager(cwd)
+  await stateManager.initLoopSessions()
+  const sessions = await stateManager.listLoopSessions()
+  const matches = sessions.filter((item) => item.id === sessionId || item.id.startsWith(sessionId))
+
+  if (matches.length === 0) {
+    return null
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple loop sessions match "${sessionId}", use full id`)
+  }
+  return matches[0]
 }
 
 export const loopCommand = new Command('loop')
@@ -107,6 +125,25 @@ loopCommand
       dryRun: options.dryRun,
       complexity: options.complexity,
     }, options)
+  })
+
+loopCommand
+  .command('inspect')
+  .description('Show the knowledge summary for a loop session')
+  .argument('<sessionId>', 'Loop session ID or prefix')
+  .action(async (sessionId: string) => {
+    try {
+      const session = await loadLoopSessionByPrefix(sessionId, process.cwd())
+      if (!session) {
+        console.error(`Loop session not found: ${sessionId}`)
+        process.exitCode = 1
+        return
+      }
+      await printKnowledgeInspectView(session.artifacts)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exitCode = 1
+    }
   })
 
 loopCommand
