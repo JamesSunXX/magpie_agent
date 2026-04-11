@@ -3,6 +3,7 @@ import { execSync } from 'child_process'
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
 import { basename, join, resolve } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
+import { loadPersistentMemoryContext } from '../memory/runtime.js'
 
 export interface KnowledgeArtifacts {
   knowledgeSchemaPath: string
@@ -519,6 +520,7 @@ export async function renderKnowledgeContext(
 ): Promise<string> {
   const snapshot = await loadInspectSnapshot(artifacts)
   const global = await loadGlobalContext(repoRoot)
+  const memory = await loadPersistentMemoryContext(repoRoot)
 
   return [
     'Task knowledge context:',
@@ -531,6 +533,7 @@ export async function renderKnowledgeContext(
     `Latest summary: ${snapshot.latestSummary || '(missing)'}`,
     `Open issues: ${snapshot.openIssues || '(none)'}`,
     `Evidence: ${snapshot.evidence || '(none)'}`,
+    memory ? `Persistent memory:\n${memory}` : '',
     global,
   ].filter(Boolean).join('\n')
 }

@@ -16,6 +16,7 @@ import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, inter
 import { handleRepoReview } from '../application/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from '../presentation/session-cmds.js'
 import { filterDiff } from '../../../utils/diff-filter.js'
+import { loadProjectContext } from '../../../utils/context-loader.js'
 import { CommandExitError, commandExit, runInCommandContext } from '../../../core/capability/command-context.js'
 
 // Configure marked to render for terminal
@@ -25,6 +26,19 @@ marked.setOptions({
     width: 120,         // Wider output for modern terminals
   }) as any
 })
+
+export function resolveContextProvider(tool?: string, model?: string): string {
+  const candidate = tool || model || 'codex'
+  if (candidate === 'gemini') return 'gemini-cli'
+  if (candidate === 'claude') return 'claude-code'
+  return candidate
+}
+
+function buildSystemPromptWithContext(basePrompt: string, provider: string): string {
+  const context = loadProjectContext(provider)
+  if (!context) return basePrompt
+  return `${basePrompt}\n\n---\nProject context:\n${context}`
+}
 
 export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFlowResult> {
   return runInCommandContext(input.cwd, async () => {
@@ -305,7 +319,10 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           model: config.reviewers[id].model,
           agent: config.reviewers[id].agent,
         }, config),
-        systemPrompt: config.reviewers[id].prompt
+        systemPrompt: buildSystemPromptWithContext(
+          config.reviewers[id].prompt,
+          resolveContextProvider(config.reviewers[id].tool, config.reviewers[id].model)
+        )
       }))
 
       // When only one reviewer is selected, use its model for analyzer/summarizer/contextGatherer
@@ -321,7 +338,10 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           model: soloBinding?.model || config.summarizer.model,
           agent: soloBinding?.agent || config.summarizer.agent,
         }, config),
-        systemPrompt: config.summarizer.prompt
+        systemPrompt: buildSystemPromptWithContext(
+          config.summarizer.prompt,
+          resolveContextProvider(soloBinding?.tool || config.summarizer.tool, soloBinding?.model || config.summarizer.model)
+        )
       }
 
       // Create analyzer
@@ -333,7 +353,10 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           model: soloBinding?.model || config.analyzer.model,
           agent: soloBinding?.agent || config.analyzer.agent,
         }, config),
-        systemPrompt: config.analyzer.prompt
+        systemPrompt: buildSystemPromptWithContext(
+          config.analyzer.prompt,
+          resolveContextProvider(soloBinding?.tool || config.analyzer.tool, soloBinding?.model || config.analyzer.model)
+        )
       }
 
       // Create context gatherer (if enabled)

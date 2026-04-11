@@ -1,7 +1,9 @@
 import { appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
+import { closeSync, openSync, readSync, writeSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { getMagpieHomeDir } from '../../../platform/paths.js'
+import type { SafetyConfig } from '../../../platform/config/types.js'
 
 export type WorkflowCapability =
   | 'issue-fix'
@@ -47,7 +49,27 @@ export interface WorkflowEvent {
 export interface CommandRunResult {
   passed: boolean
   output: string
+  blocked?: boolean
 }
+
+export interface ResolvedCommandSafetyConfig {
+  dangerousPatterns: string[]
+  requireConfirmationForDangerous: boolean
+}
+
+export interface CommandExecutionOptions {
+  safety?: ResolvedCommandSafetyConfig
+  interactive?: boolean
+}
+
+const DEFAULT_DANGEROUS_COMMAND_PATTERNS = [
+  'rm -rf',
+  'git push --force',
+  'git push -f',
+  'git reset --hard',
+  'git clean -fd',
+  'git clean -xdf',
+]
 
 export function generateWorkflowId(prefix: string): string {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}`
@@ -193,7 +215,82 @@ export function parseCommandArgs(command: string): string[] {
   return args
 }
 
-export function runSafeCommand(cwd: string, command: string): CommandRunResult {
+export function buildCommandSafetyConfig(config?: SafetyConfig): ResolvedCommandSafetyConfig {
+  return {
+    dangerousPatterns: [
+      ...DEFAULT_DANGEROUS_COMMAND_PATTERNS,
+      ...(config?.dangerous_patterns || []),
+    ],
+    requireConfirmationForDangerous: config?.require_confirmation_for_dangerous !== false,
+  }
+}
+
+export function classifyDangerousCommand(
+  command: string,
+  config: ResolvedCommandSafetyConfig = buildCommandSafetyConfig()
+): string | null {
+  if (config.requireConfirmationForDangerous === false) {
+    return null
+  }
+
+  const normalized = command.toLowerCase()
+  return config.dangerousPatterns.find((pattern) => normalized.includes(pattern.toLowerCase())) || null
+}
+
+function promptDangerousCommandConfirmation(command: string, matchedPattern: string): boolean {
+  try {
+    const inputFd = openSync('/dev/tty', 'rs')
+    const outputFd = openSync('/dev/tty', 'w')
+    try {
+      writeSync(outputFd, `Dangerous command detected (${matchedPattern}). Type "yes" to continue:\n${command}\n> `)
+      const buffer = Buffer.alloc(256)
+      const bytesRead = readSync(inputFd, buffer, 0, buffer.length, null)
+      const answer = buffer.toString('utf-8', 0, bytesRead).trim().toLowerCase()
+      writeSync(outputFd, '\n')
+      return answer === 'yes'
+    } finally {
+      closeSync(inputFd)
+      closeSync(outputFd)
+    }
+  } catch {
+    return false
+  }
+}
+
+export function enforceCommandSafety(
+  command: string,
+  options: CommandExecutionOptions = {}
+): CommandRunResult | null {
+  const safety = options.safety || buildCommandSafetyConfig()
+  const matchedPattern = classifyDangerousCommand(command, safety)
+
+  if (!matchedPattern) {
+    return null
+  }
+
+  const interactive = options.interactive === true
+  const confirmed = interactive && promptDangerousCommandConfirmation(command, matchedPattern)
+  if (confirmed) {
+    return null
+  }
+
+  return {
+    passed: false,
+    blocked: true,
+    output: `Dangerous command blocked: ${command}\nMatched rule: ${matchedPattern}`,
+  }
+}
+
+export function runSafeCommand(
+  cwd: string,
+  command: string,
+  options: CommandExecutionOptions = {}
+): CommandRunResult {
+  const blocked = enforceCommandSafety(command, options)
+  if (blocked) {
+    return blocked
+  }
+
   try {
     const [file, ...args] = parseCommandArgs(command)
     const output = execFileSync(file, args, {

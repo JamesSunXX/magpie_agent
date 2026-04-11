@@ -4,6 +4,7 @@ import { discussCommand } from './commands/discuss.js'
 import { harnessCommand } from './commands/harness.js'
 import { initCommand } from './commands/init.js'
 import { loopCommand } from './commands/loop.js'
+import { memoryCommand } from './commands/memory.js'
 import { qualityCommand } from './commands/quality.js'
 import { reviewCommand } from './commands/review.js'
 import { reviewersCommand } from './commands/reviewers.js'
@@ -51,6 +52,7 @@ export function createProgram(): Command {
   program.addCommand(reviewCommand)
   program.addCommand(reviewersCommand)
   program.addCommand(initCommand)
+  program.addCommand(memoryCommand)
   program.addCommand(discussCommand)
   program.addCommand(harnessCommand)
   program.addCommand(trdCommand)

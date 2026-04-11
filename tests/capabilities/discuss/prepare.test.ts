@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { prepareDiscussInput } from '../../../src/capabilities/discuss/application/prepare.js'
 import { loadConfig } from '../../../src/platform/config/loader.js'
@@ -8,6 +11,16 @@ vi.mock('../../../src/platform/config/loader.js', () => ({
 }))
 
 describe('discuss capability prepare', () => {
+  let magpieHome: string | undefined
+
+  afterEach(() => {
+    if (magpieHome) {
+      rmSync(magpieHome, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+      magpieHome = undefined
+    }
+  })
+
   it('normalizes top-level discuss flags into options', async () => {
     const config = {
       capabilities: {
@@ -80,5 +93,34 @@ describe('discuss capability prepare', () => {
     }, createCapabilityContext({ configPath: '/tmp/magpie.yaml' }))
 
     expect(prepared.options.reviewers).toBe('route-codex,route-architect')
+  })
+
+  it('expands context references in the discuss topic', async () => {
+    const config = {
+      capabilities: {
+        discuss: {
+          enabled: true,
+        },
+      },
+    }
+    vi.mocked(loadConfig).mockReturnValue(config as never)
+
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-discuss-memory-'))
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(magpieHome, 'memories'), { recursive: true })
+    writeFileSync(join(magpieHome, 'memories', 'USER.md'), '# User Memory\n\n- Prefer direct answers.\n', 'utf-8')
+
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-discuss-cwd-'))
+    const srcDir = join(cwd, 'src')
+    mkdirSync(srcDir, { recursive: true })
+    writeFileSync(join(srcDir, 'sample.ts'), 'export const sample = 1\n', 'utf-8')
+
+    const prepared = await prepareDiscussInput({
+      topic: 'Review @file:src/sample.ts and @user-memory',
+    }, createCapabilityContext({ cwd, configPath: '/tmp/magpie.yaml' }))
+
+    expect(prepared.topic).toContain('src/sample.ts')
+    expect(prepared.topic).toContain('export const sample = 1')
+    expect(prepared.topic).toContain('Prefer direct answers.')
   })
 })

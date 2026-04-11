@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs'
 import type { CapabilityContext } from '../../../core/capability/context.js'
 import { createRoutingDecision, isRoutingEnabled } from '../../routing/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
+import { resolveContextReferences } from '../../../utils/context-references.js'
 import type { DiscussCapabilityInput, DiscussOptions, DiscussPreparedInput } from '../types.js'
 
 function resolveTopicContent(topic: string | undefined): string {
@@ -38,6 +39,9 @@ export async function prepareDiscussInput(
 ): Promise<DiscussPreparedInput> {
   const config = loadConfig(ctx.configPath)
   const options = normalizeDiscussOptions(input)
+  const resolvedTopic = await resolveContextReferences(resolveTopicContent(input.topic), {
+    cwd: ctx.cwd,
+  })
   let routingDecision = undefined
 
   if (
@@ -47,10 +51,10 @@ export async function prepareDiscussInput(
     && options.list !== true
     && !options.resume
     && !options.export
-    && input.topic
+    && resolvedTopic
   ) {
     routingDecision = createRoutingDecision({
-      goal: resolveTopicContent(input.topic),
+      goal: resolvedTopic,
       overrideTier: options.complexity,
       config,
     })
@@ -59,6 +63,7 @@ export async function prepareDiscussInput(
 
   return {
     ...input,
+    topic: resolvedTopic,
     options,
     preparedAt: new Date(),
     config,

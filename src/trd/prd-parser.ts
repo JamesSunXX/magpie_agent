@@ -81,8 +81,7 @@ function extractRequirements(sections: Array<{ title: string; content: string }>
   return requirements
 }
 
-export function parsePrdMarkdown(filePath: string): ParsedPrd {
-  const rawMarkdown = readFileSync(filePath, 'utf-8')
+export function parsePrdMarkdownContent(filePath: string, rawMarkdown: string): ParsedPrd {
   const lines = rawMarkdown.split('\n')
   const firstHeading = lines.find(l => l.trim().startsWith('#'))
   const title = firstHeading
@@ -103,3 +102,6 @@ export function parsePrdMarkdown(filePath: string): ParsedPrd {
   }
 }
 
+export function parsePrdMarkdown(filePath: string): ParsedPrd {
+  return parsePrdMarkdownContent(filePath, readFileSync(filePath, 'utf-8'))
+}

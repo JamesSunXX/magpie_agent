@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { parsePrdMarkdown } from '../../src/trd/prd-parser.js'
+import { parsePrdMarkdown, parsePrdMarkdownContent } from '../../src/trd/prd-parser.js'
 
 describe('parsePrdMarkdown', () => {
   it('extracts title, requirements, sections and images', () => {
@@ -21,5 +21,22 @@ describe('parsePrdMarkdown', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
-})
 
+  it('parses PRD content after context references are expanded', () => {
+    const parsed = parsePrdMarkdownContent('/tmp/prd.md', `# 支付中心升级
+
+## 目标
+- 支持多渠道支付
+
+## 参考上下文
+\`\`\`text
+[file] src/payment/service.ts
+export const version = 'v2'
+\`\`\`
+`)
+
+    expect(parsed.title).toBe('支付中心升级')
+    expect(parsed.rawMarkdown).toContain("export const version = 'v2'")
+    expect(parsed.requirements.some((item) => item.text.includes('支持多渠道支付'))).toBe(true)
+  })
+})

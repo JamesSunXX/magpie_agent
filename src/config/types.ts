@@ -24,6 +24,7 @@ export type {
   QualityConfig,
   ReviewConfig,
   ReviewerConfig,
+  SafetyConfig,
   ModelRouteBinding,
   RoutingConfig,
   RoutingDecision,
