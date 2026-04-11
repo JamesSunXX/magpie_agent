@@ -6,6 +6,45 @@ import type { LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
 type HarnessDisplayEvent = Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>
 type LoopDisplayEvent = Pick<LoopRuntimeEvent, 'ts' | 'event' | 'stage' | 'cycle' | 'summary' | 'provider' | 'progressType'>
 
+function formatProviderName(provider: string | undefined): string {
+  if (!provider) return '模型'
+  if (provider === 'codex') return 'Codex'
+  if (provider === 'claude-code') return 'Claude'
+  return provider
+}
+
+function formatLoopProgressSummary(event: Partial<LoopDisplayEvent>): string | undefined {
+  const provider = formatProviderName(event.provider)
+  const raw = event.summary?.trim()
+
+  if (event.progressType === 'turn.started') {
+    return `${provider} 开始处理当前步骤。`
+  }
+  if (event.progressType === 'turn.completed') {
+    return `${provider} 完成当前步骤。`
+  }
+  if (event.progressType === 'item.started') {
+    if (raw && /shell command|exec_command/i.test(raw)) {
+      return `${provider} 正在执行命令。`
+    }
+    return `${provider} 正在执行内部动作。`
+  }
+  if (event.progressType === 'item.completed') {
+    if (raw && /shell command|exec_command/i.test(raw)) {
+      return `${provider} 完成命令执行。`
+    }
+    return `${provider} 完成一个内部动作。`
+  }
+  if (event.progressType === 'error') {
+    if (raw && /reconnect/i.test(raw)) {
+      return `${provider} 连接中断，正在重试。`
+    }
+    return raw ? `${provider} 报告：${raw}` : `${provider} 遇到错误。`
+  }
+
+  return raw ? `${provider}：${raw}` : undefined
+}
+
 export interface HarnessProgressReporterOptions {
   log?: (line: string) => void
   heartbeatMs?: number
@@ -27,6 +66,18 @@ export function formatHarnessEventLine(
 ): string {
   const loopEvent = event as Partial<LoopDisplayEvent>
   const harnessEvent = event as Partial<HarnessDisplayEvent>
+  if (loopEvent.event === 'provider_progress') {
+    const parts = [String(loopEvent.ts || '').trim()]
+    if (event.stage) {
+      parts.push(`stage=${event.stage}`)
+    }
+    const summary = formatLoopProgressSummary(loopEvent)
+    if (summary) {
+      parts.push(summary)
+    }
+    return parts.filter(Boolean).join(' ')
+  }
+
   const parts = [
     String(harnessEvent.timestamp || loopEvent.ts || '').trim(),
     String(harnessEvent.type || loopEvent.event || '').trim(),

@@ -38,7 +38,7 @@ describe('harness progress helpers', () => {
       provider: 'codex',
       progressType: 'item.started',
       summary: 'Running shell command.',
-    } as never)).toBe('2026-04-11T00:00:01.000Z provider_progress stage=code_development provider=codex progress=item.started Running shell command.')
+    } as never)).toBe('2026-04-11T00:00:01.000Z stage=code_development Codex 正在执行命令。')
   })
 
   it('prints session discovery, streamed events, and idle heartbeats', () => {
@@ -178,7 +178,7 @@ describe('harness progress helpers', () => {
     })
 
     expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:03.000Z provider_progress stage=code_development provider=codex progress=turn.started Codex turn started.')
+    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:03.000Z stage=code_development Codex 开始处理当前步骤。')
 
     rmSync(dir, { recursive: true, force: true })
     vi.useFakeTimers()
