@@ -97,6 +97,38 @@ describe('KiroProvider runtime behavior', () => {
     await expect(promise).rejects.toThrow('kiro-cli exited with code 1: missing agent')
   })
 
+  it('retries chat when kiro hits a transient dispatch failure', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => {
+        const child = createChild()
+        setImmediate(() => {
+          child.stderr.emit('data', Buffer.from(
+            'Kiro is having trouble responding right now:\n'
+            + '  0: Failed to send the request: An unknown error occurred: dispatch failure\n'
+            + '  1: dispatch failure (other): an unknown error occurred: error sending request for url (https://q.us-east-1.amazonaws.com/)\n'
+          ))
+          child.emit('close', 1)
+        })
+        return child
+      })
+      .mockImplementationOnce(() => {
+        const child = createChild()
+        setTimeout(() => {
+          child.stdout.emit('data', Buffer.from('Recovered response'))
+          child.emit('close', 0)
+        }, 5)
+        return child
+      })
+
+    const provider = new KiroProvider() as unknown as KiroProvider & {
+      resolveAgent: () => Promise<string>
+    }
+    provider.resolveAgent = vi.fn().mockResolvedValue('architect')
+
+    await expect(provider.chat([{ role: 'user', content: 'retry dispatch failure' }])).resolves.toBe('Recovered response')
+    expect(mockSpawn).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects chat when spawn itself errors', async () => {
     const child = createChild()
     mockSpawn.mockReturnValue(child)
@@ -158,9 +190,49 @@ describe('KiroProvider runtime behavior', () => {
     })()
 
     setImmediate(() => {
+      child.stderr.emit('data', Buffer.from('missing agent'))
       child.emit('close', 1)
     })
 
-    await expect(streamPromise).rejects.toThrow('kiro-cli exited with code 1')
+    await expect(streamPromise).rejects.toThrow('kiro-cli exited with code 1: missing agent')
+  })
+
+  it('retries chatStream when kiro fails before yielding any output', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => {
+        const child = createChild()
+        setImmediate(() => {
+          child.stderr.emit('data', Buffer.from(
+            'Kiro is having trouble responding right now:\n'
+            + '  0: Failed to send the request: An unknown error occurred: dispatch failure\n'
+          ))
+          child.emit('close', 1)
+        })
+        return child
+      })
+      .mockImplementationOnce(() => {
+        const child = createChild()
+        setTimeout(() => {
+          child.stdout.emit('data', Buffer.from('stream recovered'))
+          child.emit('close', 0)
+        }, 5)
+        return child
+      })
+
+    const provider = new KiroProvider() as unknown as KiroProvider & {
+      resolveAgent: () => Promise<string>
+    }
+    provider.resolveAgent = vi.fn().mockResolvedValue('architect')
+
+    const streamPromise = (async () => {
+      const chunks: string[] = []
+      for await (const chunk of provider.chatStream([{ role: 'user', content: 'retry stream dispatch failure' }])) {
+        chunks.push(chunk)
+      }
+      return chunks
+    })()
+
+    await expect(streamPromise).resolves.toEqual(['stream recovered'])
+    expect(mockSpawn).toHaveBeenCalledTimes(2)
   })
 })
