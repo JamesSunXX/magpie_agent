@@ -24,6 +24,10 @@ import {
   buildPlanningContextBlock,
   extractPlanningItemKey,
 } from '../../../platform/integrations/planning/index.js'
+import {
+  buildCommandSafetyConfig,
+  runSafeCommand,
+} from '../../workflows/shared/runtime.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
   appendHumanConfirmationItem,
@@ -124,95 +128,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolveFn => setTimeout(resolveFn, ms))
 }
 
-function parseCommandArgs(command: string): string[] {
-  const trimmed = command.trim()
-  if (!trimmed) {
-    throw new Error('Command must not be empty')
-  }
-  if (/[|&;<>`$]/.test(trimmed)) {
-    throw new Error('Unsupported shell metacharacters in command')
-  }
-
-  const args: string[] = []
-  let current = ''
-  let quote: '"' | '\'' | null = null
-  let escaped = false
-
-  for (const ch of trimmed) {
-    if (escaped) {
-      current += ch
-      escaped = false
-      continue
-    }
-
-    if (ch === '\\' && quote !== '\'') {
-      escaped = true
-      continue
-    }
-
-    if (quote) {
-      if (ch === quote) {
-        quote = null
-      } else {
-        current += ch
-      }
-      continue
-    }
-
-    if (ch === '"' || ch === '\'') {
-      quote = ch
-      continue
-    }
-
-    if (/\s/.test(ch)) {
-      if (current) {
-        args.push(current)
-        current = ''
-      }
-      continue
-    }
-
-    current += ch
-  }
-
-  if (escaped || quote) {
-    throw new Error('Unterminated command quoting')
-  }
-
-  if (current) {
-    args.push(current)
-  }
-
-  if (args.length === 0) {
-    throw new Error('Command must not be empty')
-  }
-
-  return args
-}
-
-function runCommand(cwd: string, command: string): { passed: boolean; output: string } {
-  try {
-    const [file, ...args] = parseCommandArgs(command)
-    const output = execFileSync(file, args, {
-      cwd,
-      stdio: 'pipe',
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-    })
-    return { passed: true, output }
-  } catch (error) {
-    const e = error as { stdout?: string; stderr?: string; message?: string }
-    return {
-      passed: false,
-      output: [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim(),
-    }
-  }
-}
-
 function runOptionalCommand(
   cwd: string,
   command: string | undefined,
-  skippedMessage: string
+  skippedMessage: string,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
 ): { passed: boolean; output: string; commandLabel: string } {
   if (!command) {
     return {
@@ -222,7 +142,10 @@ function runOptionalCommand(
     }
   }
 
-  const result = runCommand(cwd, command)
+  const result = runSafeCommand(cwd, command, {
+    safety: commandSafety,
+    interactive: process.stdin.isTTY && process.stdout.isTTY,
+  })
   return {
     ...result,
     commandLabel: command,
@@ -653,6 +576,7 @@ async function runSingleStage(
   dryRun: boolean,
   notificationsConfig: unknown,
   runCwd: string,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
 ): Promise<StageRunResult> {
   const stageArtifactPath = join(session.artifacts.sessionDir, `${stage}.md`)
   let stageReport = ''
@@ -679,8 +603,16 @@ async function runSingleStage(
     await writeFile(stageArtifactPath, response, 'utf-8')
 
     if (stage === 'unit_mock_test') {
-      const unit = runCommand(runCwd, runtime.commands.unitTest)
-      const mock = runOptionalCommand(runCwd, runtime.commands.mockTest, 'Skipped: no mock test command configured.')
+      const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
+        safety: commandSafety,
+        interactive: process.stdin.isTTY && process.stdout.isTTY,
+      })
+      const mock = runOptionalCommand(
+        runCwd,
+        runtime.commands.mockTest,
+        'Skipped: no mock test command configured.',
+        commandSafety
+      )
       stageSucceeded = unit.passed && mock.passed
       testOutput = [
         `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
@@ -689,7 +621,10 @@ async function runSingleStage(
     }
 
     if (stage === 'integration_test') {
-      const integration = runCommand(runCwd, runtime.commands.integrationTest)
+      const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
+        safety: commandSafety,
+        interactive: process.stdin.isTTY && process.stdout.isTTY,
+      })
       stageSucceeded = integration.passed
       testOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
     }
@@ -824,15 +759,26 @@ async function runSingleStage(
       await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${retried}\n`, 'utf-8')
 
       if (stage === 'unit_mock_test') {
-        const unit = runCommand(runCwd, runtime.commands.unitTest)
-        const mock = runOptionalCommand(runCwd, runtime.commands.mockTest, 'Skipped: no mock test command configured.')
+        const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
+          safety: commandSafety,
+          interactive: process.stdin.isTTY && process.stdout.isTTY,
+        })
+        const mock = runOptionalCommand(
+          runCwd,
+          runtime.commands.mockTest,
+          'Skipped: no mock test command configured.',
+          commandSafety
+        )
         finalSucceeded = unit.passed && mock.passed
         finalTestOutput = [
           `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
           `## Mock Test (${mock.commandLabel})\n${mock.output}`,
         ].join('\n\n')
       } else if (stage === 'integration_test') {
-        const integration = runCommand(runCwd, runtime.commands.integrationTest)
+        const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
+          safety: commandSafety,
+          interactive: process.stdin.isTTY && process.stdout.isTTY,
+        })
         finalSucceeded = integration.passed
         finalTestOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
       } else {
@@ -892,7 +838,8 @@ async function continueSession(
   executor: AIProvider,
   notificationRouter: ReturnType<typeof createNotificationRouter>,
   notificationsConfig: unknown,
-  stateManager: StateManager
+  stateManager: StateManager,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
 ): Promise<LoopExecutionResult> {
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
@@ -916,6 +863,7 @@ async function continueSession(
         prepared.dryRun === true,
         notificationsConfig,
         runCwd,
+        commandSafety,
       )
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
@@ -1050,6 +998,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
     ? createRoutingDecision({
       goal: prepared.goal,
@@ -1212,7 +1161,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     executor,
     notificationRouter,
     config.integrations.notifications,
-    stateManager
+    stateManager,
+    commandSafety
   )
 }
 
@@ -1254,6 +1204,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const routingDecision = isRoutingEnabled(config)
     ? createRoutingDecision({
       goal: session.goal,
@@ -1335,7 +1286,8 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     executor,
     notificationRouter,
     config.integrations.notifications,
-    stateManager
+    stateManager,
+    commandSafety
   )
 }
 

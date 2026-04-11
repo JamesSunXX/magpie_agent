@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
+import { loadPersistentMemoryContextSync } from '../memory/runtime.js'
 
 // Provider → preferred context file, then fallbacks
 const PROVIDER_CONTEXT_MAP: Record<string, string[]> = {
@@ -48,6 +49,11 @@ export function loadProjectContext(model?: string, startDir?: string): string {
   const userContext = join(homedir(), '.claude', 'CLAUDE.md')
   if (existsSync(userContext)) {
     parts.push(readFileSync(userContext, 'utf-8').trim())
+  }
+
+  const persistentMemory = loadPersistentMemoryContextSync(dir)
+  if (persistentMemory) {
+    parts.push(persistentMemory)
   }
 
   // 2. Project-level context: try preferred file first, then fallbacks

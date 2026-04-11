@@ -316,6 +316,11 @@ export interface PostMergeRegressionConfig {
   commands?: string[]
 }
 
+export interface SafetyConfig {
+  dangerous_patterns?: string[]
+  require_confirmation_for_dangerous?: boolean
+}
+
 export interface QualityConfig {
   unitTestEval?: UnitTestEvalConfig
 }
@@ -325,6 +330,7 @@ export interface CapabilitiesConfig {
   discuss?: DiscussConfig
   trd?: TrdConfig
   routing?: RoutingConfig
+  safety?: SafetyConfig
   issue_fix?: IssueFixConfig
   docs_sync?: DocsSyncConfig
   post_merge_regression?: PostMergeRegressionConfig

@@ -10,6 +10,7 @@ import {
 } from '../../../../platform/integrations/planning/index.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import {
+  buildCommandSafetyConfig,
   generateWorkflowId,
   persistWorkflowSession,
   runSafeCommand,
@@ -24,6 +25,7 @@ export async function executeIssueFix(
   const log = ctx.logger
   const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.issue_fix || {}
+  const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const planningRouter = createPlanningRouter(config.integrations.planning)
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(prepared.issue)
@@ -110,7 +112,10 @@ export async function executeIssueFix(
   let verificationPassed = true
   if (verifyCommand) {
     log.debug(`[issue-fix] running verification: ${verifyCommand}`)
-    const verification = runSafeCommand(ctx.cwd, verifyCommand)
+    const verification = runSafeCommand(ctx.cwd, verifyCommand, {
+      safety: commandSafety,
+      interactive: process.stdin.isTTY && process.stdout.isTTY,
+    })
     verificationPassed = verification.passed
     verificationOutput = verification.output
     await writeFile(verificationPath, verification.output, 'utf-8')

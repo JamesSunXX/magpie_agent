@@ -14,8 +14,9 @@ import { getMagpieHomeDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { ChatImageInput } from '../../../platform/providers/index.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
+import { resolveContextReferences } from '../../../utils/context-references.js'
 import { runDebateSession } from '../../../core/debate/runner.js'
-import { parsePrdMarkdown } from '../domain/prd-parser.js'
+import { parsePrdMarkdownContent } from '../domain/prd-parser.js'
 import { collectChatImages } from '../../../trd/image-inputs.js'
 import { buildPrdDigestText, mapRequirementsToDomains } from '../domain/digest.js'
 import {
@@ -604,7 +605,9 @@ async function runNewTrd(
   const paths = getOutputPaths(prdPath, sessionId, options, config)
   ensureDir(paths.partialDir)
 
-  const parsedPrd = parsePrdMarkdown(prdPath)
+  const rawPrd = readFileSync(prdPath, 'utf-8')
+  const resolvedPrd = await resolveContextReferences(rawPrd, { cwd: process.cwd() })
+  const parsedPrd = parsePrdMarkdownContent(prdPath, resolvedPrd)
   const { images: chatImages, warnings } = collectChatImages(parsedPrd.images, prdPath)
   printImageWarnings(warnings)
 
@@ -724,7 +727,9 @@ async function handleResume(
   }
 
   const defaults = resolveTrdDefaults(config)
-  const parsedPrd = parsePrdMarkdown(session.prdPath)
+  const rawPrd = readFileSync(session.prdPath, 'utf-8')
+  const resolvedPrd = await resolveContextReferences(rawPrd, { cwd: process.cwd() })
+  const parsedPrd = parsePrdMarkdownContent(session.prdPath, resolvedPrd)
   const { images: chatImages, warnings } = collectChatImages(parsedPrd.images, session.prdPath)
   printImageWarnings(warnings)
   const overviewMd = readFileSync(session.artifacts.domainOverviewPath, 'utf-8')

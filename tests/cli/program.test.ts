@@ -24,6 +24,12 @@ describe('CLI program', () => {
     expect(program.commands.some((command) => command.name() === 'tui')).toBe(true)
   })
 
+  it('registers memory as a top-level command', () => {
+    const program = createProgram()
+
+    expect(program.commands.some((command) => command.name() === 'memory')).toBe(true)
+  })
+
   it('registers reviewers command with list subcommand', () => {
     const program = createProgram()
     const reviewers = program.commands.find((command) => command.name() === 'reviewers')

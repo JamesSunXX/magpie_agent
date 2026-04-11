@@ -4,6 +4,8 @@ import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   appendWorkflowEvent,
+  buildCommandSafetyConfig,
+  classifyDangerousCommand,
   generateWorkflowId,
   listWorkflowSessions,
   loadWorkflowSession,
@@ -110,6 +112,25 @@ describe('workflow shared runtime helpers', () => {
     expect(ok.output).toContain('v')
     expect(failed.passed).toBe(false)
     expect(failed.output.length).toBeGreaterThan(0)
+  })
+
+  it('classifies dangerous commands and blocks them by default in non-interactive mode', () => {
+    expect(classifyDangerousCommand('rm -rf dist')).toContain('rm -rf')
+    expect(classifyDangerousCommand('git push --force origin main')).toContain('git push --force')
+
+    const blocked = runSafeCommand(process.cwd(), 'rm -rf dist', {
+      safety: buildCommandSafetyConfig(),
+      interactive: false,
+    })
+
+    expect(blocked.passed).toBe(false)
+    expect(blocked.output).toContain('Dangerous command blocked')
+  })
+
+  it('allows dangerous pattern matching to be disabled', () => {
+    expect(classifyDangerousCommand('rm -rf dist', buildCommandSafetyConfig({
+      require_confirmation_for_dangerous: false,
+    }))).toBeNull()
   })
 
   it('generates workflow ids and session directories under MAGPIE_HOME', () => {
