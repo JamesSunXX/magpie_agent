@@ -38,6 +38,7 @@ describe('Config Init', () => {
     expect(content).toContain('strategy: "rules_first"')
     expect(content).toContain('allow_runtime_escalation: true')
     expect(content).toContain('fallback_chain:')
+    expect(content).not.toContain('auto_commit_model:')
     expect(content).not.toContain('image_reader:')
   })
 

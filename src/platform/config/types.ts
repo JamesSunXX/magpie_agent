@@ -146,6 +146,7 @@ export interface LoopConfig {
   executor_tool?: string
   executor_model?: string
   executor_agent?: string
+  auto_commit_model?: string
   stages?: LoopStageName[]
   confidence_threshold?: number
   retries_per_stage?: number

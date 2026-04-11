@@ -77,6 +77,8 @@ magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 magpie memory show --project
 ```
 
+`loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
+
 从源码运行：
 
 ```bash
