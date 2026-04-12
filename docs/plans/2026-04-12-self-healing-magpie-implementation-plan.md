@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript、Vitest、现有 capability runtime、仓库内 `.magpie/sessions/` 持久化、仓库级 `.magpie/` 元数据文件。
 
+**TRD Handoff:** `trd_generation` 阶段的接口细化、写盘约束和接入边界固定在 [`2026-04-12-self-healing-magpie-trd.md`](./2026-04-12-self-healing-magpie-trd.md)。后续开发按该文档推进，不再重新拆域。
+
 ---
 
 ## 目标边界
@@ -157,7 +159,7 @@
 
 ### 阶段交接约束
 
-- `trd_generation` 阶段要继续细化的是 Domain A 与 Domain C 之间的接口，不要重新拆域
+- `trd_generation` 阶段产物固定为 [`2026-04-12-self-healing-magpie-trd.md`](./2026-04-12-self-healing-magpie-trd.md)，重点细化 Domain A 与 Domain C 之间的接口，不要重新拆域
 - `code_development` 阶段按域推进，允许同阶段内跨文件实现，但不要跳过依赖顺序
 - 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
 
