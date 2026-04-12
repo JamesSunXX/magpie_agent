@@ -9,6 +9,12 @@ export type HarnessStage =
   | 'completed'
   | 'failed'
 
+export type HarnessPriority =
+  | 'interactive'
+  | 'high'
+  | 'normal'
+  | 'background'
+
 export interface HarnessInput {
   goal: string
   prdPath: string
@@ -18,6 +24,7 @@ export interface HarnessInput {
   models?: string[]
   complexity?: ComplexityTier
   host?: ExecutionHost
+  priority?: HarnessPriority
 }
 
 export interface HarnessPreparedInput extends HarnessInput {
@@ -28,9 +35,19 @@ export interface HarnessPreparedInput extends HarnessInput {
   modelsExplicit: boolean
 }
 
+export interface HarnessValidatorCheckArtifact {
+  id: string
+  label: string
+  tool?: string
+  model?: string
+  agent?: string
+  outputPath: string
+}
+
 export interface HarnessCycle {
   cycle: number
   reviewOutputPath: string
+  validatorChecks: HarnessValidatorCheckArtifact[]
   adjudicationOutputPath: string
   unitTestEvalPath: string
   issueCount: number

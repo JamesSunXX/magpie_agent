@@ -14,6 +14,9 @@ export type WorkflowCapability =
 export type WorkflowSessionStatus =
   | 'queued'
   | 'in_progress'
+  | 'waiting_retry'
+  | 'waiting_next_cycle'
+  | 'blocked'
   | 'completed'
   | 'failed'
 

@@ -158,6 +158,11 @@ export interface LoopConfig {
   commands?: LoopCommandsConfig
 }
 
+export interface HarnessConfig {
+  default_reviewers?: string[]
+  validator_checks?: ModelRouteBinding[]
+}
+
 export type NotificationEventType =
   | 'stage_entered'
   | 'stage_completed'
@@ -358,6 +363,7 @@ export interface CapabilitiesConfig {
   post_merge_regression?: PostMergeRegressionConfig
   quality?: QualityConfig
   loop?: LoopConfig
+  harness?: HarnessConfig
 }
 
 export interface MagpieConfigV2 {

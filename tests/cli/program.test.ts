@@ -65,6 +65,19 @@ describe('CLI program', () => {
     ])
   })
 
+  it('registers top-level harness-server command with start, stop, and status subcommands', () => {
+    const program = createProgram()
+    const harnessServer = program.commands.find((command) => command.name() === 'harness-server')
+
+    expect(harnessServer).toBeTruthy()
+    expect(harnessServer?.commands.map((subcommand) => subcommand.name())).toEqual([
+      'start',
+      'status',
+      'stop',
+      'run',
+    ])
+  })
+
   it('registers loop inspect alongside run, resume, and list', () => {
     const program = createProgram()
     const loop = program.commands.find((command) => command.name() === 'loop')
@@ -119,6 +132,7 @@ describe('CLI program', () => {
     expect(issueFixOptionFlags).toContain('--complexity')
     expect(workflowHarnessFlags).toContain('--host')
     expect(topLevelHarnessFlags).toContain('--host')
+    expect(topLevelHarnessFlags).toContain('--priority')
   })
 
   it('warns before command execution when config version is outdated', async () => {

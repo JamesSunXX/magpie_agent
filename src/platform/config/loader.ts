@@ -11,10 +11,11 @@ import type {
   ReviewerPoolPolicy,
   ModelRouteBinding,
   TrdConfig,
+  HarnessConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 7
+export const CURRENT_CONFIG_VERSION = 8
 
 export interface ConfigVersionStatus {
   path: string
@@ -59,6 +60,19 @@ function validateReviewerPool(name: string, pool: string[] | undefined, reviewer
   }
 
   for (const id of pool) {
+    if (!reviewers[id]) {
+      throw new Error(`Config error: ${name} includes unknown reviewer "${id}"`)
+    }
+  }
+}
+
+function validateReviewerIdArray(name: string, ids: string[] | undefined, reviewers: Record<string, ReviewerConfig>): void {
+  if (ids === undefined) return
+  if (!Array.isArray(ids)) {
+    throw new Error(`Config error: ${name} must be an array`)
+  }
+
+  for (const id of ids) {
     if (!reviewers[id]) {
       throw new Error(`Config error: ${name} includes unknown reviewer "${id}"`)
     }
@@ -234,21 +248,28 @@ function validateOptionalAgent(name: string, agent: string | undefined): void {
 }
 
 function validateTrdConfig(trd: TrdConfig, reviewers: Record<string, ReviewerConfig>): void {
-  if (trd.default_reviewers && !Array.isArray(trd.default_reviewers)) {
-    throw new Error('Config error: trd.default_reviewers must be an array')
-  }
-
-  if (trd.default_reviewers) {
-    for (const id of trd.default_reviewers) {
-      if (!reviewers[id]) {
-        throw new Error(`Config error: trd.default_reviewers includes unknown reviewer "${id}"`)
-      }
-    }
-  }
+  validateReviewerIdArray('trd.default_reviewers', trd.default_reviewers, reviewers)
 
   if (trd.max_rounds !== undefined && trd.max_rounds <= 0) {
     throw new Error('Config error: trd.max_rounds must be > 0')
   }
+}
+
+function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Record<string, ReviewerConfig>): void {
+  if (!harness) return
+
+  validateReviewerIdArray('capabilities.harness.default_reviewers', harness.default_reviewers, reviewers)
+
+  if (harness.validator_checks === undefined) {
+    return
+  }
+  if (!Array.isArray(harness.validator_checks)) {
+    throw new Error('Config error: capabilities.harness.validator_checks must be an array')
+  }
+
+  harness.validator_checks.forEach((binding, index) => {
+    validateBinding(`capabilities.harness.validator_checks[${index}]`, binding, 'capabilities.harness.validator_checks entries')
+  })
 }
 
 function isLegacyConfig(config: Record<string, unknown>): boolean {
@@ -299,6 +320,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   }
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
+  validateHarnessConfig(config.capabilities.harness, config.reviewers)
 }
 
 export function loadConfig(configPath?: string): MagpieConfigV2 {

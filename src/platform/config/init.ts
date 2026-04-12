@@ -224,6 +224,16 @@ function buildDefaultNotificationsConfig() {
   }
 }
 
+function buildDefaultHarnessConfig(defaultReviewers: string[]) {
+  return {
+    default_reviewers: defaultReviewers,
+    validator_checks: [
+      { tool: 'claw' },
+      { tool: 'kiro' },
+    ],
+  }
+}
+
 function indentBlock(text: string, spaces = 6): string {
   const prefix = ' '.repeat(spaces)
   return text.split('\n').map(line => `${prefix}${line}`).join('\n')
@@ -472,6 +482,12 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
 
   const capabilities = isObjectRecord(upgraded.capabilities) ? upgraded.capabilities : {}
   upgraded.capabilities = capabilities
+  const nonRouteReviewerIds = Object.keys(reviewers).filter(id => !id.startsWith('route-'))
+  const upgradeHarnessDefaults = buildDefaultHarnessConfig(
+    Array.isArray(capabilities.review?.reviewers) && capabilities.review.reviewers.length > 0
+      ? capabilities.review.reviewers
+      : nonRouteReviewerIds.slice(0, 2)
+  )
 
   const integrations = isObjectRecord(upgraded.integrations) ? upgraded.integrations : {}
   upgraded.integrations = integrations
@@ -487,6 +503,12 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     changes.push('Added capabilities.routing defaults.')
   } else if (deepMergeMissing(capabilities.routing, buildDefaultRoutingConfig())) {
     changes.push('Filled missing capabilities.routing defaults.')
+  }
+  if (!isObjectRecord(capabilities.harness)) {
+    capabilities.harness = upgradeHarnessDefaults
+    changes.push('Added capabilities.harness defaults.')
+  } else if (deepMergeMissing(capabilities.harness, upgradeHarnessDefaults)) {
+    changes.push('Filled missing capabilities.harness defaults.')
   }
   upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
 
@@ -544,6 +566,7 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const defaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
   if (defaultReviewers.length === 0) defaultReviewers.push('claude-code', 'codex')
   if (defaultReviewers.length === 1) defaultReviewers.push(defaultReviewers[0])
+  const harnessDefaults = buildDefaultHarnessConfig(defaultReviewers)
 
   const notifications = resolveNotificationsOptions(options)
   const planning = resolvePlanningOptions(options)
@@ -669,6 +692,11 @@ capabilities:
       max_files: 50
       min_coverage: 0.8
       output_format: markdown
+  harness:
+    default_reviewers: [${harnessDefaults.default_reviewers.join(', ')}]
+    validator_checks:
+      - tool: ${harnessDefaults.validator_checks[0].tool}
+      - tool: ${harnessDefaults.validator_checks[1].tool}
   issue_fix:
     enabled: true
     planner_model: ${analyzerModel}

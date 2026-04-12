@@ -16,6 +16,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
 - `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
+- `harness-server`：后台托管 harness 队列
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
@@ -67,13 +68,20 @@ magpie trd ./docs/prd.md
 # 6) 目标闭环执行
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
 
-# 7) harness 闭环
+# 7) 启动后台 harness 队列（需要长期跑任务时）
+magpie harness-server start
+
+# 8) harness 闭环
 magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
 
-# 8) 需要后台托管时显式交给 tmux
+# 9) 查看后台状态或接回输出
+magpie harness-server status
+magpie harness attach <session-id>
+
+# 10) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 9) 查看长期记忆
+# 11) 查看长期记忆
 magpie memory show --project
 ```
 
@@ -81,7 +89,9 @@ magpie memory show --project
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
 
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。
+`harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。
+
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
 
 从源码运行：
 

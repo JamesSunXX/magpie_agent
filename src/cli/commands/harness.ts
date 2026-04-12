@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises'
-import { Command } from 'commander'
+import { Command, InvalidArgumentError } from 'commander'
 import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
@@ -8,7 +8,17 @@ import {
   listWorkflowSessions,
   loadWorkflowSession,
 } from '../../capabilities/workflows/shared/runtime.js'
-import type { HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary } from '../../capabilities/workflows/harness/types.js'
+import {
+  enqueueHarnessSession,
+  isHarnessServerRunning,
+} from '../../capabilities/workflows/harness-server/runtime.js'
+import type {
+  HarnessInput,
+  HarnessPreparedInput,
+  HarnessPriority,
+  HarnessResult,
+  HarnessSummary,
+} from '../../capabilities/workflows/harness/types.js'
 import { createHarnessProgressReporter, followHarnessEventStream } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
@@ -23,6 +33,16 @@ interface HarnessCommandOptions {
   models?: string[]
   complexity?: HarnessInput['complexity']
   host?: ExecutionHost
+  priority?: HarnessPriority
+}
+
+const HARNESS_PRIORITIES = ['interactive', 'high', 'normal', 'background'] as const
+
+function parseHarnessPriority(value: string): HarnessPriority {
+  if ((HARNESS_PRIORITIES as readonly string[]).includes(value)) {
+    return value as HarnessPriority
+  }
+  throw new InvalidArgumentError(`Priority must be one of: ${HARNESS_PRIORITIES.join(', ')}`)
 }
 
 function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typeof loadWorkflowSession>>>): Partial<KnowledgeState> {
@@ -122,11 +142,38 @@ harnessCommand
   .option('--max-cycles <number>', 'Maximum fix/review/test cycles', (v) => Number.parseInt(v, 10))
   .option('--review-rounds <number>', 'Review debate rounds per cycle', (v) => Number.parseInt(v, 10))
   .option('--test-command <command>', 'Override unit test command used by harness')
-  .option('--models <models...>', 'Model list for adversarial confirmation (default: gemini-cli kiro)')
+  .option('--models <models...>', 'Model list for adversarial confirmation (overrides config defaults)')
   .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .option('--host <host>', 'Execution host (foreground|tmux)')
+  .option('--priority <level>', 'Queue priority (interactive|high|normal|background)', parseHarnessPriority)
   .action(async (goal: string, options: HarnessCommandOptions & { prd: string }) => {
     try {
+      const queuedInput: HarnessInput = {
+        goal,
+        prdPath: options.prd,
+        maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
+        reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
+        testCommand: options.testCommand,
+        models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
+        complexity: options.complexity,
+        host: options.host,
+        priority: options.priority,
+      }
+
+      if (await isHarnessServerRunning(process.cwd())) {
+        const queued = await enqueueHarnessSession(process.cwd(), queuedInput, {
+          configPath: options.config,
+        })
+        console.log('Harness session queued.')
+        console.log(`Session: ${queued.id}`)
+        console.log(`Status: ${queued.status}`)
+        console.log(`Priority: ${queuedInput.priority || 'normal'}`)
+        if (queued.artifacts.eventsPath) {
+          console.log(`Events: ${queued.artifacts.eventsPath}`)
+        }
+        return
+      }
+
       if (options.host === 'tmux' && !process.env.VITEST) {
         const launch = await launchMagpieInTmux({
           capability: 'harness',
@@ -155,16 +202,7 @@ harnessCommand
         return
       }
 
-      await runHarness({
-        goal,
-        prdPath: options.prd,
-        maxCycles: Number.isFinite(options.maxCycles) ? options.maxCycles : undefined,
-        reviewRounds: Number.isFinite(options.reviewRounds) ? options.reviewRounds : undefined,
-        testCommand: options.testCommand,
-        models: Array.isArray(options.models) && options.models.length > 0 ? options.models : undefined,
-        complexity: options.complexity,
-        host: options.host,
-      }, options)
+      await runHarness(queuedInput, options)
     } catch (error) {
       console.error(`harness failed: ${error instanceof Error ? error.message : error}`)
       process.exitCode = 1
