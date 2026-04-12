@@ -77,6 +77,7 @@ magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
 # 9) 查看后台状态或接回输出
 magpie harness-server status
 magpie harness attach <session-id>
+magpie harness status <session-id> --cycle 2
 
 # 10) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
@@ -89,7 +90,7 @@ magpie memory show --project
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
 
-`harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。
+`harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。每一轮会把参与者、评审结论、仲裁结果和下一步单独落盘，所以 `status`、`inspect`、`attach` 和 TUI 都能直接看最近一轮，`status/inspect` 也可以用 `--cycle` 指定回看某一轮。
 
 `trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
 

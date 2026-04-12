@@ -40,8 +40,38 @@ interface WorkflowSessionFile {
   capability: SessionCard['capability']
   title: string
   status: string
+  currentStage?: string
   updatedAt: string
   artifacts?: Record<string, string>
+}
+
+interface HarnessRoleRoundSummary {
+  finalAction?: string
+  nextRoundBrief?: string
+  roles?: Array<{
+    roleId?: string
+    roleType?: 'architect' | 'developer' | 'tester' | 'reviewer' | 'arbitrator'
+    displayName?: string
+  }>
+  reviewResults?: Array<{
+    reviewerRoleId?: string
+    passed?: boolean
+    summary?: string
+  }>
+  arbitrationResult?: {
+    action?: string
+    summary?: string
+  }
+  openIssues?: Array<{
+    title?: string
+    severity?: 'critical' | 'high' | 'medium' | 'low'
+    sourceRole?: string
+  }>
+}
+
+interface HarnessRoundIndexEntry {
+  cycle: number
+  finalAction: string
 }
 
 interface SessionDashboardOptions {
@@ -193,11 +223,273 @@ function mapLoopSession(session: LoopSessionFile): SessionCard {
   })
 }
 
-function mapWorkflowSession(session: WorkflowSessionFile): SessionCard {
+async function loadLatestHarnessRoundSummary(roleRoundsDir: string | undefined): Promise<HarnessRoleRoundSummary | null> {
+  if (!roleRoundsDir) {
+    return null
+  }
+
+  try {
+    const entries = (await readdir(roleRoundsDir))
+      .filter((entry) => /^cycle-\d+\.json$/.test(entry))
+      .sort((left, right) => {
+        const leftCycle = Number.parseInt(left.match(/\d+/)?.[0] || '0', 10)
+        const rightCycle = Number.parseInt(right.match(/\d+/)?.[0] || '0', 10)
+        return rightCycle - leftCycle
+      })
+    const latest = entries[0]
+    if (!latest) {
+      return null
+    }
+    return JSON.parse(await readFile(join(roleRoundsDir, latest), 'utf-8')) as HarnessRoleRoundSummary
+  } catch {
+    return null
+  }
+}
+
+async function loadHarnessRoundIndex(roleRoundsDir: string | undefined): Promise<HarnessRoundIndexEntry[]> {
+  if (!roleRoundsDir) {
+    return []
+  }
+
+  try {
+    const entries = (await readdir(roleRoundsDir))
+      .filter((entry) => /^cycle-\d+\.json$/.test(entry))
+      .sort((left, right) => {
+        const leftCycle = Number.parseInt(left.match(/\d+/)?.[0] || '0', 10)
+        const rightCycle = Number.parseInt(right.match(/\d+/)?.[0] || '0', 10)
+        return leftCycle - rightCycle
+      })
+
+    const rounds = await Promise.all(entries.map(async (entry) => {
+      try {
+        const cycle = Number.parseInt(entry.match(/\d+/)?.[0] || '0', 10)
+        const summary = JSON.parse(await readFile(join(roleRoundsDir, entry), 'utf-8')) as HarnessRoleRoundSummary
+        return {
+          cycle,
+          finalAction: summary.finalAction || 'unknown',
+        }
+      } catch {
+        return null
+      }
+    }))
+
+    return rounds.filter((round): round is HarnessRoundIndexEntry => round !== null)
+  } catch {
+    return []
+  }
+}
+
+function severityWeight(severity: string | undefined): number {
+  switch (severity) {
+    case 'critical':
+      return 4
+    case 'high':
+      return 3
+    case 'medium':
+      return 2
+    case 'low':
+      return 1
+    default:
+      return 0
+  }
+}
+
+function buildHarnessReasonSummary(summary: HarnessRoleRoundSummary | null): string | undefined {
+  if (!summary) {
+    return undefined
+  }
+
+  const mostSevereIssue = [...(summary.openIssues || [])]
+    .sort((left, right) => severityWeight(right.severity) - severityWeight(left.severity))[0]
+
+  let reason: string | undefined
+
+  if (mostSevereIssue?.title) {
+    const source = mostSevereIssue.sourceRole || 'reviewer'
+    reason = `${source}: ${mostSevereIssue.title}`
+  } else {
+    const firstReviewSummary = summary.reviewResults?.find((result) => result.summary?.trim())
+    if (firstReviewSummary?.summary) {
+      reason = `${firstReviewSummary.reviewerRoleId || 'reviewer'}: ${firstReviewSummary.summary.trim()}`
+    } else {
+      reason = summary.arbitrationResult?.summary?.trim() || undefined
+    }
+  }
+
+  if (!reason) {
+    return undefined
+  }
+
+  switch (summary.finalAction) {
+    case 'approved':
+      return `approved: ${reason}`
+    case 'revise':
+      return `revise: ${reason}`
+    case 'requeue_or_blocked':
+      return `blocked: ${reason}`
+    default:
+      return reason
+  }
+}
+
+function buildHarnessParticipantSummary(summary: HarnessRoleRoundSummary | null): string | undefined {
+  if (!summary?.roles?.length) {
+    return undefined
+  }
+
+  const roleTypes = summary.roles
+    .map((role) => role.roleType)
+    .filter((roleType): roleType is NonNullable<typeof roleType> => Boolean(roleType))
+
+  if (roleTypes.length === 0) {
+    return undefined
+  }
+
+  const reviewerCount = roleTypes.filter((roleType) => roleType === 'reviewer').length
+  const parts: string[] = []
+
+  if (roleTypes.includes('developer')) {
+    parts.push('dev')
+  }
+  if (roleTypes.includes('tester')) {
+    parts.push('test')
+  }
+  if (reviewerCount === 1) {
+    parts.push('1 reviewer')
+  } else if (reviewerCount > 1) {
+    parts.push(`${reviewerCount} reviewers`)
+  }
+  if (roleTypes.includes('arbitrator') && summary.arbitrationResult) {
+    parts.push('arbitrator')
+  }
+
+  return parts.length > 0 ? parts.join('+') : undefined
+}
+
+function buildHarnessNextStepSummary(summary: HarnessRoleRoundSummary | null): string {
+  const nextRoundBrief = summary?.nextRoundBrief?.trim()
+  if (nextRoundBrief) {
+    return nextRoundBrief
+  }
+
+  switch (summary?.finalAction) {
+    case 'approved':
+      return 'No further action.'
+    case 'revise':
+      return 'Continue the next review cycle.'
+    case 'requeue_or_blocked':
+      return 'Await human or scheduler intervention.'
+    default:
+      return 'No next-round brief.'
+  }
+}
+
+function formatHarnessParticipantList(summary: HarnessRoleRoundSummary | null): string | undefined {
+  if (!summary?.roles?.length) {
+    return undefined
+  }
+
+  const roleTypes = summary.roles
+    .map((role) => role.roleType)
+    .filter((roleType): roleType is NonNullable<typeof roleType> => Boolean(roleType))
+
+  if (roleTypes.length === 0) {
+    return undefined
+  }
+
+  const reviewerCount = roleTypes.filter((roleType) => roleType === 'reviewer').length
+  const parts: string[] = []
+
+  if (roleTypes.includes('developer')) {
+    parts.push('developer')
+  }
+  if (roleTypes.includes('tester')) {
+    parts.push('tester')
+  }
+  if (reviewerCount === 1) {
+    parts.push('1 reviewer')
+  } else if (reviewerCount > 1) {
+    parts.push(`${reviewerCount} reviewers`)
+  }
+  if (roleTypes.includes('arbitrator') && summary.arbitrationResult) {
+    parts.push('arbitrator')
+  }
+
+  return parts.length > 0 ? parts.join(', ') : undefined
+}
+
+function buildHarnessReviewerDetailLines(summary: HarnessRoleRoundSummary | null): string[] {
+  if (!summary?.reviewResults?.length) {
+    return []
+  }
+
+  const roleNameById = new Map(
+    (summary.roles || [])
+      .filter((role) => role.roleId)
+      .map((role) => [role.roleId as string, role.displayName || role.roleId || 'reviewer'])
+  )
+
+  return summary.reviewResults
+    .filter((result) => result.reviewerRoleId)
+    .map((result) => {
+      const label = roleNameById.get(result.reviewerRoleId as string) || result.reviewerRoleId || 'reviewer'
+      const verdict = result.passed ? 'pass' : 'revise'
+      const reason = result.summary?.trim()
+
+      return reason
+        ? `${label}: ${verdict} - ${reason}`
+        : `${label}: ${verdict}`
+    })
+}
+
+function buildHarnessSelectedDetail(summary: HarnessRoleRoundSummary | null): SessionCard['selectedDetail'] | undefined {
+  if (!summary) {
+    return undefined
+  }
+
+  const reviewerSummaries = buildHarnessReviewerDetailLines(summary)
+  const arbitrationSummary = summary.arbitrationResult
+    ? `Decision: ${summary.finalAction || summary.arbitrationResult.action || 'unknown'} - ${summary.arbitrationResult.summary?.trim() || 'No final summary.'}`
+    : undefined
+  const nextStep = buildHarnessNextStepSummary(summary)
+  const participants = formatHarnessParticipantList(summary)
+
+  if (!participants && reviewerSummaries.length === 0 && !arbitrationSummary && !nextStep) {
+    return undefined
+  }
+
+  return {
+    participants,
+    reviewerSummaries,
+    arbitration: arbitrationSummary,
+    nextStep,
+  }
+}
+
+async function mapWorkflowSession(session: WorkflowSessionFile): Promise<SessionCard> {
+  const latestHarnessRound = session.capability === 'harness'
+    ? await loadLatestHarnessRoundSummary(session.artifacts?.roleRoundsDir)
+    : null
+  const harnessRoundIndex = session.capability === 'harness'
+    ? await loadHarnessRoundIndex(session.artifacts?.roleRoundsDir)
+    : []
+
   return withResumeCommand({
     id: session.id,
     capability: session.capability,
     title: normalizeSessionTitle(session.title, session.capability),
+    detail: latestHarnessRound
+      ? [
+        session.currentStage || session.status,
+        harnessRoundIndex.map((round) => `${round.cycle}=${round.finalAction}`).join(', ') || latestHarnessRound.finalAction || 'unknown',
+        buildHarnessParticipantSummary(latestHarnessRound),
+        buildHarnessReasonSummary(latestHarnessRound),
+        buildHarnessNextStepSummary(latestHarnessRound),
+      ].filter((part): part is string => Boolean(part && part.trim())).join(' · ')
+      : undefined,
+    selectedDetail: session.capability === 'harness'
+      ? buildHarnessSelectedDetail(latestHarnessRound)
+      : undefined,
     status: session.status,
     updatedAt: new Date(session.updatedAt),
     artifactPaths: toArtifactPaths(session.artifacts),
@@ -227,13 +519,14 @@ export async function loadSessionDashboard(options: SessionDashboardOptions): Pr
     loadSessionJsonCards<LoopSessionFile>(loopDir),
     loadWorkflowSessions(repoMagpieDir),
   ])
+  const workflowCards = await Promise.all(workflowSessions.map(mapWorkflowSession))
 
   const cards = [
     ...reviewSessions.map(mapReviewSession),
     ...discussSessions.map(mapDiscussSession),
     ...trdSessions.map(mapTrdSession),
     ...loopSessions.map(mapLoopSession),
-    ...workflowSessions.map(mapWorkflowSession),
+    ...workflowCards,
   ].sort(sortByUpdatedAtDesc)
 
   return groupCards(cards)

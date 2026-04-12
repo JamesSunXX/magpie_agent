@@ -1,3 +1,5 @@
+import type { RoleBinding } from '../../core/roles/types.js'
+
 export interface ProviderConfig {
   api_key: string
   base_url?: string
@@ -146,6 +148,10 @@ export interface LoopConfig {
   executor_tool?: string
   executor_model?: string
   executor_agent?: string
+  role_bindings?: {
+    architect?: RoleBinding
+    developer?: RoleBinding
+  }
   auto_commit_model?: string
   stages?: LoopStageName[]
   confidence_threshold?: number
@@ -161,6 +167,12 @@ export interface LoopConfig {
 export interface HarnessConfig {
   default_reviewers?: string[]
   validator_checks?: ModelRouteBinding[]
+  role_bindings?: {
+    developer?: RoleBinding
+    arbitrator?: RoleBinding
+    reviewers?: RoleBinding[]
+    named_reviewers?: Record<string, RoleBinding>
+  }
 }
 
 export type NotificationEventType =

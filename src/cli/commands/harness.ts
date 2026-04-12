@@ -1,4 +1,4 @@
-import { readFile } from 'fs/promises'
+import { readFile, readdir } from 'fs/promises'
 import { Command, InvalidArgumentError } from 'commander'
 import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
@@ -36,6 +36,40 @@ interface HarnessCommandOptions {
   priority?: HarnessPriority
 }
 
+interface HarnessRoundViewOptions {
+  cycle?: number
+}
+
+interface HarnessRoundSummary {
+  roles?: Array<{
+    roleId: string
+    roleType: string
+    displayName?: string
+    binding?: { tool?: string; model?: string; agent?: string }
+  }>
+  reviewResults?: Array<{
+    reviewerRoleId: string
+    summary: string
+  }>
+  arbitrationResult?: {
+    summary?: string
+  }
+  finalAction?: string
+  nextRoundBrief?: string
+}
+
+interface HarnessRoundIndexEntry {
+  cycle: number
+  finalAction: string
+}
+
+class MissingHarnessCycleError extends Error {
+  constructor(readonly cycle: number) {
+    super(`Harness cycle not found: ${cycle}`)
+    this.name = 'MissingHarnessCycleError'
+  }
+}
+
 const HARNESS_PRIORITIES = ['interactive', 'high', 'normal', 'background'] as const
 
 function parseHarnessPriority(value: string): HarnessPriority {
@@ -43,6 +77,14 @@ function parseHarnessPriority(value: string): HarnessPriority {
     return value as HarnessPriority
   }
   throw new InvalidArgumentError(`Priority must be one of: ${HARNESS_PRIORITIES.join(', ')}`)
+}
+
+function parseHarnessCycle(value: string): number {
+  const cycle = Number.parseInt(value, 10)
+  if (!Number.isFinite(cycle) || cycle < 1) {
+    throw new InvalidArgumentError('Cycle must be a positive integer')
+  }
+  return cycle
 }
 
 function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typeof loadWorkflowSession>>>): Partial<KnowledgeState> {
@@ -69,6 +111,122 @@ function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typ
     nextAction: session.currentStage === 'reviewing' ? 'Resume the current review cycle.' : 'Resume the harness workflow.',
     currentBlocker: 'Legacy session has no persisted state card.',
     lastReliableResult: session.summary,
+  }
+}
+
+async function loadHarnessRoundSummary(
+  roleRoundsDir: string | undefined,
+  cycle?: number
+): Promise<{ cycle: number; summary: HarnessRoundSummary } | null> {
+  if (!roleRoundsDir) {
+    if (cycle !== undefined) {
+      throw new MissingHarnessCycleError(cycle)
+    }
+    return null
+  }
+
+  try {
+    const roundFiles = (await readdir(roleRoundsDir))
+      .filter((entry) => /^cycle-\d+\.json$/.test(entry))
+      .sort((left, right) => {
+        const leftCycle = Number.parseInt(left.match(/\d+/)?.[0] || '0', 10)
+        const rightCycle = Number.parseInt(right.match(/\d+/)?.[0] || '0', 10)
+        return rightCycle - leftCycle
+      })
+    const targetFile = cycle
+      ? roundFiles.find((entry) => entry === `cycle-${cycle}.json`)
+      : roundFiles[0]
+    if (!targetFile) {
+      if (cycle !== undefined) {
+        throw new MissingHarnessCycleError(cycle)
+      }
+      return null
+    }
+    return {
+      cycle: Number.parseInt(targetFile.match(/\d+/)?.[0] || '0', 10),
+      summary: JSON.parse(await readFile(`${roleRoundsDir}/${targetFile}`, 'utf-8')) as HarnessRoundSummary,
+    }
+  } catch (error) {
+    if (error instanceof MissingHarnessCycleError) {
+      throw error
+    }
+    return null
+  }
+}
+
+async function loadHarnessRoundIndex(roleRoundsDir: string | undefined): Promise<HarnessRoundIndexEntry[]> {
+  if (!roleRoundsDir) {
+    return []
+  }
+
+  try {
+    const roundFiles = (await readdir(roleRoundsDir))
+      .filter((entry) => /^cycle-\d+\.json$/.test(entry))
+      .sort((left, right) => {
+        const leftCycle = Number.parseInt(left.match(/\d+/)?.[0] || '0', 10)
+        const rightCycle = Number.parseInt(right.match(/\d+/)?.[0] || '0', 10)
+        return leftCycle - rightCycle
+      })
+
+    const rounds = await Promise.all(roundFiles.map(async (roundFile) => {
+      try {
+        const cycle = Number.parseInt(roundFile.match(/\d+/)?.[0] || '0', 10)
+        const summary = JSON.parse(await readFile(`${roleRoundsDir}/${roundFile}`, 'utf-8')) as HarnessRoundSummary
+        return {
+          cycle,
+          finalAction: summary.finalAction || 'unknown',
+        }
+      } catch {
+        return null
+      }
+    }))
+
+    return rounds.filter((round): round is HarnessRoundIndexEntry => round !== null)
+  } catch {
+    return []
+  }
+}
+
+async function printHarnessRoundIndex(roleRoundsDir: string | undefined): Promise<void> {
+  const rounds = await loadHarnessRoundIndex(roleRoundsDir)
+  if (rounds.length === 0) {
+    return
+  }
+
+  console.log(`Rounds: ${rounds.map((round) => `${round.cycle}=${round.finalAction}`).join(', ')}`)
+}
+
+async function printHarnessRoundSummary(roleRoundsDir: string | undefined, cycle?: number): Promise<void> {
+  const round = await loadHarnessRoundSummary(roleRoundsDir, cycle)
+  if (!round) {
+    return
+  }
+
+  const label = cycle ? `Round ${round.cycle}` : 'Latest round'
+  console.log(`${label}: ${round.summary.finalAction || 'unknown'} | next: ${round.summary.nextRoundBrief || 'No next-round brief.'}`)
+}
+
+function describeRoleParticipant(role: NonNullable<HarnessRoundSummary['roles']>[number]): string {
+  const id = role.binding?.agent || role.binding?.model || role.binding?.tool || role.displayName || role.roleId
+  return `${role.roleId}=${id}`
+}
+
+async function printHarnessRoleDetails(roleRoundsDir: string | undefined, cycle?: number): Promise<void> {
+  const round = await loadHarnessRoundSummary(roleRoundsDir, cycle)
+  if (!round) {
+    return
+  }
+
+  if (Array.isArray(round.summary.roles) && round.summary.roles.length > 0) {
+    console.log(`Participants: ${round.summary.roles.map(describeRoleParticipant).join(', ')}`)
+  }
+
+  if (Array.isArray(round.summary.reviewResults) && round.summary.reviewResults.length > 0) {
+    console.log(`Review notes: ${round.summary.reviewResults.map((result) => `${result.reviewerRoleId}: ${result.summary}`).join(' | ')}`)
+  }
+
+  if (round.summary.arbitrationResult?.summary) {
+    console.log(`Decision note: ${round.summary.arbitrationResult.summary}`)
   }
 }
 
@@ -213,7 +371,8 @@ harnessCommand
   .command('status')
   .description('Show details for a persisted harness session')
   .argument('<sessionId>', 'Harness session ID')
-  .action(async (sessionId: string) => {
+  .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
+  .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
     const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
@@ -234,6 +393,18 @@ harnessCommand
     }
     if (session.artifacts.tmuxSession || session.artifacts.tmuxWindow || session.artifacts.tmuxPane) {
       console.log(`Tmux: session=${session.artifacts.tmuxSession || '-'} window=${session.artifacts.tmuxWindow || '-'} pane=${session.artifacts.tmuxPane || '-'}`)
+    }
+    await printHarnessRoundIndex(session.artifacts.roleRoundsDir)
+    try {
+      await printHarnessRoundSummary(session.artifacts.roleRoundsDir, options.cycle)
+      await printHarnessRoleDetails(session.artifacts.roleRoundsDir, options.cycle)
+    } catch (error) {
+      if (error instanceof MissingHarnessCycleError) {
+        console.error(error.message)
+        process.exitCode = 1
+        return
+      }
+      throw error
     }
     console.log(`Summary: ${session.summary}`)
     console.log(`Updated: ${session.updatedAt.toISOString()}`)
@@ -258,6 +429,8 @@ harnessCommand
 
     console.log(`Session: ${session.id}`)
     console.log(`Status: ${session.status}`)
+    await printHarnessRoundIndex(session.artifacts.roleRoundsDir)
+    await printHarnessRoundSummary(session.artifacts.roleRoundsDir)
     if (session.artifacts.workspacePath) {
       console.log(`Workspace: ${session.artifacts.workspacePath} (${session.artifacts.workspaceMode || 'current'})`)
     }
@@ -280,7 +453,8 @@ harnessCommand
   .command('inspect')
   .description('Show the knowledge summary for a harness session')
   .argument('<sessionId>', 'Harness session ID')
-  .action(async (sessionId: string) => {
+  .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
+  .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
     const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
@@ -289,6 +463,18 @@ harnessCommand
     }
 
     await printKnowledgeInspectView(session.artifacts, legacyHarnessKnowledgeState(session))
+    await printHarnessRoundIndex(session.artifacts.roleRoundsDir)
+    try {
+      await printHarnessRoundSummary(session.artifacts.roleRoundsDir, options.cycle)
+      await printHarnessRoleDetails(session.artifacts.roleRoundsDir, options.cycle)
+    } catch (error) {
+      if (error instanceof MissingHarnessCycleError) {
+        console.error(error.message)
+        process.exitCode = 1
+        return
+      }
+      throw error
+    }
   })
 
 harnessCommand

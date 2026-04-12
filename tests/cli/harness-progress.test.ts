@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { WorkflowSession } from '../../src/capabilities/workflows/shared/runtime.js'
@@ -179,6 +179,62 @@ describe('harness progress helpers', () => {
 
     expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
     expect(log).toHaveBeenCalledWith('2026-04-11T00:00:03.000Z stage=code_development Codex 开始处理当前步骤。')
+
+    rmSync(dir, { recursive: true, force: true })
+    vi.useFakeTimers()
+  })
+
+  it('prints persisted round narrative after a completed cycle event', async () => {
+    vi.useRealTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-follow-cycle-'))
+    const eventsPath = join(dir, 'events.jsonl')
+    const roleRoundsDir = join(dir, 'rounds')
+    mkdirSync(roleRoundsDir, { recursive: true })
+    writeFileSync(eventsPath, [
+      JSON.stringify({
+        timestamp: '2026-04-11T00:00:00.000Z',
+        type: 'workflow_started',
+        stage: 'queued',
+        summary: 'Harness workflow started.',
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-11T00:00:10.000Z',
+        type: 'cycle_completed',
+        stage: 'reviewing',
+        cycle: 1,
+        summary: 'Cycle 1 requested more changes.',
+      }),
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
+      roles: [
+        { roleId: 'developer', displayName: 'developer', binding: { tool: 'codex' } },
+        { roleId: 'reviewer-1', displayName: 'security', binding: { tool: 'claude-code' } },
+      ],
+      reviewResults: [
+        { reviewerRoleId: 'reviewer-1', summary: 'Missing rollback handling.' },
+      ],
+      arbitrationResult: {
+        summary: 'Need another cycle after rollback fixes.',
+      },
+    }, null, 2), 'utf-8')
+
+    const log = vi.fn()
+
+    await followHarnessEventStream({
+      sessionId: 'harness-1',
+      initialSession: {
+        ...sessionFixture(),
+        status: 'completed',
+        artifacts: { eventsPath, roleRoundsDir },
+      },
+      log,
+      loadSession: vi.fn().mockResolvedValue(null),
+      once: true,
+    })
+
+    expect(log).toHaveBeenCalledWith('Participants: developer=codex, reviewer-1=claude-code')
+    expect(log).toHaveBeenCalledWith('Review notes: reviewer-1: Missing rollback handling.')
+    expect(log).toHaveBeenCalledWith('Decision note: Need another cycle after rollback fixes.')
 
     rmSync(dir, { recursive: true, force: true })
     vi.useFakeTimers()

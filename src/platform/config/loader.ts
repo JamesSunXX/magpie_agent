@@ -12,10 +12,11 @@ import type {
   ModelRouteBinding,
   TrdConfig,
   HarnessConfig,
+  LoopConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 8
+export const CURRENT_CONFIG_VERSION = 9
 
 export interface ConfigVersionStatus {
   path: string
@@ -270,6 +271,42 @@ function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Re
   harness.validator_checks.forEach((binding, index) => {
     validateBinding(`capabilities.harness.validator_checks[${index}]`, binding, 'capabilities.harness.validator_checks entries')
   })
+
+  if (!harness.role_bindings) {
+    return
+  }
+
+  validateBinding('capabilities.harness.role_bindings.developer', harness.role_bindings.developer)
+  validateBinding('capabilities.harness.role_bindings.arbitrator', harness.role_bindings.arbitrator)
+
+  if (harness.role_bindings.reviewers !== undefined) {
+    if (!Array.isArray(harness.role_bindings.reviewers)) {
+      throw new Error('Config error: capabilities.harness.role_bindings.reviewers must be an array')
+    }
+
+    harness.role_bindings.reviewers.forEach((binding, index) => {
+      validateBinding(
+        `capabilities.harness.role_bindings.reviewers[${index}]`,
+        binding,
+        'capabilities.harness.role_bindings.reviewers entries'
+      )
+    })
+  }
+
+  if (!harness.role_bindings.named_reviewers) {
+    return
+  }
+
+  for (const [name, binding] of Object.entries(harness.role_bindings.named_reviewers)) {
+    validateBinding(`capabilities.harness.role_bindings.named_reviewers.${name}`, binding)
+  }
+}
+
+function validateLoopConfig(loop: LoopConfig | undefined): void {
+  if (!loop?.role_bindings) return
+
+  validateBinding('capabilities.loop.role_bindings.architect', loop.role_bindings.architect)
+  validateBinding('capabilities.loop.role_bindings.developer', loop.role_bindings.developer)
 }
 
 function isLegacyConfig(config: Record<string, unknown>): boolean {
@@ -320,6 +357,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   }
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
+  validateLoopConfig(config.capabilities.loop)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
 }
 

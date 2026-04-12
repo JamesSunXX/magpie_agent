@@ -1,6 +1,7 @@
 import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
 import type { ExecutionHost } from '../../../platform/integrations/operations/types.js'
+import type { RoleFinalAction } from '../../../core/roles/index.js'
 
 export type HarnessStage =
   | 'queued'
@@ -56,6 +57,11 @@ export interface HarnessCycle {
   modelDecision: 'approved' | 'revise' | 'unknown'
   modelRationale: string
   issueFixSessionId?: string
+  roleRoundPath?: string
+  roleOpenIssuesPath?: string
+  roleNextRoundPath?: string
+  finalAction?: RoleFinalAction
+  nextRoundBrief?: string
 }
 
 export interface HarnessResult {
@@ -68,6 +74,9 @@ export interface HarnessResult {
       providerSelectionPath: string
       routingDecisionPath: string
       eventsPath: string
+      roleRosterPath?: string
+      roleMessagesPath?: string
+      roleRoundsDir?: string
       workspaceMode?: 'current' | 'worktree'
       workspacePath?: string
       worktreeBranch?: string
