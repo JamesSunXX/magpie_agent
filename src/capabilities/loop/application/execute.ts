@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto'
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import type { CapabilityContext } from '../../../core/capability/context.js'
@@ -686,6 +686,18 @@ function resolveWorktreeDirectory(cwd: string): string | null {
   return null
 }
 
+function ensureWorktreeDirectory(cwd: string): { directory: string } | { failureReason: string } {
+  const directory = resolveWorktreeDirectory(cwd) || '.worktrees'
+  try {
+    mkdirSync(join(cwd, directory), { recursive: true })
+    return { directory }
+  } catch (error) {
+    return {
+      failureReason: `Failed to create worktree directory ${directory}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
 function isIgnoredPath(cwd: string, relativePath: string): boolean {
   for (const candidate of [relativePath, join(relativePath, '.magpie-ignore-probe')]) {
     try {
@@ -699,6 +711,37 @@ function isIgnoredPath(cwd: string, relativePath: string): boolean {
   return false
 }
 
+function ensureIgnoredWorktreeDirectory(cwd: string, directory: string): string | null {
+  try {
+    const excludePath = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim()
+    const resolvedExcludePath = resolve(cwd, excludePath)
+    const pattern = `${directory}/`
+    const existing = existsSync(resolvedExcludePath)
+      ? readFileSync(resolvedExcludePath, 'utf-8')
+      : ''
+    const lines = existing.split(/\r?\n/).map((line) => line.trim())
+
+    if (!lines.includes(pattern)) {
+      const next = existing.trimEnd()
+      writeFileSync(
+        resolvedExcludePath,
+        `${next ? `${next}\n` : ''}${pattern}\n`,
+        'utf-8'
+      )
+    }
+  } catch (error) {
+    return `Failed to mark ${directory} as ignored: ${error instanceof Error ? error.message : String(error)}`
+  }
+
+  return isIgnoredPath(cwd, directory)
+    ? null
+    : `Worktree directory ${directory} is not ignored by git.`
+}
+
 function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
   try {
     execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
@@ -710,12 +753,26 @@ function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
     }
   }
 
-  const directory = resolveWorktreeDirectory(cwd)
-  if (!directory) {
+  const ensuredDirectory = ensureWorktreeDirectory(cwd)
+  if ('failureReason' in ensuredDirectory) {
     return {
       workspaceMode: 'current',
       workspacePath: cwd,
-      failureReason: 'No worktree directory found. Create .worktrees/ or worktrees/ first.',
+      failureReason: ensuredDirectory.failureReason,
+    }
+  }
+  const { directory } = ensuredDirectory
+
+  if (!isIgnoredPath(cwd, directory)) {
+    const ignoreFailure = ensureIgnoredWorktreeDirectory(cwd, directory)
+    if (!ignoreFailure) {
+      // Re-check against git after updating the local exclude list.
+    } else {
+      return {
+        workspaceMode: 'current',
+        workspacePath: cwd,
+        failureReason: ignoreFailure,
+      }
     }
   }
 

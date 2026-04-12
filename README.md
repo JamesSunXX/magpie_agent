@@ -86,7 +86,7 @@ magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 magpie memory show --project
 ```
 
-`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；超过阈值后才停下来等人处理。
+`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；超过阈值后才停下来等人处理。复杂任务如果需要独立工作区，`loop` 现在会自动准备本地 `.worktrees/` 目录，并把它写进本地 Git 忽略，不再要求先手工创建。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
 

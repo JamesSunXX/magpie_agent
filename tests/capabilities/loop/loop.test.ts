@@ -1505,7 +1505,43 @@ process.exit(result.status ?? 1)
     expect(existsSync(join(dir, 'human_confirmation.md'))).toBe(false)
   })
 
-  it('fails complex runs when the worktree directory is not ignored', async () => {
+  it('creates and auto-ignores a worktree directory for complex runs when the repository has none', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-missing-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+      complexity: 'complex',
+    }, ctx)
+
+    const excludePath = execSync('git rev-parse --git-path info/exclude', { cwd: dir, encoding: 'utf-8' }).trim()
+    const excludeContent = readFileSync(join(dir, excludePath), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
+    expect(existsSync(join(dir, '.worktrees'))).toBe(true)
+    expect(excludeContent).toContain('.worktrees/')
+  })
+
+  it('auto-ignores the worktree directory for complex runs when the directory exists but is not ignored', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-ignore-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
     mkdirSync(join(dir, '.worktrees'), { recursive: true })
@@ -1533,9 +1569,12 @@ process.exit(result.status ?? 1)
       complexity: 'complex',
     }, ctx)
 
-    expect(result.result.status).toBe('failed')
-    expect(result.result.session?.artifacts.workspaceMode).toBe('current')
-    expect(readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')).toContain('worktree')
+    const excludePath = execSync('git rev-parse --git-path info/exclude', { cwd: dir, encoding: 'utf-8' }).trim()
+    const excludeContent = readFileSync(join(dir, excludePath), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
+    expect(excludeContent).toContain('.worktrees/')
   })
 
   it('skips mock tests by default when no mock command is configured', async () => {
