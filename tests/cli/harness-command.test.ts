@@ -9,6 +9,8 @@ const createDefaultCapabilityRegistry = vi.fn()
 const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
 const launchMagpieInTmux = vi.fn()
+const enqueueHarnessSession = vi.fn()
+const isHarnessServerRunning = vi.fn()
 const progressReporterMocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
@@ -33,6 +35,11 @@ vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
 
 vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
   launchMagpieInTmux,
+}))
+
+vi.mock('../../src/capabilities/workflows/harness-server/runtime.js', () => ({
+  enqueueHarnessSession,
+  isHarnessServerRunning,
 }))
 
 vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
@@ -67,6 +74,14 @@ describe('top-level harness CLI command', () => {
       tmuxSession: 'magpie-harness-tmux-1',
       tmuxWindow: '@1',
       tmuxPane: '%1',
+    })
+    isHarnessServerRunning.mockResolvedValue(false)
+    enqueueHarnessSession.mockResolvedValue({
+      id: 'harness-queued-1',
+      status: 'queued',
+      artifacts: {
+        eventsPath: '/tmp/queued-events.jsonl',
+      },
     })
     runCapability.mockResolvedValue({
       output: {
@@ -114,6 +129,33 @@ describe('top-level harness CLI command', () => {
     )
     expect(logSpy).toHaveBeenCalledWith('Session: harness-1')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
+    logSpy.mockRestore()
+  })
+
+  it('queues submit through the harness server when the background service is running', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isHarnessServerRunning.mockResolvedValue(true)
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md', '--priority', 'high', '--config', '/tmp/custom.yaml'],
+      { from: 'node' }
+    )
+
+    expect(enqueueHarnessSession).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: '/tmp/prd.md',
+        priority: 'high',
+      }),
+      { configPath: '/tmp/custom.yaml' }
+    )
+    expect(runCapability).not.toHaveBeenCalled()
+    expect(logSpy).toHaveBeenCalledWith('Harness session queued.')
+    expect(logSpy).toHaveBeenCalledWith('Session: harness-queued-1')
+    expect(logSpy).toHaveBeenCalledWith('Status: queued')
+    expect(logSpy).toHaveBeenCalledWith('Priority: high')
     logSpy.mockRestore()
   })
 

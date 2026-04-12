@@ -153,6 +153,18 @@ describe('platform config loader', () => {
     )
   })
 
+  it('accepts harness defaults and validator checks when they use known reviewers and bindings', () => {
+    const config = structuredClone(validConfig)
+    config.reviewers['route-codex'] = { tool: 'codex', prompt: 'route codex' }
+    config.capabilities.harness = {
+      default_reviewers: ['claude', 'route-codex'],
+      validator_checks: [{ tool: 'claw' }, { tool: 'kiro' }],
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
+
   it('rejects agent values on non-kiro tools', () => {
     const config = structuredClone(validConfig)
     config.reviewers.claude = {

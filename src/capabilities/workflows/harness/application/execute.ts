@@ -7,6 +7,7 @@ import { runCapability } from '../../../../core/capability/runner.js'
 import { createRoutingDecision, escalateRoutingDecision, getEscalationReason, isRoutingEnabled } from '../../../routing/index.js'
 import { discussCapability } from '../../../discuss/index.js'
 import { loopCapability } from '../../../loop/index.js'
+import type { LoopExecutionResult, LoopPreparedInput, LoopSummaryOutput } from '../../../loop/types.js'
 import { unitTestEvalCapability } from '../../../quality/unit-test-eval/index.js'
 import { reviewCapability } from '../../../review/index.js'
 import { extractJsonBlock } from '../../../../trd/renderer.js'
@@ -14,13 +15,21 @@ import { issueFixCapability } from '../../issue-fix/index.js'
 import {
   appendWorkflowEvent,
   generateWorkflowId,
+  loadWorkflowSession,
   persistWorkflowSession,
   sessionDirFor,
 } from '../../shared/runtime.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
+import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
-import type { HarnessCycle, HarnessPreparedInput, HarnessResult, HarnessStage } from '../types.js'
+import type {
+  HarnessCycle,
+  HarnessPreparedInput,
+  HarnessResult,
+  HarnessStage,
+  HarnessValidatorCheckArtifact,
+} from '../types.js'
 import { selectHarnessProviders } from './provider-selection.js'
 import { getHarnessProgressObserver } from '../progress.js'
 import { createNotificationRouter } from '../../../../platform/integrations/notifications/factory.js'
@@ -40,11 +49,41 @@ const HARNESS_REVIEWER_PROMPTS = [
   'You are an adversarial implementation reviewer. Challenge weak claims, look for hidden failure modes, and verify that fixes really address the reported issue.',
   'You are a systems reviewer. Focus on architecture drift, rollout safety, compatibility, and cross-module regressions.',
 ]
+const DEFAULT_HARNESS_VALIDATOR_BINDINGS: ModelRouteBinding[] = [
+  { tool: 'claw' },
+  { tool: 'kiro' },
+]
 
 interface DecisionJson {
   decision?: 'approved' | 'revise'
   rationale?: string
   requiredActions?: string[]
+}
+
+interface HarnessValidatorJson {
+  decision?: 'approved' | 'revise'
+  rationale?: string
+  unresolvedItems?: string[]
+}
+
+interface HarnessValidatorResult {
+  id: string
+  label: string
+  tool?: string
+  model?: string
+  agent?: string
+  outputPath: string
+  decision: 'approved' | 'revise' | 'unknown'
+  rationale: string
+  unresolvedItems: string[]
+}
+
+interface HarnessResumeState {
+  isResume: boolean
+  shouldResumeLoop: boolean
+  canReuseCompletedDevelopment: boolean
+  completedCycles: HarnessCycle[]
+  approvedFromCompletedCycles: boolean
 }
 
 function describeHarnessActor(
@@ -78,9 +117,13 @@ function buildHarnessAiRoster(
         }
       })
       .filter((item): item is { id: string; role: string } => item !== null)
+    const validators = resolveHarnessValidatorBindings(config).map((binding) => ({
+      id: describeBindingLabel(binding),
+      role: '负责附加交叉检查和完成度复核',
+    }))
 
-    if (reviewers.length > 0) {
-      return reviewers
+    if (reviewers.length > 0 || validators.length > 0) {
+      return [...reviewers, ...validators]
     }
   }
 
@@ -96,6 +139,120 @@ function buildHarnessAiRoster(
       agent: config.capabilities.loop?.executor_agent,
     }, 'loop-executor', '负责开发阶段的实际执行与改动落地'),
   ]
+}
+
+function describeBindingLabel(binding: ModelRouteBinding | undefined, fallback = 'validator'): string {
+  if (!binding) return fallback
+  const primary = binding.tool || binding.model || fallback
+  return binding.agent ? `${primary}:${binding.agent}` : primary
+}
+
+function slugifyBindingLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'validator'
+}
+
+function toValidatorArtifact(validation: HarnessValidatorResult): HarnessValidatorCheckArtifact {
+  return {
+    id: validation.id,
+    label: validation.label,
+    tool: validation.tool,
+    model: validation.model,
+    agent: validation.agent,
+    outputPath: validation.outputPath,
+  }
+}
+
+function legacyValidatorArtifacts(cycle: Partial<HarnessCycle> & {
+  clawCheckPath?: string
+  kiroCheckPath?: string
+}): HarnessValidatorCheckArtifact[] {
+  const artifacts: HarnessValidatorCheckArtifact[] = []
+  if (cycle.clawCheckPath) {
+    artifacts.push({ id: 'claw', label: 'claw', tool: 'claw', outputPath: cycle.clawCheckPath })
+  }
+  if (cycle.kiroCheckPath) {
+    artifacts.push({ id: 'kiro', label: 'kiro', tool: 'kiro', outputPath: cycle.kiroCheckPath })
+  }
+  return artifacts
+}
+
+function normalizePersistedHarnessCycle(raw: unknown): HarnessCycle | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const cycle = raw as Partial<HarnessCycle> & {
+    clawCheckPath?: string
+    kiroCheckPath?: string
+  }
+  return {
+    ...(cycle as HarnessCycle),
+    validatorChecks: Array.isArray(cycle.validatorChecks)
+      ? cycle.validatorChecks
+      : legacyValidatorArtifacts(cycle),
+  }
+}
+
+async function loadPersistedHarnessCycles(roundsPath: string): Promise<HarnessCycle[]> {
+  try {
+    const raw = await readFile(roundsPath, 'utf-8')
+    const data = JSON.parse(raw) as unknown[]
+    return Array.isArray(data)
+      ? data.map(normalizePersistedHarnessCycle).filter((cycle): cycle is HarnessCycle => cycle !== null)
+      : []
+  } catch {
+    return []
+  }
+}
+
+function cycleApproved(cycle: HarnessCycle | undefined): boolean {
+  if (!cycle) {
+    return false
+  }
+  return cycle.testsPassed
+    && cycle.blockingIssueCount === 0
+    && cycle.modelDecision === 'approved'
+}
+
+function resolveHarnessResumeState(
+  existingSession: Awaited<ReturnType<typeof loadWorkflowSession>>,
+  completedCycles: HarnessCycle[]
+): HarnessResumeState {
+  if (!existingSession) {
+    return {
+      isResume: false,
+      shouldResumeLoop: false,
+      canReuseCompletedDevelopment: false,
+      completedCycles,
+      approvedFromCompletedCycles: false,
+    }
+  }
+
+  const hasLoopSession = Boolean(existingSession.artifacts.loopSessionId)
+  const canReuseCompletedDevelopment = hasLoopSession
+    && (existingSession.currentStage === 'reviewing'
+      || existingSession.currentStage === 'completed'
+      || existingSession.currentStage === 'failed'
+      || completedCycles.length > 0)
+  const shouldResumeLoop = hasLoopSession
+    && !canReuseCompletedDevelopment
+    && existingSession.currentStage === 'developing'
+  const isResume = existingSession.status === 'waiting_next_cycle'
+    || existingSession.status === 'blocked'
+    || existingSession.status === 'waiting_retry'
+    || canReuseCompletedDevelopment
+    || shouldResumeLoop
+
+  return {
+    isResume,
+    shouldResumeLoop,
+    canReuseCompletedDevelopment,
+    completedCycles,
+    approvedFromCompletedCycles: cycleApproved(completedCycles[completedCycles.length - 1]),
+  }
 }
 
 function nextHarnessAction(stage: HarnessStage, cycle?: number): string {
@@ -126,6 +283,9 @@ function buildHarnessPlanSummary(goal: string): string {
 }
 
 function buildHarnessCycleSummary(cycle: HarnessCycle): string {
+  const validatorArtifacts = cycle.validatorChecks.length > 0
+    ? cycle.validatorChecks.map((validation) => `- ${validation.label}: ${validation.outputPath}`)
+    : ['- none']
   return [
     `# Cycle ${cycle.cycle}`,
     '',
@@ -138,6 +298,7 @@ function buildHarnessCycleSummary(cycle: HarnessCycle): string {
     '',
     'Artifacts:',
     `- Review: ${cycle.reviewOutputPath}`,
+    ...validatorArtifacts,
     `- Adjudication: ${cycle.adjudicationOutputPath}`,
     `- Unit test eval: ${cycle.unitTestEvalPath}`,
     ...(cycle.issueFixSessionId ? [`- Issue fix session: ${cycle.issueFixSessionId}`] : []),
@@ -165,10 +326,14 @@ function buildHarnessOpenIssues(cycle: HarnessCycle): string {
 }
 
 function buildHarnessEvidence(cycle: HarnessCycle): string {
+  const validatorArtifacts = cycle.validatorChecks.length > 0
+    ? cycle.validatorChecks.map((validation) => `- ${validation.label}: ${validation.outputPath}`)
+    : ['- Validator checks: none']
   return [
     '# Evidence',
     '',
     `- Review output: ${cycle.reviewOutputPath}`,
+    ...validatorArtifacts,
     `- Adjudication output: ${cycle.adjudicationOutputPath}`,
     `- Unit test evaluation: ${cycle.unitTestEvalPath}`,
   ].join('\n')
@@ -204,6 +369,23 @@ function buildHarnessCandidates(
 
 function cloneConfig(config: MagpieConfigV2): MagpieConfigV2 {
   return JSON.parse(JSON.stringify(config)) as MagpieConfigV2
+}
+
+function resolveHarnessDefaultReviewers(config: MagpieConfigV2): string[] | null {
+  const reviewerIds = config.capabilities.harness?.default_reviewers
+  return Array.isArray(reviewerIds) && reviewerIds.length > 0 ? [...reviewerIds] : null
+}
+
+function resolveHarnessValidatorBindings(config: MagpieConfigV2): ModelRouteBinding[] {
+  const bindings = config.capabilities.harness?.validator_checks
+  if (Array.isArray(bindings)) {
+    return bindings.map((binding) => ({
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+    }))
+  }
+  return DEFAULT_HARNESS_VALIDATOR_BINDINGS.map((binding) => ({ ...binding }))
 }
 
 function ensureHarnessReviewers(config: MagpieConfigV2, models: string[]): string[] {
@@ -299,14 +481,20 @@ function applyHarnessConfigOverrides(
   routingDecision?: RoutingDecision
 ): { config: MagpieConfigV2; reviewerIds: string[] } {
   const config = cloneConfig(baseConfig)
+  const routingReviewerIds = routingDecision?.reviewerIds ? [...routingDecision.reviewerIds] : null
+  const configuredDefaultReviewerIds = !modelsExplicit && !routingReviewerIds
+    ? resolveHarnessDefaultReviewers(config)
+    : null
   const reviewerIds = modelsExplicit
     ? ensureHarnessReviewers(config, models)
-    : routingDecision?.reviewerIds
-      ? [...routingDecision.reviewerIds]
-      : ensureHarnessReviewers(config, models)
+    : routingReviewerIds
+      || configuredDefaultReviewerIds
+      || ensureHarnessReviewers(config, models)
 
-  if (!modelsExplicit) {
+  if (routingReviewerIds) {
     applyHarnessReviewerPrompts(config, reviewerIds)
+  }
+  if (!modelsExplicit) {
     alignSummaryRoles(config, reviewerIds)
   }
 
@@ -322,7 +510,7 @@ function applyHarnessConfigOverrides(
   if (routingDecision) {
     applyBinding(config, 'loop', routingDecision.planning, routingDecision.execution)
     applyBinding(config, 'issue_fix', routingDecision.planning, routingDecision.execution)
-  } else {
+  } else if (modelsExplicit) {
     const issueFixConfig = config.capabilities.issue_fix || {}
     config.capabilities.issue_fix = {
       ...issueFixConfig,
@@ -337,6 +525,7 @@ function applyHarnessConfigOverrides(
 function buildAdjudicationTopic(
   cycle: number,
   issues: MergedIssue[],
+  validations: HarnessValidatorResult[],
   testsPassed: boolean,
   testOutput: string
 ): string {
@@ -345,6 +534,13 @@ function buildAdjudicationTopic(
     return `${index + 1}. [${issue.severity}] ${issue.title} @ ${location}\n${issue.description}`
   }).join('\n\n')
 
+  const validationSummary = validations.map((validation) => [
+    `Validator: ${validation.label}`,
+    `Decision: ${validation.decision}`,
+    `Rationale: ${validation.rationale}`,
+    `Unresolved: ${validation.unresolvedItems.length > 0 ? validation.unresolvedItems.join('; ') : 'none'}`,
+  ].join('\n')).join('\n\n')
+
   return [
     `Harness adjudication cycle ${cycle}.`,
     '',
@@ -352,6 +548,9 @@ function buildAdjudicationTopic(
     '',
     'Blocking findings from adversarial review:',
     topIssues || '- none',
+    '',
+    'Validator findings:',
+    validationSummary || '- none',
     '',
     'Test output excerpt:',
     testOutput.slice(0, 2000) || '(empty)',
@@ -374,6 +573,7 @@ function buildAdjudicationTopic(
 function buildIssueFixPrompt(
   cycle: number,
   issues: MergedIssue[],
+  validations: HarnessValidatorResult[],
   testOutput: string,
   decision: DecisionJson | null
 ): string {
@@ -383,6 +583,12 @@ function buildIssueFixPrompt(
   }).join('\n\n')
 
   const actions = (decision?.requiredActions || []).map((item, index) => `${index + 1}. ${item}`).join('\n')
+  const validationLines = validations.map((validation) => {
+    const unresolved = validation.unresolvedItems.length > 0
+      ? validation.unresolvedItems.map((item, index) => `  ${index + 1}. ${item}`).join('\n')
+      : '  - none'
+    return `${validation.label}:\n${unresolved}`
+  }).join('\n\n')
 
   return [
     `Harness auto-fix cycle ${cycle}.`,
@@ -391,6 +597,9 @@ function buildIssueFixPrompt(
     '',
     'Blocking items:',
     issueLines || '- none',
+    '',
+    'Validator unresolved items:',
+    validationLines || '- none',
     '',
     'Model adjudication rationale:',
     decision?.rationale || '(none)',
@@ -407,6 +616,112 @@ function toDecision(content: string): DecisionJson | null {
   return extractJsonBlock<DecisionJson>(content)
 }
 
+function toValidatorDecision(content: string): HarnessValidatorJson | null {
+  return extractJsonBlock<HarnessValidatorJson>(content)
+}
+
+function formatValidatorPrompt(
+  validatorLabel: string,
+  cycle: number,
+  issues: MergedIssue[],
+  testsPassed: boolean,
+  testOutput: string
+): string {
+  const topIssues = issues.slice(0, 10).map((issue, index) => {
+    const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+    return `${index + 1}. [${issue.severity}] ${issue.title} @ ${location}\n${issue.description}`
+  }).join('\n\n')
+
+  return [
+    `Harness validator ${validatorLabel} cycle ${cycle}.`,
+    '',
+    `Unit tests passed: ${testsPassed ? 'yes' : 'no'}`,
+    '',
+    'Review blockers:',
+    topIssues || '- none',
+    '',
+    'Test output excerpt:',
+    testOutput.slice(0, 2000) || '(empty)',
+    '',
+    'Return ONLY JSON:',
+    '```json',
+    '{',
+    '  "decision": "approved|revise",',
+    '  "rationale": "one paragraph",',
+    '  "unresolvedItems": ["..."]',
+    '}',
+    '```',
+    '',
+    'Rules:',
+    '- Use decision=approved only when there are no unresolved release blockers from your perspective.',
+    '- Otherwise return decision=revise and list concrete unresolvedItems.',
+  ].join('\n')
+}
+
+async function runValidatorCheck(
+  binding: ModelRouteBinding,
+  index: number,
+  cwd: string,
+  config: MagpieConfigV2,
+  cycle: number,
+  issues: MergedIssue[],
+  testsPassed: boolean,
+  testOutput: string,
+  outputPath: string
+): Promise<HarnessValidatorResult> {
+  const label = describeBindingLabel(binding)
+  const id = `${index + 1}-${slugifyBindingLabel(label)}`
+  try {
+    const provider = createConfiguredProvider({
+      logicalName: `capabilities.harness.validator_checks[${index}]`,
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+    }, config)
+    provider.setCwd?.(cwd)
+
+    const raw = await provider.chat([{
+      role: 'user',
+      content: formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput),
+    }])
+    const parsed = toValidatorDecision(raw)
+    await writeFile(outputPath, JSON.stringify({
+      raw,
+      parsed,
+    }, null, 2), 'utf-8')
+
+    return {
+      id,
+      label,
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+      outputPath,
+      decision: parsed?.decision || 'unknown',
+      rationale: parsed?.rationale || 'Validator returned no parsable JSON decision.',
+      unresolvedItems: Array.isArray(parsed?.unresolvedItems) ? parsed!.unresolvedItems.filter(Boolean) : [],
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await writeFile(outputPath, JSON.stringify({
+      error: message,
+      parsed: null,
+    }, null, 2), 'utf-8')
+
+    return {
+      id,
+      label,
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+      outputPath,
+      decision: 'unknown',
+      rationale: `${label} validator unavailable: ${message}`,
+      unresolvedItems: [],
+    }
+  }
+}
+
 function isApproved(decision: DecisionJson | null, blockingIssueCount: number, testsPassed: boolean): boolean {
   if (blockingIssueCount > 0) return false
   if (!testsPassed) return false
@@ -418,6 +733,7 @@ async function runCycle(
   cwd: string,
   configPath: string,
   reviewerIds: string[],
+  validatorBindings: ModelRouteBinding[],
   reviewRounds: number,
   testCommand: string,
   sessionDir: string,
@@ -470,7 +786,28 @@ async function runCycle(
   const testsPassed = unitEval.result.testRun?.passed === true
   const testOutput = unitEval.result.testRun?.output || ''
 
-  const adjudicationTopic = buildAdjudicationTopic(cycle, blockingIssues, testsPassed, testOutput)
+  const validations = await Promise.all(
+    validatorBindings.map((binding, index) => {
+      const label = describeBindingLabel(binding)
+      const outputPath = join(cycleDir, `validator-${index + 1}-${slugifyBindingLabel(label)}.json`)
+      return runValidatorCheck(binding, index, cwd, config, cycle, blockingIssues, testsPassed, testOutput, outputPath)
+    })
+  )
+  const validatorIssues = validations.flatMap((validation) =>
+    validation.unresolvedItems.map((item, index) => ({
+      severity: 'high',
+      category: 'validator',
+      file: `${validation.id}-validator`,
+      line: index + 1,
+      title: `${validation.label} unresolved item`,
+      description: item,
+      descriptions: [item],
+      raisedBy: [validation.label],
+    } satisfies MergedIssue))
+  )
+  const combinedBlockingIssues = [...blockingIssues, ...validatorIssues]
+
+  const adjudicationTopic = buildAdjudicationTopic(cycle, combinedBlockingIssues, validations, testsPassed, testOutput)
   await runCapability(discussCapability, {
     topic: adjudicationTopic,
     options: {
@@ -487,15 +824,16 @@ async function runCycle(
 
   const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
   const decision = toDecision(adjudicationData.finalConclusion || '')
-  const approved = isApproved(decision, blockingIssues.length, testsPassed)
+  const approved = isApproved(decision, combinedBlockingIssues.length, testsPassed)
 
   const cycleResult: HarnessCycle = {
     cycle,
     reviewOutputPath,
+    validatorChecks: validations.map(toValidatorArtifact),
     adjudicationOutputPath,
     unitTestEvalPath,
-    issueCount: allIssues.length,
-    blockingIssueCount: blockingIssues.length,
+    issueCount: allIssues.length + validatorIssues.length,
+    blockingIssueCount: combinedBlockingIssues.length,
     testsPassed,
     modelDecision: decision?.decision || 'unknown',
     modelRationale: decision?.rationale || 'No parsable decision returned by discuss final conclusion.',
@@ -508,7 +846,7 @@ async function runCycle(
   let nextRoutingDecision = routingDecision
   const escalationReason = routingDecision
     ? getEscalationReason({
-      blockingIssueCount: blockingIssues.length,
+      blockingIssueCount: combinedBlockingIssues.length,
       testsPassed,
       modelDecision: cycleResult.modelDecision,
     })
@@ -523,7 +861,7 @@ async function runCycle(
   }
 
   const issueFix = await runCapability(issueFixCapability, {
-    issue: buildIssueFixPrompt(cycle, blockingIssues, testOutput, decision),
+    issue: buildIssueFixPrompt(cycle, combinedBlockingIssues, validations, testOutput, decision),
     apply: true,
     verifyCommand: testCommand,
   }, cycleCtx)
@@ -546,6 +884,11 @@ export async function executeHarness(
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
   const eventsPath = join(sessionDir, 'events.jsonl')
+  const existingSession = await loadWorkflowSession(ctx.cwd, 'harness', sessionId)
+  const resumeState = resolveHarnessResumeState(
+    existingSession,
+    await loadPersistedHarnessCycles(roundsPath)
+  )
 
   await mkdir(sessionDir, { recursive: true })
   const knowledgeArtifacts = await createTaskKnowledge({
@@ -561,12 +904,21 @@ export async function executeHarness(
     buildHarnessPlanSummary(prepared.goal),
     'Harness plan summary initialized.'
   )
-  await updateTaskKnowledgeState(knowledgeArtifacts, {
-    currentStage: 'queued',
-    lastReliableResult: 'Harness workflow queued.',
-    nextAction: 'Select providers and start loop development.',
-    currentBlocker: 'Waiting for provider selection.',
-  }, 'Harness state initialized.')
+  await updateTaskKnowledgeState(knowledgeArtifacts, resumeState.isResume
+    ? {
+      currentStage: existingSession?.currentStage || 'queued',
+      lastReliableResult: existingSession?.summary || 'Harness workflow resumed.',
+      nextAction: 'Resume from the last persisted harness checkpoint.',
+      currentBlocker: 'Recovering interrupted harness execution.',
+    }
+    : {
+      currentStage: 'queued',
+      lastReliableResult: 'Harness workflow queued.',
+      nextAction: 'Select providers and start loop development.',
+      currentBlocker: 'Waiting for provider selection.',
+    }, resumeState.isResume
+    ? 'Harness state initialized from persisted session.'
+    : 'Harness state initialized.')
 
   type HarnessSession = NonNullable<HarnessResult['session']>
   type HarnessSessionPatch = Omit<Partial<HarnessSession>, 'artifacts'> & {
@@ -574,15 +926,17 @@ export async function executeHarness(
   }
 
   let session: HarnessSession = {
+    ...(existingSession || {}),
     id: sessionId,
     capability: 'harness' as const,
     title: prepared.goal.slice(0, 80),
-    createdAt: new Date(),
+    createdAt: existingSession?.createdAt || new Date(),
     updatedAt: new Date(),
     status: 'in_progress' as const,
-    currentStage: 'queued' as HarnessStage,
-    summary: 'Harness workflow queued.',
+    currentStage: (existingSession?.currentStage as HarnessStage | undefined) || 'queued',
+    summary: existingSession?.summary || 'Harness workflow queued.',
     artifacts: {
+      ...(existingSession?.artifacts || {}),
       repoRootPath: ctx.cwd,
       harnessConfigPath,
       roundsPath,
@@ -595,9 +949,11 @@ export async function executeHarness(
       ...(process.env.MAGPIE_TMUX_PANE ? { tmuxPane: process.env.MAGPIE_TMUX_PANE } : {}),
       ...knowledgeArtifacts,
     },
+    ...(existingSession?.evidence ? { evidence: existingSession.evidence } : {}),
   }
   let harnessConfig: MagpieConfigV2 = config
   let reviewerIds: string[] = []
+  let validatorBindings: ModelRouteBinding[] = []
 
   const persistSession = async (
     patch: HarnessSessionPatch = {}
@@ -777,9 +1133,17 @@ export async function executeHarness(
   }
 
   await persistSession()
-  await appendEvent('workflow_started', {
-    stage: 'queued',
-    summary: 'Harness workflow started.',
+  await appendEvent(resumeState.isResume ? 'workflow_resumed' : 'workflow_started', {
+    stage: session.currentStage || 'queued',
+    summary: resumeState.isResume ? 'Harness workflow resumed.' : 'Harness workflow started.',
+    ...(resumeState.isResume
+      ? {
+        details: {
+          resumedStage: session.currentStage || 'queued',
+          completedCycles: resumeState.completedCycles.length,
+        },
+      }
+      : {}),
   })
 
   let routingDecision = isRoutingEnabled(config)
@@ -797,6 +1161,7 @@ export async function executeHarness(
     prepared.modelsExplicit,
     routingDecision
   ))
+  validatorBindings = resolveHarnessValidatorBindings(harnessConfig)
   const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
   await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
@@ -883,18 +1248,53 @@ export async function executeHarness(
     },
   })
 
-  await transitionStage('developing', 'Running loop development stage.')
+  let loopResult: {
+    prepared: LoopPreparedInput
+    result: LoopExecutionResult
+    output: LoopSummaryOutput
+  } | null = null
 
-  const loopResult = await runCapability(loopCapability, {
-    mode: 'run',
-    goal: prepared.goal,
-    prdPath: prepared.prdPath,
-    waitHuman: false,
-    complexity: prepared.complexity,
-    host: prepared.host,
-  }, harnessCtx)
+  if (!resumeState.canReuseCompletedDevelopment) {
+    await transitionStage(
+      'developing',
+      resumeState.shouldResumeLoop ? 'Resuming loop development stage.' : 'Running loop development stage.'
+    )
 
-  if (loopResult.result.status !== 'completed') {
+    loopResult = await runCapability(loopCapability, resumeState.shouldResumeLoop
+      ? {
+        mode: 'resume',
+        sessionId: existingSession?.artifacts.loopSessionId,
+        waitHuman: false,
+        complexity: prepared.complexity,
+        host: prepared.host,
+      }
+      : {
+        mode: 'run',
+        goal: prepared.goal,
+        prdPath: prepared.prdPath,
+        waitHuman: false,
+        complexity: prepared.complexity,
+        host: prepared.host,
+      }, harnessCtx)
+  } else {
+    await persistSession({
+      summary: resumeState.completedCycles.length > 0
+        ? `Resuming after completed cycle ${resumeState.completedCycles.length}.`
+        : 'Resuming after completed development stage.',
+    })
+    await appendEvent('workflow_resumed_checkpoint', {
+      stage: 'reviewing',
+      summary: resumeState.completedCycles.length > 0
+        ? `Resuming review cycle ${resumeState.completedCycles.length + 1}.`
+        : 'Skipping development stage because it already completed.',
+      details: {
+        completedCycles: resumeState.completedCycles.length,
+        loopSessionId: existingSession?.artifacts.loopSessionId,
+      },
+    })
+  }
+
+  if (loopResult && loopResult.result.status !== 'completed') {
     const summary = 'Harness failed during loop development stage.'
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)
     await transitionStage('failed', summary, 'workflow_failed', {
@@ -930,38 +1330,41 @@ export async function executeHarness(
     }
   }
 
-  await persistSession({
-      artifacts: {
-        ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
-        ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
-        ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
-        ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
-        ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
-    },
-  })
+  if (loopResult) {
+    await persistSession({
+        artifacts: {
+          ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+          ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
+          ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
+          ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+          ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
+      },
+    })
+  }
   await updateTaskKnowledgeSummary(
     knowledgeArtifacts,
     'plan',
     [
       buildHarnessPlanSummary(prepared.goal),
       '',
-      loopResult.result.session?.id ? `Loop session: ${loopResult.result.session.id}` : 'Loop session: unavailable',
+      session.artifacts.loopSessionId ? `Loop session: ${session.artifacts.loopSessionId}` : 'Loop session: unavailable',
     ].join('\n'),
     'Harness linked loop session.'
   )
 
   const testCommand = prepared.testCommand || config.capabilities.loop?.commands?.unit_test || 'npm run test:run'
-  const cycles: HarnessCycle[] = []
-  let approved = false
+  const cycles: HarnessCycle[] = [...resumeState.completedCycles]
+  let approved = resumeState.approvedFromCompletedCycles
 
   try {
-    for (let cycle = 1; cycle <= prepared.maxCycles; cycle++) {
+    for (let cycle = cycles.length + 1; cycle <= prepared.maxCycles; cycle++) {
       await transitionStage('reviewing', `Running review cycle ${cycle}.`, 'stage_changed', { cycle })
       const cycleRun = await runCycle(
         cycle,
         resolve(ctx.cwd),
         harnessConfigPath,
         reviewerIds,
+        validatorBindings,
         prepared.reviewRounds,
         testCommand,
         sessionDir,

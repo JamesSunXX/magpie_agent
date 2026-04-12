@@ -140,4 +140,18 @@ describe('loadConfig - validation', () => {
     vi.mocked(parse).mockReturnValue(legacy as MagpieConfigV2)
     expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
   })
+
+  it('throws when capabilities.harness.default_reviewers includes unknown reviewer', () => {
+    const bad = structuredClone(validConfig)
+    bad.capabilities.harness = { default_reviewers: ['unknown-reviewer'] }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('capabilities.harness.default_reviewers includes unknown reviewer')
+  })
+
+  it('throws when capabilities.harness.validator_checks contains an empty binding', () => {
+    const bad = structuredClone(validConfig)
+    bad.capabilities.harness = { validator_checks: [{} as never] }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('capabilities.harness.validator_checks entries must include a non-empty tool or model')
+  })
 })

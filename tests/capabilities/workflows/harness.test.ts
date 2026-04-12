@@ -3,10 +3,16 @@ import { writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import YAML from 'yaml'
 
 const execFileSyncMock = vi.hoisted(() => vi.fn())
 const knowledgeMocks = vi.hoisted(() => ({
   failPromote: false,
+}))
+const validatorProviderMocks = vi.hoisted(() => ({
+  claw: vi.fn(async () => '```json\n{"decision":"approved","rationale":"claw ok","unresolvedItems":[]}\n```'),
+  kiro: vi.fn(async () => '```json\n{"decision":"approved","rationale":"kiro ok","unresolvedItems":[]}\n```'),
+  codex: vi.fn(async () => '```json\n{"decision":"approved","rationale":"codex ok","unresolvedItems":[]}\n```'),
 }))
 
 vi.mock('child_process', async (importOriginal) => {
@@ -39,6 +45,30 @@ import { reportHarness } from '../../../src/capabilities/workflows/harness/appli
 vi.mock('../../../src/core/capability/runner.js', () => ({
   runCapability: vi.fn(),
 }))
+
+vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/platform/providers/index.js')>()
+  return {
+    ...actual,
+    createConfiguredProvider: vi.fn((input: { tool?: string; model?: string }) => {
+      const providerKey = input.tool === 'claw'
+        ? 'claw'
+        : input.tool === 'codex'
+          ? 'codex'
+          : input.tool === 'kiro'
+            ? 'kiro'
+            : input.model === 'codex'
+              ? 'codex'
+              : input.model === 'kiro'
+                ? 'kiro'
+                : 'kiro'
+      return {
+        setCwd: vi.fn(),
+        chat: validatorProviderMocks[providerKey as 'claw' | 'kiro' | 'codex'],
+      }
+    }),
+  }
+})
 
 interface ConfigOptions {
   loopPlannerModel?: string
@@ -170,6 +200,9 @@ describe('harness workflow', () => {
   afterEach(() => {
     vi.clearAllMocks()
     knowledgeMocks.failPromote = false
+    validatorProviderMocks.claw.mockClear()
+    validatorProviderMocks.kiro.mockClear()
+    validatorProviderMocks.codex.mockClear()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -179,6 +212,8 @@ describe('harness workflow', () => {
     const magpieHome = join(dir, '.magpie-home')
     mkdirSync(magpieHome, { recursive: true })
     process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
     writeConfig(configPath, {
@@ -255,6 +290,455 @@ describe('harness workflow', () => {
       expect(firstText).not.toContain('claude-code')
     } finally {
       delete process.env.MAGPIE_MOCK_RESPONSE
+    }
+  })
+
+  it('runs claw and kiro validation checks and persists their artifacts per cycle', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-validators-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-validators' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'Deliver checkout v2',
+      prdPath: join(dir, 'docs', 'prd.md'),
+    }, ctx)
+
+    const result = await executeHarness(prepared, ctx)
+    const cycleDir = join(result.session!.artifacts.roundsPath, '..', 'cycle-1')
+
+    expect(validatorProviderMocks.claw).toHaveBeenCalled()
+    expect(validatorProviderMocks.kiro).toHaveBeenCalled()
+    expect(readFileSync(join(cycleDir, 'validator-1-claw.json'), 'utf-8')).toContain('claw ok')
+    expect(readFileSync(join(cycleDir, 'validator-2-kiro.json'), 'utf-8')).toContain('kiro ok')
+  })
+
+  it('keeps the harness moving when claw is unavailable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-validator-fallback-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    validatorProviderMocks.claw.mockRejectedValueOnce(new Error('spawn claw ENOENT'))
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-validators' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'Deliver checkout v2',
+      prdPath: join(dir, 'docs', 'prd.md'),
+    }, ctx)
+
+    const result = await executeHarness(prepared, ctx)
+    const cycleDir = join(result.session!.artifacts.roundsPath, '..', 'cycle-1')
+
+    expect(result.status).toBe('completed')
+    expect(readFileSync(join(cycleDir, 'validator-1-claw.json'), 'utf-8')).toContain('spawn claw ENOENT')
+    expect(readFileSync(join(cycleDir, 'validator-2-kiro.json'), 'utf-8')).toContain('kiro ok')
+  })
+
+  it('uses configured harness reviewers and validator checks before falling back to built-ins', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-configured-reviewers-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  codex:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  alpha:
+    tool: codex
+    prompt: alpha review
+  beta:
+    tool: codex
+    prompt: beta review
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  harness:
+    default_reviewers: [alpha, beta]
+    validator_checks:
+      - tool: codex
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  issue_fix:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  routing:
+    enabled: false
+  quality:
+    unitTestEval:
+      enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const reviewCalls: Array<{ reviewers: string }> = []
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-configured' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        reviewCalls.push({ reviewers: (input as { options: { reviewers: string } }).options.reviewers })
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'Deliver checkout v2',
+      prdPath: join(dir, 'docs', 'prd.md'),
+    }, ctx)
+
+    const result = await executeHarness(prepared, ctx)
+    const cycleDir = join(result.session!.artifacts.roundsPath, '..', 'cycle-1')
+    const harnessConfig = YAML.parse(readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')) as {
+      reviewers: Record<string, { prompt?: string }>
+      capabilities: {
+        issue_fix?: {
+          planner_model?: string
+          executor_model?: string
+        }
+      }
+    }
+
+    expect(result.status).toBe('completed')
+    expect(reviewCalls[0]?.reviewers).toBe('alpha,beta')
+    expect(validatorProviderMocks.codex).toHaveBeenCalled()
+    expect(validatorProviderMocks.claw).not.toHaveBeenCalled()
+    expect(validatorProviderMocks.kiro).not.toHaveBeenCalled()
+    expect(harnessConfig.reviewers.alpha?.prompt).toBe('alpha review')
+    expect(harnessConfig.reviewers.beta?.prompt).toBe('beta review')
+    expect(harnessConfig.capabilities.issue_fix?.planner_model).toBe('mock')
+    expect(harnessConfig.capabilities.issue_fix?.executor_model).toBe('mock')
+    expect(readFileSync(join(cycleDir, 'validator-1-codex.json'), 'utf-8')).toContain('codex ok')
+  })
+
+  it('resumes review from persisted cycles without rerunning completed development', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-resume-review-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const sessionId = 'harness-resume-review'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'harness', sessionId)
+    mkdirSync(sessionDir, { recursive: true })
+    const roundsPath = join(sessionDir, 'rounds.json')
+    writeFileSync(roundsPath, JSON.stringify([{
+      cycle: 1,
+      reviewOutputPath: join(sessionDir, 'cycle-1', 'review.json'),
+      validatorChecks: [
+        { id: '1-claw', label: 'claw', tool: 'claw', outputPath: join(sessionDir, 'cycle-1', 'validator-1-claw.json') },
+        { id: '2-kiro', label: 'kiro', tool: 'kiro', outputPath: join(sessionDir, 'cycle-1', 'validator-2-kiro.json') },
+      ],
+      adjudicationOutputPath: join(sessionDir, 'cycle-1', 'adjudication.json'),
+      unitTestEvalPath: join(sessionDir, 'cycle-1', 'unit-test-eval.json'),
+      issueCount: 1,
+      blockingIssueCount: 1,
+      testsPassed: false,
+      modelDecision: 'revise',
+      modelRationale: 'Need another fix',
+      issueFixSessionId: 'issue-fix-1',
+    }], null, 2), 'utf-8')
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z').toISOString(),
+      status: 'waiting_next_cycle',
+      currentStage: 'reviewing',
+      summary: 'Cycle 1 requested more changes.',
+      artifacts: {
+        repoRootPath: dir,
+        roundsPath,
+        harnessConfigPath: join(sessionDir, 'harness.config.yaml'),
+        providerSelectionPath: join(sessionDir, 'provider-selection.json'),
+        routingDecisionPath: join(sessionDir, 'routing-decision.json'),
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        loopSessionId: 'loop-existing',
+      },
+    }, null, 2), 'utf-8')
+
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = sessionId
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        throw new Error('loop should not rerun when development already completed')
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        expect(reviewOutput).toContain('cycle-2')
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+      const rounds = readJson<Array<{ cycle: number }>>(roundsPath)
+
+      expect(result.status).toBe('completed')
+      expect(rounds).toHaveLength(2)
+      expect(rounds[0]?.cycle).toBe(1)
+      expect(rounds[1]?.cycle).toBe(2)
+      expect(runCapabilityMock.mock.calls.filter(([module]) => module.name === 'loop')).toHaveLength(0)
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+    }
+  })
+
+  it('resumes the loop stage when development was interrupted mid-run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-resume-loop-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const sessionId = 'harness-resume-loop'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'harness', sessionId)
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z').toISOString(),
+      status: 'waiting_next_cycle',
+      currentStage: 'developing',
+      summary: 'Loop development was interrupted.',
+      artifacts: {
+        repoRootPath: dir,
+        roundsPath: join(sessionDir, 'rounds.json'),
+        harnessConfigPath: join(sessionDir, 'harness.config.yaml'),
+        providerSelectionPath: join(sessionDir, 'provider-selection.json'),
+        routingDecisionPath: join(sessionDir, 'routing-decision.json'),
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        loopSessionId: 'loop-resume-1',
+      },
+    }, null, 2), 'utf-8')
+
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = sessionId
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        expect(input).toMatchObject({
+          mode: 'resume',
+          sessionId: 'loop-resume-1',
+        })
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-resume-1' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(runCapabilityMock.mock.calls.find(([module]) => module.name === 'loop')?.[1]).toMatchObject({
+        mode: 'resume',
+        sessionId: 'loop-resume-1',
+      })
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
     }
   })
 

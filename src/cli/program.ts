@@ -2,6 +2,7 @@ import { Command } from 'commander'
 import { getConfigVersionStatus } from '../platform/config/loader.js'
 import { discussCommand } from './commands/discuss.js'
 import { harnessCommand } from './commands/harness.js'
+import { harnessServerCommand } from './commands/harness-server.js'
 import { initCommand } from './commands/init.js'
 import { loopCommand } from './commands/loop.js'
 import { memoryCommand } from './commands/memory.js'
@@ -55,6 +56,7 @@ export function createProgram(): Command {
   program.addCommand(memoryCommand)
   program.addCommand(discussCommand)
   program.addCommand(harnessCommand)
+  program.addCommand(harnessServerCommand)
   program.addCommand(trdCommand)
   program.addCommand(qualityCommand)
   program.addCommand(loopCommand)
