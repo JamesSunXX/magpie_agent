@@ -159,6 +159,32 @@ describe('session dashboard', () => {
     expect(result.recent[0]).toMatchObject({ capability: 'harness', status: 'in_progress' })
   })
 
+  it('surfaces blocked harness sessions in the Continue section', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1'), { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
+      id: 'harness-1',
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'blocked',
+      currentStage: 'developing',
+      summary: 'Waiting for human confirmation.',
+      artifacts: {
+        eventsPath: '/tmp/workflow/events.jsonl',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+
+    expect(result.continue[0]).toMatchObject({ capability: 'harness', status: 'blocked' })
+    expect(result.continue[0]?.resumeCommand).toEqual(['harness', 'resume', 'harness-1'])
+  })
+
   it('loads repo-local sessions when launched from a nested directory', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const nestedDir = join(repoDir, 'packages', 'feature')

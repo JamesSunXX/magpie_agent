@@ -54,20 +54,20 @@ export function extractJsonBlock<T>(text: string): T | null {
   try {
     return JSON.parse(body) as T
   } catch {
-    const candidate = extractBalancedJsonSnippet(body)
-    if (!candidate) {
-      return null
+    for (const candidate of extractBalancedJsonSnippets(body)) {
+      try {
+        return JSON.parse(candidate) as T
+      } catch {
+        continue
+      }
     }
-
-    try {
-      return JSON.parse(candidate) as T
-    } catch {
-      return null
-    }
+    return null
   }
 }
 
-function extractBalancedJsonSnippet(text: string): string | null {
+function extractBalancedJsonSnippets(text: string): string[] {
+  const snippets: string[] = []
+
   for (let start = 0; start < text.length; start++) {
     const opening = text[start]
     if (opening !== '{' && opening !== '[') {
@@ -113,13 +113,14 @@ function extractBalancedJsonSnippet(text: string): string | null {
         }
         stack.pop()
         if (stack.length === 0) {
-          return text.slice(start, idx + 1)
+          snippets.push(text.slice(start, idx + 1))
+          break
         }
       }
     }
   }
 
-  return null
+  return snippets
 }
 
 export function renderOpenQuestionsMarkdown(result: TrdSynthesisResult): string {

@@ -45,6 +45,11 @@ describe('trd renderer helpers', () => {
     expect(parsed?.value).toBe('ok')
   })
 
+  it('skips earlier brace fragments before the real json payload', () => {
+    const parsed = extractJsonBlock<{ value: string }>('Use {value, other} fields.\nActual payload:\n{"value":"ok"}')
+    expect(parsed?.value).toBe('ok')
+  })
+
   it('renders open questions markdown table', () => {
     const synthesis: TrdSynthesisResult = {
       trdMarkdown: '# test',

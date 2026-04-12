@@ -77,6 +77,7 @@ magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
 # 9) 查看后台状态或接回输出
 magpie harness-server status
 magpie harness attach <session-id>
+magpie harness resume <session-id>
 
 # 10) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux

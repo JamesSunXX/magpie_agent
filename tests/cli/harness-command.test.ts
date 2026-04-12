@@ -132,6 +132,67 @@ describe('top-level harness CLI command', () => {
     logSpy.mockRestore()
   })
 
+  it('resumes a blocked harness session using persisted input metadata', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-blocked-1',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+      status: 'blocked',
+      currentStage: 'developing',
+      summary: 'Harness paused during loop development stage for human intervention.',
+      artifacts: {
+        eventsPath: '/tmp/events.jsonl',
+      },
+      evidence: {
+        input: {
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+          maxCycles: 2,
+          complexity: 'standard',
+        },
+        configPath: '/tmp/persisted.yaml',
+        runtime: {
+          retryCount: 0,
+          lastReliablePoint: 'blocked_for_human',
+        },
+      },
+    })
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-blocked-1'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).toHaveBeenCalledWith(
+        { name: 'harness' },
+        expect.objectContaining({
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+          maxCycles: 2,
+          complexity: 'standard',
+        }),
+        expect.objectContaining({
+          configPath: '/tmp/persisted.yaml',
+        })
+      )
+      expect(logSpy).toHaveBeenCalledWith('Session: harness-1')
+      expect(process.env.MAGPIE_SESSION_ID).toBe(previousSessionId)
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+      logSpy.mockRestore()
+    }
+  })
+
   it('queues submit through the harness server when the background service is running', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     isHarnessServerRunning.mockResolvedValue(true)

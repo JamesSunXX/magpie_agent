@@ -10,7 +10,7 @@ export function buildCommandFromDraft(draft: TaskDraft): BuiltCommand {
   return buildTaskCommand(draft.taskId, draft.values)
 }
 
-export function buildResumeArgv(card: Pick<SessionCard, 'capability' | 'id' | 'resumeCommand'>): string[] | undefined {
+export function buildResumeArgv(card: Pick<SessionCard, 'capability' | 'id' | 'resumeCommand' | 'status'>): string[] | undefined {
   if (card.resumeCommand) {
     return [...card.resumeCommand]
   }
@@ -24,12 +24,14 @@ export function buildResumeArgv(card: Pick<SessionCard, 'capability' | 'id' | 'r
       return ['trd', '--resume', card.id]
     case 'loop':
       return ['loop', 'resume', card.id]
+    case 'harness':
+      return card.status === 'blocked' ? ['harness', 'resume', card.id] : undefined
     default:
       return undefined
   }
 }
 
-export function buildResumeCommand(card: Pick<SessionCard, 'capability' | 'id' | 'resumeCommand'>): BuiltCommand | undefined {
+export function buildResumeCommand(card: Pick<SessionCard, 'capability' | 'id' | 'resumeCommand' | 'status'>): BuiltCommand | undefined {
   const argv = buildResumeArgv(card)
   if (!argv) {
     return undefined

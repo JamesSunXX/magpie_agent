@@ -121,7 +121,7 @@ export interface AppState {
   health?: EnvironmentHealth
 }
 
-export const CONTINUABLE_STATUSES = ['planning', 'paused', 'in_progress', 'active', 'running', 'paused_for_human'] as const
+export const CONTINUABLE_STATUSES = ['planning', 'paused', 'in_progress', 'active', 'running', 'paused_for_human', 'blocked'] as const
 
 export type AppAction =
   | { type: 'task:selected'; taskId: TaskId }

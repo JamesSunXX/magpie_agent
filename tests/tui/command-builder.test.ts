@@ -122,4 +122,21 @@ describe('TUI command builder', () => {
       summary: 'Resume loop session loop-123',
     })
   })
+
+  it('builds a harness resume command for blocked sessions', () => {
+    const card: SessionCard = {
+      id: 'harness-123',
+      capability: 'harness',
+      title: 'Blocked harness',
+      status: 'blocked',
+      updatedAt: new Date('2026-03-19T10:00:00.000Z'),
+      artifactPaths: ['/tmp/events.jsonl'],
+    }
+
+    expect(buildResumeCommand(card)).toEqual({
+      argv: ['harness', 'resume', 'harness-123'],
+      display: 'magpie harness resume harness-123',
+      summary: 'Resume harness session harness-123',
+    })
+  })
 })

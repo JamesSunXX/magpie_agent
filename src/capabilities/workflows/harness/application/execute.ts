@@ -86,6 +86,27 @@ interface HarnessResumeState {
   approvedFromCompletedCycles: boolean
 }
 
+interface PersistedHarnessResumeEvidence {
+  input: {
+    goal: string
+    prdPath: string
+    maxCycles?: number
+    reviewRounds?: number
+    testCommand?: string
+    models?: string[]
+    complexity?: HarnessPreparedInput['complexity']
+    host?: HarnessPreparedInput['host']
+    priority?: HarnessPreparedInput['priority']
+  }
+  configPath?: string
+  runtime?: {
+    retryCount?: number
+    nextRetryAt?: string
+    lastError?: string
+    lastReliablePoint?: string
+  }
+}
+
 function describeHarnessActor(
   binding: { tool?: string; model?: string; agent?: string },
   fallbackId: string,
@@ -365,6 +386,38 @@ function buildHarnessCandidates(
     evidencePath,
     status: 'candidate',
   }]
+}
+
+function buildPersistedHarnessResumeEvidence(
+  prepared: HarnessPreparedInput,
+  configPath: string | undefined,
+  existingEvidence: unknown
+): PersistedHarnessResumeEvidence {
+  const evidence = (existingEvidence && typeof existingEvidence === 'object'
+    ? existingEvidence
+    : {}) as Partial<PersistedHarnessResumeEvidence>
+
+  return {
+    ...evidence,
+    input: {
+      goal: prepared.goal,
+      prdPath: prepared.prdPath,
+      ...(Number.isFinite(prepared.maxCycles) ? { maxCycles: prepared.maxCycles } : {}),
+      ...(Number.isFinite(prepared.reviewRounds) ? { reviewRounds: prepared.reviewRounds } : {}),
+      ...(prepared.testCommand ? { testCommand: prepared.testCommand } : {}),
+      ...(prepared.models.length > 0 ? { models: prepared.models } : {}),
+      ...(prepared.complexity ? { complexity: prepared.complexity } : {}),
+      ...(prepared.host ? { host: prepared.host } : {}),
+      ...(prepared.priority ? { priority: prepared.priority } : {}),
+    },
+    ...(configPath ? { configPath } : {}),
+    runtime: {
+      retryCount: Number.isFinite(evidence.runtime?.retryCount) ? Number(evidence.runtime?.retryCount) : 0,
+      ...(typeof evidence.runtime?.nextRetryAt === 'string' ? { nextRetryAt: evidence.runtime.nextRetryAt } : {}),
+      ...(typeof evidence.runtime?.lastError === 'string' ? { lastError: evidence.runtime.lastError } : {}),
+      lastReliablePoint: evidence.runtime?.lastReliablePoint || 'queued',
+    },
+  }
 }
 
 function cloneConfig(config: MagpieConfigV2): MagpieConfigV2 {
@@ -949,7 +1002,7 @@ export async function executeHarness(
       ...(process.env.MAGPIE_TMUX_PANE ? { tmuxPane: process.env.MAGPIE_TMUX_PANE } : {}),
       ...knowledgeArtifacts,
     },
-    ...(existingSession?.evidence ? { evidence: existingSession.evidence } : {}),
+    evidence: buildPersistedHarnessResumeEvidence(prepared, ctx.configPath, existingSession?.evidence),
   }
   let harnessConfig: MagpieConfigV2 = config
   let reviewerIds: string[] = []

@@ -19,6 +19,7 @@ import type {
   HarnessResult,
   HarnessSummary,
 } from '../../capabilities/workflows/harness/types.js'
+import type { WorkflowSession } from '../../capabilities/workflows/shared/runtime.js'
 import { createHarnessProgressReporter, followHarnessEventStream, formatHarnessEventLine } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
@@ -34,6 +35,11 @@ interface HarnessCommandOptions {
   complexity?: HarnessInput['complexity']
   host?: ExecutionHost
   priority?: HarnessPriority
+}
+
+interface PersistedHarnessResumeEvidence {
+  input?: HarnessInput
+  configPath?: string
 }
 
 const HARNESS_PRIORITIES = ['interactive', 'high', 'normal', 'background'] as const
@@ -138,6 +144,14 @@ async function loadLatestLoopActivity(loopEventsPath: string | undefined): Promi
 }
 
 async function runHarness(input: HarnessInput, options: HarnessCommandOptions): Promise<void> {
+  return runHarnessWithSession(input, options)
+}
+
+async function runHarnessWithSession(
+  input: HarnessInput,
+  options: HarnessCommandOptions,
+  sessionId?: string
+): Promise<void> {
   const registry = createDefaultCapabilityRegistry()
   const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
     registry,
@@ -152,11 +166,22 @@ async function runHarness(input: HarnessInput, options: HarnessCommandOptions): 
     },
   })
   progressReporter.start()
+  const previousSessionId = process.env.MAGPIE_SESSION_ID
+  if (sessionId) {
+    process.env.MAGPIE_SESSION_ID = sessionId
+  }
   const { output, result } = await (async () => {
     try {
       return await runCapability(capability, input, ctx)
     } finally {
       progressReporter.stop()
+      if (sessionId) {
+        if (previousSessionId === undefined) {
+          delete process.env.MAGPIE_SESSION_ID
+        } else {
+          process.env.MAGPIE_SESSION_ID = previousSessionId
+        }
+      }
     }
   })()
 
@@ -192,6 +217,21 @@ async function runHarness(input: HarnessInput, options: HarnessCommandOptions): 
 
   if (result.status === 'failed') {
     process.exitCode = 1
+  }
+}
+
+function extractHarnessResumeInput(session: WorkflowSession): {
+  input: HarnessInput
+  configPath?: string
+} | null {
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  if (!evidence?.input?.goal || !evidence.input.prdPath) {
+    return null
+  }
+
+  return {
+    input: evidence.input,
+    ...(evidence.configPath ? { configPath: evidence.configPath } : {}),
   }
 }
 
@@ -314,6 +354,33 @@ harnessCommand
       console.log(`Loop activity: ${latestLoopActivity.line}`)
     }
     await printKnowledgeSummary(session.artifacts)
+  })
+
+harnessCommand
+  .command('resume')
+  .description('Resume a persisted harness session')
+  .argument('<sessionId>', 'Harness session ID')
+  .option('-c, --config <path>', 'Path to config file')
+  .action(async (sessionId: string, options: Pick<HarnessCommandOptions, 'config'>) => {
+    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    if (!session) {
+      console.error(`Harness session not found: ${sessionId}`)
+      process.exitCode = 1
+      return
+    }
+
+    const persisted = extractHarnessResumeInput(session)
+    if (!persisted) {
+      console.error(`Harness session ${sessionId} cannot be resumed because its input metadata is missing.`)
+      process.exitCode = 1
+      return
+    }
+
+    await runHarnessWithSession(
+      persisted.input,
+      { config: options.config || persisted.configPath },
+      session.id
+    )
   })
 
 harnessCommand
