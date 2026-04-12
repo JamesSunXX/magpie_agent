@@ -14,11 +14,26 @@ export class QwenCodeProvider implements AIProvider {
   constructor(_options?: ProviderOptions) {
     // No API key needed for Qwen Code CLI (uses OAuth)
     this.cwd = process.cwd()
-    this.timeout = 15 * 60 * 1000  // 15 minutes default
+    if (Number.isFinite(_options?.timeoutMs) && (_options?.timeoutMs ?? -1) >= 0) {
+      this.timeout = Math.floor(_options!.timeoutMs!)
+    } else {
+      this.timeout = 15 * 60 * 1000  // 15 minutes default
+    }
   }
 
   setCwd(cwd: string) {
     this.cwd = cwd
+  }
+
+  setTimeoutMs(timeoutMs: number) {
+    if (Number.isFinite(timeoutMs) && timeoutMs >= 0) {
+      this.timeout = Math.floor(timeoutMs)
+    }
+  }
+
+  private getTimeoutCheckInterval(): number {
+    if (this.timeout <= 0) return 0
+    return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
   }
 
   startSession(name?: string): void {
@@ -58,16 +73,32 @@ export class QwenCodeProvider implements AIProvider {
 
       let output = ''
       let error = ''
+      let settled = false
+      let lastActivity = Date.now()
+      const checkInterval = this.getTimeoutCheckInterval()
+      const timeoutChecker = this.timeout > 0 ? setInterval(() => {
+        if (Date.now() - lastActivity > this.timeout && !settled) {
+          if (timeoutChecker) clearInterval(timeoutChecker)
+          child.kill('SIGTERM')
+          settled = true
+          reject(new Error(`Qwen CLI timed out after ${this.timeout / 1000}s of inactivity`))
+        }
+      }, checkInterval) : null
 
       child.stdout.on('data', (data) => {
+        lastActivity = Date.now()
         output += data.toString()
       })
 
       child.stderr.on('data', (data) => {
+        lastActivity = Date.now()
         error += data.toString()
       })
 
       child.on('close', (code) => {
+        if (timeoutChecker) clearInterval(timeoutChecker)
+        if (settled) return
+        settled = true
         if (code !== 0) {
           logger.debug(`[qwen-code] exit=${code} stderr=${error.slice(0, 500)}`)
           reject(new Error(`Qwen CLI exited with code ${code}: ${error}`))
@@ -77,6 +108,9 @@ export class QwenCodeProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        if (timeoutChecker) clearInterval(timeoutChecker)
+        if (settled) return
+        settled = true
         reject(new Error(`Failed to run qwen CLI: ${err.message}`))
       })
 
@@ -102,6 +136,7 @@ export class QwenCodeProvider implements AIProvider {
     let lastActivity = Date.now()
 
     // Timeout checker - kill if no activity for too long
+    const checkInterval = this.getTimeoutCheckInterval()
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
       if (Date.now() - lastActivity > this.timeout) {
         child.kill('SIGTERM')
@@ -111,7 +146,7 @@ export class QwenCodeProvider implements AIProvider {
           resolveNext({ chunk: null })
         }
       }
-    }, 10000) : null  // Check every 10s
+    }, checkInterval) : null
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()

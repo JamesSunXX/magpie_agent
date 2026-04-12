@@ -34,6 +34,7 @@ export interface AIProvider {
   chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
   chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown>
   setCwd?(cwd: string): void
+  setTimeoutMs?(timeoutMs: number): void
   // Session management for multi-turn conversations
   sessionId?: string
   startSession?(name?: string): void  // Create a new session, optional name for identification
@@ -47,6 +48,7 @@ export interface ProviderOptions {
   logicalName?: string
   tool?: string
   agent?: string
+  timeoutMs?: number
 }
 
 // Helper to generate session IDs

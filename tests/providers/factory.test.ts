@@ -140,5 +140,24 @@ describe('Provider Factory', () => {
 
       expect(provider.name).toBe('codex')
     })
+
+    it.each([
+      [{ logicalName: 'reviewers.route-claude', tool: 'claude' }, 'claude-code'],
+      [{ logicalName: 'reviewers.route-codex', tool: 'codex' }, 'codex'],
+      [{ logicalName: 'reviewers.route-gemini', tool: 'gemini' }, 'gemini-cli'],
+      [{ logicalName: 'reviewers.route-claw', tool: 'claw' }, 'claw'],
+      [{ logicalName: 'reviewers.route-qwen', tool: 'qwen-code' }, 'qwen-code'],
+      [{ logicalName: 'capabilities.loop.executor', tool: 'kiro', agent: 'dev' }, 'kiro'],
+    ] as const)('passes timeout overrides into %s providers', (binding, expectedName) => {
+      const provider = createConfiguredProvider({
+        ...binding,
+        timeoutMs: 12345,
+      }, mockConfig)
+
+      expect(provider.name).toBe(expectedName)
+      expect((provider as { timeout?: number }).timeout).toBe(12345)
+      provider.setTimeoutMs?.(54321)
+      expect((provider as { timeout?: number }).timeout).toBe(54321)
+    })
   })
 })

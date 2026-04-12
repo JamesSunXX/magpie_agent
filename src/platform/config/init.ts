@@ -234,6 +234,19 @@ function buildDefaultHarnessConfig(defaultReviewers: string[]) {
   }
 }
 
+function buildDefaultLoopExecutionTimeoutConfig() {
+  return {
+    default_ms: 900000,
+    min_ms: 300000,
+    max_ms: 3600000,
+    complexity_multiplier: {
+      simple: 1,
+      standard: 2,
+      complex: 3,
+    },
+  }
+}
+
 function indentBlock(text: string, spaces = 6): string {
   const prefix = ' '.repeat(spaces)
   return text.split('\n').map(line => `${prefix}${line}`).join('\n')
@@ -510,6 +523,12 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   } else if (deepMergeMissing(capabilities.harness, upgradeHarnessDefaults)) {
     changes.push('Filled missing capabilities.harness defaults.')
   }
+  if (!isObjectRecord(capabilities.loop)) {
+    capabilities.loop = { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() }
+    changes.push('Added capabilities.loop execution timeout defaults.')
+  } else if (deepMergeMissing(capabilities.loop, { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() })) {
+    changes.push('Filled missing capabilities.loop execution timeout defaults.')
+  }
   upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
 
   if (isObjectRecord(capabilities.issue_fix)) {
@@ -763,6 +782,14 @@ capabilities:
     planner_model: ${analyzerModel}
     executor_model: codex
     stages: [prd_review, domain_partition, trd_generation, code_development, unit_mock_test, integration_test]
+    execution_timeout:
+      default_ms: 900000
+      min_ms: 300000
+      max_ms: 3600000
+      complexity_multiplier:
+        simple: 1
+        standard: 2
+        complex: 3
     confidence_threshold: 0.78
     retries_per_stage: 2
     max_iterations: 30

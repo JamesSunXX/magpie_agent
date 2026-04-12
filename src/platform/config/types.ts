@@ -132,6 +132,14 @@ export interface LoopCommandsConfig {
   integration_test?: string
 }
 
+export interface LoopExecutionTimeoutConfig {
+  default_ms?: number
+  min_ms?: number
+  max_ms?: number
+  complexity_multiplier?: Partial<Record<ComplexityTier, number>>
+  stage_overrides_ms?: Partial<Record<LoopStageName, number>>
+}
+
 export interface LoopHumanConfirmationConfig {
   file?: string
   gate_policy?: 'exception_or_low_confidence' | 'always' | 'manual_only'
@@ -156,6 +164,7 @@ export interface LoopConfig {
   auto_branch_prefix?: string
   human_confirmation?: LoopHumanConfirmationConfig
   commands?: LoopCommandsConfig
+  execution_timeout?: LoopExecutionTimeoutConfig
 }
 
 export interface HarnessConfig {

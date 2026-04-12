@@ -5,6 +5,7 @@ import { ClawProvider } from '../../src/providers/claw.js'
 import { CodexCliProvider } from '../../src/providers/codex.js'
 import { GeminiCliProvider } from '../../src/providers/gemini-cli.js'
 import { KiroProvider } from '../../src/providers/kiro.js'
+import { QwenCodeProvider } from '../../src/providers/qwen-code.js'
 
 interface SpawnScenario {
   onStart?: (child: MockChild, args: string[]) => void
@@ -71,6 +72,7 @@ describe('CLI provider invocation smoke tests', () => {
 
   afterEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
   })
 
   it('invokes codex with expected command, args, cwd, and prompt', async () => {
@@ -329,6 +331,58 @@ describe('CLI provider invocation smoke tests', () => {
       '-p',
       '-',
     ])
+  })
+
+  it('times out gemini non-stream execution when no activity arrives', async () => {
+    vi.useFakeTimers()
+    scenarios.push({
+      onStdinEnd: () => {
+        // Leave the process idle so the timeout checker must terminate it.
+      },
+    })
+
+    const provider = new GeminiCliProvider({ model: 'gemini-cli', apiKey: '', timeoutMs: 50 })
+    provider.setCwd('/repo/gemini-timeout')
+
+    const chatPromise = provider.chat(
+      [{ role: 'user', content: 'hang gemini' }],
+      'system gemini timeout'
+    )
+    const rejection = expect(chatPromise).rejects.toThrow('Gemini CLI timed out after 0.05s of inactivity')
+
+    await vi.advanceTimersByTimeAsync(250)
+
+    await rejection
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'gemini',
+      cwd: '/repo/gemini-timeout',
+    })
+  })
+
+  it('times out qwen non-stream execution when no activity arrives', async () => {
+    vi.useFakeTimers()
+    scenarios.push({
+      onStdinEnd: () => {
+        // Leave the process idle so the timeout checker must terminate it.
+      },
+    })
+
+    const provider = new QwenCodeProvider({ apiKey: '', timeoutMs: 50 })
+    provider.setCwd('/repo/qwen-timeout')
+
+    const chatPromise = provider.chat(
+      [{ role: 'user', content: 'hang qwen' }],
+      'system qwen timeout'
+    )
+    const rejection = expect(chatPromise).rejects.toThrow('Qwen CLI timed out after 0.05s of inactivity')
+
+    await vi.advanceTimersByTimeAsync(250)
+
+    await rejection
+    expect(spawnCalls[0]).toMatchObject({
+      cmd: 'qwen',
+      cwd: '/repo/qwen-timeout',
+    })
   })
 
   it('invokes claude with expected command, args, cwd, and prompt', async () => {

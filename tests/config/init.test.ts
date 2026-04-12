@@ -147,9 +147,12 @@ integrations:
     expect(upgraded).toContain('- feishu_team')
     expect(upgraded).toContain('harness:')
     expect(upgraded).toContain('validator_checks:')
+    expect(upgraded).toContain('execution_timeout:')
+    expect(upgraded).toContain('default_ms: 900000')
     expect(result.changes).toContain('Converted reviewers.codex-cli from model: codex-cli to tool: codex.')
     expect(result.changes).toContain('Added capabilities.routing defaults.')
     expect(result.changes).toContain('Added capabilities.harness defaults.')
+    expect(result.changes).toContain('Added capabilities.loop execution timeout defaults.')
     expect(result.changes).toContain('Filled missing integrations.notifications defaults.')
     expect(result.warnings).toContain('Review repo-specific verification commands before applying this config to a non-Node repository.')
   })
@@ -191,6 +194,7 @@ integrations:
     expect(result.content).toContain('stage_ai:')
     expect(result.content).toContain('stage_resumed:')
     expect(result.content).toContain('validator_checks:')
+    expect(result.content).toContain('execution_timeout:')
   })
 
   it('upgrades legacy codex-cli route bindings so the config can still load', () => {
@@ -359,6 +363,9 @@ integrations:
     expect(content).toContain('default_provider: "ops_main"')
     expect(content).toContain('timeout_ms: 120000')
     expect(content).toContain('max_buffer_bytes: 2048')
+    expect(content).toContain('execution_timeout:')
+    expect(content).toContain('default_ms: 900000')
+    expect(content).toContain('complexity_multiplier:')
   })
 
   it('should render jira basic auth planning values when provided', () => {

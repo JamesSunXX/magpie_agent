@@ -7,6 +7,7 @@ export interface ProviderBindingInput {
   tool?: string
   model?: string
   agent?: string
+  timeoutMs?: number
 }
 
 export interface ProviderBinding {
@@ -14,6 +15,7 @@ export interface ProviderBinding {
   tool?: string
   model?: string
   agent?: string
+  timeoutMs?: number
 }
 
 export function resolveProviderBinding(input: ProviderBindingInput): ProviderBinding {
@@ -36,6 +38,7 @@ export function resolveProviderBinding(input: ProviderBindingInput): ProviderBin
       logicalName: input.logicalName,
       ...(input.tool ? { tool: input.tool } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     }
   }
 
@@ -50,6 +53,7 @@ export function resolveProviderBinding(input: ProviderBindingInput): ProviderBin
     ...(input.tool ? { tool: input.tool } : {}),
     ...(input.model ? { model: input.model } : {}),
     agent: input.agent || derivedAgent,
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   }
 }
 

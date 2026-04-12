@@ -16,18 +16,28 @@ export class CodexCliProvider implements AIProvider {
   constructor(_options?: ProviderOptions) {
     // No API key needed for Codex CLI (uses subscription)
     this.cwd = process.cwd()
-    const envTimeout = process.env.MAGPIE_CODEX_TIMEOUT_MS
-    const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
-    if (Number.isFinite(parsedTimeout) && parsedTimeout >= 0) {
-      this.timeout = Math.floor(parsedTimeout)
+    if (Number.isFinite(_options?.timeoutMs) && (_options?.timeoutMs ?? -1) >= 0) {
+      this.timeout = Math.floor(_options!.timeoutMs!)
     } else {
-      this.timeout = 15 * 60 * 1000  // 15 minutes default
+      const envTimeout = process.env.MAGPIE_CODEX_TIMEOUT_MS
+      const parsedTimeout = envTimeout ? Number(envTimeout) : Number.NaN
+      if (Number.isFinite(parsedTimeout) && parsedTimeout >= 0) {
+        this.timeout = Math.floor(parsedTimeout)
+      } else {
+        this.timeout = 15 * 60 * 1000  // 15 minutes default
+      }
     }
     this.model = _options?.model
   }
 
   setCwd(cwd: string) {
     this.cwd = cwd
+  }
+
+  setTimeoutMs(timeoutMs: number) {
+    if (Number.isFinite(timeoutMs) && timeoutMs >= 0) {
+      this.timeout = Math.floor(timeoutMs)
+    }
   }
 
   startSession(name?: string): void {

@@ -160,6 +160,7 @@ export interface LoopSession {
   humanConfirmations: HumanConfirmationItem[]
   branchName?: string
   routingTier?: ComplexityTier
+  selectedComplexity?: ComplexityTier
   artifacts: {
     sessionDir: string
     eventsPath: string
