@@ -90,6 +90,77 @@
 - `tests/capabilities/workflows/harness-server.test.ts`
 - `tests/state/state-manager.test.ts`
 
+## Domain Partition
+
+### Domain A：失败核心域
+
+- 负责统一失败类型、分类、签名、账本、恢复动作和最小诊断
+- 对应文件：
+  - `src/core/failures/types.ts`
+  - `src/core/failures/classifier.ts`
+  - `src/core/failures/ledger.ts`
+  - `src/core/failures/recovery-policy.ts`
+  - `src/core/failures/diagnostics.ts`
+- 输入：各能力上报的原始失败事实、测试结果、恢复校验结果、服务级异常
+- 输出：统一 `FailureRecord`、稳定 `signature`、repo/session 级失败落盘结果、恢复动作建议
+- 边界要求：
+  - 不依赖 `loop`、`harness`、`harness-server` 具体实现
+  - 不直接改 workflow session 状态，只返回分类、账本结果和恢复决策
+
+### Domain B：状态与持久化接缝域
+
+- 负责把失败账本需要的字段接到现有 session 和 workflow 持久化结构上
+- 对应文件：
+  - `src/state/types.ts`
+  - `src/capabilities/workflows/shared/runtime.ts`
+  - `src/capabilities/workflows/harness/types.ts`
+- 输入：失败核心域产出的 artifact 路径、失败记录和聚合结果
+- 输出：session 可持久化字段、统一失败写入辅助入口、对外暴露的 artifact 引用
+- 边界要求：
+  - 只做字段补齐和共享写入辅助，不在这里额外做失败分类或恢复判断
+  - `loop`、`harness`、`harness-server` 都通过这一层拿到统一路径约定，不能各自拼 repo 级索引路径
+
+### Domain C：工作流接入域
+
+- 负责把三条主路径的现有失败信号接入统一失败核心域
+- 对应文件：
+  - `src/capabilities/loop/application/execute.ts`
+  - `src/capabilities/workflows/harness/application/execute.ts`
+  - `src/capabilities/workflows/harness-server/runtime.ts`
+  - `src/capabilities/loop/domain/test-execution.ts`
+- `loop` 负责产生最细粒度失败事实，并保留最后可靠点和关键产物路径
+- `harness` 负责把内层 `loop` 失败和外层 workflow 失败映射成统一记录，但不重写 `loop` 已有判定
+- `harness-server` 负责消费恢复决策，把服务级异常和中断恢复问题落到统一结构，但不中断正常恢复事件
+- 边界要求：
+  - `loop` / `harness` / `harness-server` 只负责“上报事实 + 消费决策”，不各自维护第二套分类和聚合逻辑
+  - `harness-server` 的 session 状态映射必须完全由恢复动作驱动，不能继续混用零散字符串判断
+
+### Domain D：知识沉淀与对外说明域
+
+- 负责把仓库级重复失败升级成稳定知识，并把职责说明写到对外文档
+- 对应文件：
+  - `src/knowledge/runtime.ts`
+  - `README.md`
+  - `docs/references/capabilities.md`
+- 输入：`.magpie/failure-index.json` 中的聚合结果和 `candidateForSelfRepair`
+- 输出：可提升的 `failure-pattern` 候选，以及对 `loop` / `harness` / `harness-server` 分工的稳定说明
+- 边界要求：
+  - 知识层不回写运行时状态，只消费失败索引做提炼
+  - 文档只讲职责分工和排查入口，不重复埋实现细节
+
+### 依赖顺序
+
+1. 先落 Domain A，固定失败模型、签名和恢复动作
+2. 再落 Domain B，把统一 artifact 和落盘入口接到现有 session 结构
+3. 然后按 `loop` -> `harness` -> `harness-server` 的顺序接 Domain C
+4. 最后再做 Domain D，把重复失败升级和文档说明补齐
+
+### 阶段交接约束
+
+- `trd_generation` 阶段要继续细化的是 Domain A 与 Domain C 之间的接口，不要重新拆域
+- `code_development` 阶段按域推进，允许同阶段内跨文件实现，但不要跳过依赖顺序
+- 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
+
 ## Phase 1：统一失败结构
 
 ### Task 1：定义统一失败事件和恢复动作
