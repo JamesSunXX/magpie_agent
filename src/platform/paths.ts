@@ -43,8 +43,12 @@ function findProjectRoot(startDir: string): string {
   }
 }
 
+export function getRepoRoot(cwd: string): string {
+  return findProjectRoot(cwd)
+}
+
 export function getRepoMagpieDir(cwd: string): string {
-  return join(findProjectRoot(cwd), '.magpie')
+  return join(getRepoRoot(cwd), '.magpie')
 }
 
 export function getRepoSessionsDir(cwd: string): string {

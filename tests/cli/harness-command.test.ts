@@ -375,6 +375,8 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Host: tmux')
     expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
+    expect(logSpy).toHaveBeenCalledWith('Document mode: project_docs')
+    expect(logSpy).toHaveBeenCalledWith('Formal docs root: /tmp/repo/docs/v2/checkout')
     expect(logSpy).toHaveBeenCalledWith('Loop stage: code_development')
     expect(logSpy).toHaveBeenCalledWith('Last activity: 2026-04-11T00:00:07.000Z')
     expect(logSpy).toHaveBeenCalledWith('Loop activity: 2026-04-11T00:00:07.000Z stage=code_development Codex 正在执行命令。')
@@ -393,6 +395,8 @@ describe('top-level harness CLI command', () => {
     )
 
     expect(logSpy).toHaveBeenCalledWith('Goal: Ship checkout v2')
+    expect(logSpy).toHaveBeenCalledWith('Document mode: project_docs')
+    expect(logSpy).toHaveBeenCalledWith('Formal docs root: /tmp/repo/docs/v2/checkout')
     expect(logSpy).toHaveBeenCalledWith('State: reviewing | next: Run adjudication for cycle 1. | blocker: Waiting for review cycle result.')
     expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
     expect(logSpy).toHaveBeenCalledWith('Open issues: Missing migration rollback drill')
@@ -615,10 +619,24 @@ function loadWorkflowSessionsDetail(): void {
   const knowledgeDir = mkdtempSync(join(tmpdir(), 'magpie-harness-knowledge-'))
   const summaryDir = join(knowledgeDir, 'summaries')
   const loopEventsPath = join(knowledgeDir, 'loop-events.jsonl')
+  const documentPlanPath = join(knowledgeDir, 'document-plan.json')
   mkdirSync(summaryDir, { recursive: true })
   writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
   writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
   writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+  writeFileSync(documentPlanPath, JSON.stringify({
+    mode: 'project_docs',
+    formalDocsRoot: '/tmp/repo/docs/v2/checkout',
+    formalDocTargets: {
+      trd: '/tmp/repo/docs/v2/checkout/trd.md',
+    },
+    artifactPolicy: {
+      processArtifactsRoot: '/tmp/repo/.magpie/sessions/harness/harness-1',
+      fallbackFormalDocsRoot: '/tmp/repo/.magpie/project-docs/harness-1',
+    },
+    confidence: 0.86,
+    reasoningSources: ['/tmp/repo/AGENTS.md'],
+  }, null, 2), 'utf-8')
   writeFileSync(loopEventsPath, `${JSON.stringify({
     ts: '2026-04-11T00:00:07.000Z',
     event: 'provider_progress',
@@ -676,6 +694,7 @@ function loadWorkflowSessionsDetail(): void {
         knowledgeStatePath: join(knowledgeDir, 'state.json'),
       knowledgeSummaryDir: summaryDir,
       knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+      documentPlanPath,
       loopSessionId: 'loop-1',
       loopEventsPath,
     },

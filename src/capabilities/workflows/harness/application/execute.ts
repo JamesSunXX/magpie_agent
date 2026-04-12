@@ -19,6 +19,7 @@ import {
   persistWorkflowSession,
   sessionDirFor,
 } from '../../shared/runtime.js'
+import { generateDocumentPlan, type DocumentPlan } from '../../../../core/project-documents/document-plan.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
@@ -944,6 +945,7 @@ export async function executeHarness(
   )
 
   await mkdir(sessionDir, { recursive: true })
+  let documentPlanSeed = ctx.metadata?.documentPlan as DocumentPlan | undefined
   const knowledgeArtifacts = await createTaskKnowledge({
     sessionDir,
     capability: 'harness',
@@ -1252,12 +1254,36 @@ export async function executeHarness(
     routingDecision
   ))
   validatorBindings = resolveHarnessValidatorBindings(harnessConfig)
+  const documentPlanner = createConfiguredProvider({
+    logicalName: 'capabilities.harness.document_planner',
+    tool: harnessConfig.capabilities.loop?.planner_tool,
+    model: harnessConfig.capabilities.loop?.planner_model,
+    agent: harnessConfig.capabilities.loop?.planner_agent,
+  }, harnessConfig)
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: ctx.cwd,
+    sessionDir,
+    capability: 'harness',
+    sessionId,
+    goal: prepared.goal,
+    prdPath: prepared.prdPath,
+    stages: ['developing', 'reviewing'],
+    provider: documentPlanner,
+    seedPlan: documentPlanSeed,
+    existingPlanPath: existingSession?.artifacts.documentPlanPath,
+  })
+  documentPlanSeed = documentPlan
   const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
   await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
   if (routingDecision) {
     await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
   }
+  await persistSession({
+    artifacts: {
+      documentPlanPath,
+    },
+  })
   await emitStageEntered('queued', session.summary)
 
   if (providerSelection.record.decision === 'fallback_failed') {
@@ -1293,6 +1319,7 @@ export async function executeHarness(
     cwd: ctx.cwd,
     configPath: harnessConfigPath,
     metadata: {
+      documentPlan: documentPlanSeed,
       loopProgress: {
         onSessionUpdate: (loopSession: {
           id: string

@@ -13,6 +13,7 @@ import type {
 import type { ComplexityTier } from '../../config/types.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
+import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 
@@ -211,6 +212,7 @@ loopCommand
         process.exitCode = 1
         return
       }
+      await printDocumentPlanSummary(session.artifacts.documentPlanPath)
       await printKnowledgeInspectView(session.artifacts, legacyLoopKnowledgeState(session))
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))

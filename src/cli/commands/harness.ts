@@ -22,6 +22,7 @@ import type {
 import type { WorkflowSession } from '../../capabilities/workflows/shared/runtime.js'
 import { createHarnessProgressReporter, followHarnessEventStream, formatHarnessEventLine } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
+import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
@@ -345,6 +346,7 @@ harnessCommand
     if (session.artifacts.eventsPath) {
       console.log(`Events: ${session.artifacts.eventsPath}`)
     }
+    await printDocumentPlanSummary(session.artifacts.documentPlanPath)
     const latestLoopActivity = await loadLatestLoopActivity(session.artifacts.loopEventsPath)
     if (latestLoopActivity) {
       if (latestLoopActivity.stage) {
@@ -428,6 +430,7 @@ harnessCommand
       return
     }
 
+    await printDocumentPlanSummary(session.artifacts.documentPlanPath)
     await printKnowledgeInspectView(session.artifacts, legacyHarnessKnowledgeState(session))
   })
 
