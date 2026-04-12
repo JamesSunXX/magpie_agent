@@ -791,6 +791,57 @@ integrations:
     }
   })
 
+  it('pauses developing stage when loop development pauses for human review', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-paused-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    const configContent = readFileSync(configPath, 'utf-8').replace(
+      'integrations:\n  notifications:\n    enabled: false\n',
+      `integrations:\n  notifications:\n    enabled: true\n    stage_ai:\n      enabled: true\n      provider: mock\n      max_summary_chars: 900\n      include_loop: true\n      include_harness: true\n    routes:\n      stage_entered: [feishu_team]\n      stage_completed: [feishu_team]\n      stage_paused: [feishu_team]\n    providers:\n      feishu_team:\n        type: feishu-webhook\n        webhook_url: https://example.com/hook\n`
+    )
+    writeFileSync(configPath, configContent, 'utf-8')
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'paused', session: { id: 'loop-paused-1' } },
+          output: {} as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('blocked')
+      expect(result.session?.status).toBe('blocked')
+      expect(result.session?.currentStage).toBe('developing')
+      const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
+      expect(events).toContain('"type":"stage_paused","stage":"developing","summary":"Harness paused during loop development stage for human intervention."')
+      expect(events).not.toContain('"type":"stage_completed","stage":"developing"')
+      expect(fetchMock).toHaveBeenCalled()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('forwards nested loop progress and persists loop event artifacts early', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-progress-'))
     const magpieHome = join(dir, '.magpie-home')
@@ -2151,6 +2202,22 @@ describe('reportHarness logging levels', () => {
     infoSpy.mockRestore()
   })
 
+  it('logs at info level when details.status is blocked', async () => {
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const errorSpy = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
+
+    await reportHarness({
+      summary: 'Harness paused during loop development stage for human intervention.',
+      details: { status: 'blocked' } as never,
+    }, ctx)
+
+    expect(infoSpy).toHaveBeenCalledWith('[harness]', 'Harness paused during loop development stage for human intervention.')
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+    infoSpy.mockRestore()
+  })
+
   it('logs at info level when details is undefined and summary is not failure', async () => {
     const ctx = createCapabilityContext({ cwd: '/tmp' })
     const infoSpy = vi.spyOn(ctx.logger, 'info').mockImplementation(() => {})
@@ -2201,6 +2268,14 @@ describe('summarizeHarness', () => {
     const ctx = createCapabilityContext({ cwd: '/tmp' })
     const output = await summarizeHarness({ status: 'completed' }, ctx)
     expect(output.summary).toBe('Harness workflow completed.')
+    expect(output.details).toBeUndefined()
+  })
+
+  it('returns fallback paused summary when session is undefined', async () => {
+    const { summarizeHarness } = await import('../../../src/capabilities/workflows/harness/application/summarize.js')
+    const ctx = createCapabilityContext({ cwd: '/tmp' })
+    const output = await summarizeHarness({ status: 'blocked' }, ctx)
+    expect(output.summary).toBe('Harness workflow paused.')
     expect(output.details).toBeUndefined()
   })
 })

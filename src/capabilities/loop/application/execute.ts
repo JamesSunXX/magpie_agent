@@ -115,6 +115,7 @@ interface StageEvaluation {
   risks: string[]
   requireHumanConfirmation: boolean
   summary: string
+  parseFailed?: boolean
 }
 
 interface StageRunResult {
@@ -524,8 +525,9 @@ JSON schema:
     return {
       confidence: 0.5,
       risks: ['Failed to parse evaluation JSON from planner model'],
-      requireHumanConfirmation: true,
-      summary: 'Evaluation parsing failed; human review required.',
+      requireHumanConfirmation: false,
+      summary: 'Evaluation parsing failed; continuing without manual gate.',
+      parseFailed: true,
     }
   }
 
@@ -543,10 +545,10 @@ function shouldGateHuman(
   evaluation: StageEvaluation
 ): boolean {
   if (runtime.gatePolicy === 'always') return true
-  if (runtime.gatePolicy === 'manual_only') return false
-
-  if (!stageSucceeded) return true
   if (evaluation.requireHumanConfirmation) return true
+  if (evaluation.parseFailed && stageSucceeded) return false
+  if (runtime.gatePolicy === 'manual_only') return false
+  if (!stageSucceeded) return true
   return evaluation.confidence < runtime.confidenceThreshold
 }
 

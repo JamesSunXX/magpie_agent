@@ -40,6 +40,11 @@ describe('trd renderer helpers', () => {
     expect(parsed?.value).toBe('ok')
   })
 
+  it('extracts json block from prose-wrapped output', () => {
+    const parsed = extractJsonBlock<{ value: string }>('Here is the result:\n{"value":"ok"}\nThanks.')
+    expect(parsed?.value).toBe('ok')
+  })
+
   it('renders open questions markdown table', () => {
     const synthesis: TrdSynthesisResult = {
       trdMarkdown: '# test',
@@ -53,4 +58,3 @@ describe('trd renderer helpers', () => {
     expect(markdown).toContain('Q1')
   })
 })
-

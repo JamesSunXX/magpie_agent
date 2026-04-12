@@ -50,12 +50,76 @@ export function parseConfirmedDomainsYaml(yamlText: string): DomainBoundary[] {
 
 export function extractJsonBlock<T>(text: string): T | null {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i)
-  const body = fenced ? fenced[1] : text
+  const body = (fenced ? fenced[1] : text).trim()
   try {
     return JSON.parse(body) as T
   } catch {
-    return null
+    const candidate = extractBalancedJsonSnippet(body)
+    if (!candidate) {
+      return null
+    }
+
+    try {
+      return JSON.parse(candidate) as T
+    } catch {
+      return null
+    }
   }
+}
+
+function extractBalancedJsonSnippet(text: string): string | null {
+  for (let start = 0; start < text.length; start++) {
+    const opening = text[start]
+    if (opening !== '{' && opening !== '[') {
+      continue
+    }
+
+    const stack: string[] = [opening]
+    let inString = false
+    let escape = false
+
+    for (let idx = start + 1; idx < text.length; idx++) {
+      const char = text[idx]
+
+      if (inString) {
+        if (escape) {
+          escape = false
+          continue
+        }
+        if (char === '\\') {
+          escape = true
+          continue
+        }
+        if (char === '"') {
+          inString = false
+        }
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+
+      if (char === '{' || char === '[') {
+        stack.push(char)
+        continue
+      }
+
+      if (char === '}' || char === ']') {
+        const expected = char === '}' ? '{' : '['
+        if (stack.at(-1) !== expected) {
+          break
+        }
+        stack.pop()
+        if (stack.length === 0) {
+          return text.slice(start, idx + 1)
+        }
+      }
+    }
+  }
+
+  return null
 }
 
 export function renderOpenQuestionsMarkdown(result: TrdSynthesisResult): string {
@@ -70,4 +134,3 @@ export function renderOpenQuestionsMarkdown(result: TrdSynthesisResult): string 
   lines.push('')
   return lines.join('\n')
 }
-

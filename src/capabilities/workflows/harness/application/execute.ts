@@ -1052,6 +1052,43 @@ export async function executeHarness(
     })
   }
 
+  const emitStagePaused = async (
+    stage: HarnessStage,
+    summary: string,
+    details?: Record<string, unknown>
+  ): Promise<void> => {
+    const pausedNotification = await dispatchStageNotification({
+      config: harnessConfig,
+      cwd: resolve(ctx.cwd),
+      eventsPath,
+      router: notificationRouter,
+      input: {
+        eventType: 'stage_paused',
+        sessionId,
+        capability: 'harness',
+        runTitle: prepared.goal,
+        stage,
+        summary,
+        blocker: summary,
+        nextAction: '处理人工确认后恢复当前阶段。',
+        aiRoster: buildHarnessAiRoster(harnessConfig, reviewerIds, stage),
+      },
+      severity: 'warning',
+      metadata: { stage, ...(details || {}) },
+      dedupeKey: `stage_paused:${sessionId}:${stage}:${Date.now()}`,
+    })
+    await appendEvent('stage_paused', {
+      stage,
+      summary,
+      details: {
+        occurrence: pausedNotification.occurrence,
+        delivered: pausedNotification.dispatch?.delivered ?? 0,
+        attempted: pausedNotification.dispatch?.attempted ?? 0,
+        ...(details || {}),
+      },
+    })
+  }
+
   const transitionStage = async (
     stage: HarnessStage,
     summary: string,
@@ -1295,6 +1332,39 @@ export async function executeHarness(
   }
 
   if (loopResult && loopResult.result.status !== 'completed') {
+    const loopPausedForHuman = loopResult.result.status === 'paused'
+      || loopResult.result.session?.status === 'paused_for_human'
+
+    if (loopPausedForHuman) {
+      const summary = 'Harness paused during loop development stage for human intervention.'
+      await persistSession({
+        status: 'blocked',
+        currentStage: 'developing',
+        summary,
+        artifacts: {
+          ...(loopResult.result.session ? { loopSessionId: loopResult.result.session.id } : {}),
+          ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
+          ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
+          ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+          ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
+        },
+      })
+      await updateTaskKnowledgeState(knowledgeArtifacts, {
+        currentStage: 'developing',
+        lastReliableResult: summary,
+        nextAction: '处理人工确认后恢复开发阶段。',
+        currentBlocker: summary,
+      }, 'Harness paused during loop development stage for human intervention.')
+      await emitStagePaused('developing', summary, {
+        loopSessionId: loopResult.result.session?.id,
+      })
+
+      return {
+        status: 'blocked',
+        session,
+      }
+    }
+
     const summary = 'Harness failed during loop development stage.'
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)
     await transitionStage('failed', summary, 'workflow_failed', {

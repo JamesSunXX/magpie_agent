@@ -59,7 +59,7 @@ export interface HarnessCycle {
 }
 
 export interface HarnessResult {
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'blocked'
   session?: WorkflowSession & {
     currentStage?: HarnessStage
     artifacts: WorkflowSession['artifacts'] & {

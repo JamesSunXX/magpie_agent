@@ -64,6 +64,15 @@ function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typ
     }
   }
 
+  if (session.status === 'blocked') {
+    return {
+      currentStage: session.currentStage || 'developing',
+      nextAction: '处理人工确认后恢复当前阶段。',
+      currentBlocker: session.summary,
+      lastReliableResult: session.summary,
+    }
+  }
+
   return {
     currentStage: session.currentStage || 'in_progress',
     nextAction: session.currentStage === 'reviewing' ? 'Resume the current review cycle.' : 'Resume the harness workflow.',
