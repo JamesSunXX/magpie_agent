@@ -77,6 +77,13 @@ export interface SessionCard {
   id: string
   capability: 'review' | 'discuss' | 'trd' | 'loop' | 'issue-fix' | 'docs-sync' | 'post-merge-regression' | 'harness'
   title: string
+  detail?: string
+  selectedDetail?: {
+    participants?: string
+    reviewerSummaries: string[]
+    arbitration?: string
+    nextStep?: string
+  }
   status: string
   updatedAt: Date
   resumeCommand?: string[]

@@ -61,6 +61,14 @@ import {
   advanceRepairState,
   writeRepairArtifacts,
 } from '../domain/repair.js'
+import {
+  buildRoleRoster,
+  createRoleRoundResult,
+  createRoleMessage,
+  getRoleArtifactPaths,
+  resolveRoleBindings,
+  serializeRoleMessage,
+} from '../../../core/roles/index.js'
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
 import {
   createTaskKnowledge,
@@ -129,6 +137,51 @@ interface StageRunResult {
   failed: boolean
   stageReport: string
   testOutput: string
+}
+
+function toRoleBinding(input: { tool?: string; model?: string; agent?: string }): { tool?: string; model?: string; agent?: string } | undefined {
+  if (!input.tool && !input.model) return undefined
+  return {
+    ...(input.tool ? { tool: input.tool } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.agent ? { agent: input.agent } : {}),
+  }
+}
+
+function applyLoopRoleBindingOverrides(config: LoopConfig | undefined, runtime: LoopRuntimeConfig): void {
+  const architect = config?.role_bindings?.architect
+  if (architect) {
+    runtime.plannerTool = architect.tool
+    runtime.plannerModel = architect.model || architect.tool || runtime.plannerModel
+    runtime.plannerAgent = architect.agent
+  }
+
+  const developer = config?.role_bindings?.developer
+  if (developer) {
+    runtime.executorTool = developer.tool
+    runtime.executorModel = developer.model || developer.tool || runtime.executorModel
+    runtime.executorAgent = developer.agent
+  }
+}
+
+function buildLoopRoleRoster(runtime: LoopRuntimeConfig) {
+  return buildRoleRoster(resolveRoleBindings(undefined, {
+    architect: toRoleBinding({
+      tool: runtime.plannerTool,
+      model: runtime.plannerModel,
+      agent: runtime.plannerAgent,
+    }),
+    developer: toRoleBinding({
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
+      agent: runtime.executorAgent,
+    }),
+    tester: toRoleBinding({
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
+      agent: runtime.executorAgent,
+    }),
+  }))
 }
 
 interface WorktreeResolution {
@@ -441,6 +494,204 @@ function mergeStageReportWithVerification(stageReport: string, testOutput: strin
     '',
     testOutput,
   ].join('\n')
+}
+
+function buildLoopRoleOpenIssuesMarkdown(issues: Array<{
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  title: string
+  requiredAction: string
+}>): string {
+  if (issues.length === 0) {
+    return '# Open Issues\n\n- None.\n'
+  }
+
+  return [
+    '# Open Issues',
+    '',
+    ...issues.map((issue) => `- [${issue.severity}] ${issue.title}: ${issue.requiredAction}`),
+  ].join('\n')
+}
+
+function buildLoopNextRoundBrief(
+  session: LoopSession,
+  stage: LoopStageName,
+  reason: string,
+  finalAction: 'revise' | 'requeue_or_blocked'
+): string {
+  const lead = finalAction === 'revise'
+    ? `继续 ${stage} 阶段，先解决当前失败，再重跑现有测试命令。`
+    : `继续 ${stage} 阶段前，先处理当前阻塞，再决定是否重试。`
+
+  const refs = [
+    session.artifacts.repairOpenIssuesPath ? `问题清单：${session.artifacts.repairOpenIssuesPath}` : undefined,
+    session.artifacts.repairEvidencePath ? `失败证据：${session.artifacts.repairEvidencePath}` : undefined,
+    session.artifacts.tddTargetPath ? `TDD 目标：${session.artifacts.tddTargetPath}` : undefined,
+    session.artifacts.constraintsSnapshotPath ? `约束快照：${session.artifacts.constraintsSnapshotPath}` : undefined,
+  ].filter(Boolean)
+
+  return [
+    lead,
+    `原因：${reason}`,
+    refs.length > 0 ? `最少输入：${refs.join('；')}` : '最少输入：当前失败原因和现有会话产物。',
+  ].join(' ')
+}
+
+function buildLoopNextRoundMarkdown(input: {
+  session: LoopSession
+  stage: LoopStageName
+  reason: string
+  nextRoundBrief: string
+  finalAction: 'revise' | 'requeue_or_blocked'
+}): string {
+  const minimumInputs = [
+    `- Goal: ${input.session.goal}`,
+    `- Stage: ${input.stage}`,
+    `- Reliable point: ${input.session.lastReliablePoint || 'unknown'}`,
+    `- Reason: ${input.reason}`,
+    input.session.artifacts.repairOpenIssuesPath ? `- Open issues: ${input.session.artifacts.repairOpenIssuesPath}` : undefined,
+    input.session.artifacts.repairEvidencePath ? `- Evidence: ${input.session.artifacts.repairEvidencePath}` : undefined,
+    input.session.artifacts.tddTargetPath ? `- TDD target: ${input.session.artifacts.tddTargetPath}` : undefined,
+    input.session.artifacts.constraintsSnapshotPath ? `- Constraints snapshot: ${input.session.artifacts.constraintsSnapshotPath}` : undefined,
+  ].filter(Boolean)
+
+  return [
+    '# Next Round Input',
+    '',
+    `Final action: ${input.finalAction}`,
+    `Goal: ${input.session.goal}`,
+    `Stage: ${input.stage}`,
+    '',
+    'Minimum input:',
+    ...minimumInputs,
+    '',
+    'Next step:',
+    input.nextRoundBrief,
+  ].join('\n')
+}
+
+async function persistLoopNextRoundInput(input: {
+  session: LoopSession
+  stage: LoopStageName
+  stageIndex: number
+  reason: string
+  finalAction: 'revise' | 'requeue_or_blocked'
+  fromRole: 'architect' | 'developer' | 'tester'
+  toRole?: 'architect' | 'developer'
+  progressObserver?: LoopProgressObserver
+}): Promise<void> {
+  const roleArtifacts = getRoleArtifactPaths(input.session.artifacts.sessionDir)
+  const roundId = `round-${input.stageIndex + 1}`
+  const roleRoundPath = join(roleArtifacts.roundsDir, `${roundId}.json`)
+  const roleOpenIssuesPath = join(roleArtifacts.roundsDir, `${roundId}-open-issues.md`)
+  const roleNextRoundPath = join(roleArtifacts.roundsDir, `${roundId}-next.md`)
+  const nextRoundBrief = buildLoopNextRoundBrief(
+    input.session,
+    input.stage,
+    input.reason,
+    input.finalAction
+  )
+  const evidencePath = input.session.artifacts.repairEvidencePath
+    || input.session.artifacts.greenTestResultPath
+    || input.session.artifacts.redTestResultPath
+    || input.session.artifacts.constraintsSnapshotPath
+    || input.session.artifacts.planPath
+  const openIssues = [{
+    id: `${roundId}-${input.stage}`,
+    title: input.reason,
+    severity: input.finalAction === 'revise' ? 'high' as const : 'medium' as const,
+    sourceRole: input.fromRole,
+    category: input.finalAction === 'revise' ? 'quality' : 'blocked',
+    evidencePath: evidencePath || input.session.artifacts.planPath,
+    requiredAction: nextRoundBrief,
+    status: input.finalAction === 'revise' ? 'open' as const : 'blocked' as const,
+  }]
+  const artifactRefs = [
+    { path: roleNextRoundPath, label: 'next-round-input' },
+    input.session.artifacts.repairOpenIssuesPath ? { path: input.session.artifacts.repairOpenIssuesPath, label: 'open-issues' } : undefined,
+    input.session.artifacts.repairEvidencePath ? { path: input.session.artifacts.repairEvidencePath, label: 'repair-evidence' } : undefined,
+    input.session.artifacts.greenTestResultPath ? { path: input.session.artifacts.greenTestResultPath, label: 'green-test-result' } : undefined,
+    input.session.artifacts.redTestResultPath ? { path: input.session.artifacts.redTestResultPath, label: 'red-test-result' } : undefined,
+    input.session.artifacts.constraintsSnapshotPath ? { path: input.session.artifacts.constraintsSnapshotPath, label: 'constraints-snapshot' } : undefined,
+  ].filter(Boolean) as Array<{ path: string; label: string }>
+  const roundResult = createRoleRoundResult({
+    roundId,
+    roles: input.session.roles || [],
+    developmentResult: input.session.stageResults.length > 0
+      ? {
+        summary: input.session.stageResults[input.session.stageResults.length - 1].summary,
+        artifactRefs: input.session.stageResults[input.session.stageResults.length - 1].artifacts.map((path) => ({ path })),
+      }
+      : undefined,
+    testResult: input.stage === 'code_development'
+      ? {
+        status: input.finalAction === 'revise' ? 'failed' : 'blocked',
+        summary: input.reason,
+        artifactRefs: artifactRefs.filter((ref) => ref.label?.includes('test-result') || ref.label === 'repair-evidence'),
+      }
+      : undefined,
+    reviewResults: [],
+    arbitrationResult: {
+      action: input.finalAction,
+      summary: input.reason,
+      artifactRefs: [{ path: roleNextRoundPath, label: 'next-round-input' }],
+    },
+    openIssues,
+    nextRoundBrief,
+    finalAction: input.finalAction,
+  })
+
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
+  await writeFile(roleRoundPath, JSON.stringify(roundResult, null, 2), 'utf-8')
+  await writeFile(roleOpenIssuesPath, buildLoopRoleOpenIssuesMarkdown(openIssues), 'utf-8')
+  await writeFile(roleNextRoundPath, buildLoopNextRoundMarkdown({
+    session: input.session,
+    stage: input.stage,
+    reason: input.reason,
+    nextRoundBrief,
+    finalAction: input.finalAction,
+  }), 'utf-8')
+  await appendFile(roleArtifacts.messagesPath, `${serializeRoleMessage(createRoleMessage({
+    sessionId: input.session.id,
+    roundId,
+    fromRole: input.fromRole,
+    toRole: input.toRole || 'developer',
+    kind: 'next_round_input',
+    summary: nextRoundBrief,
+    artifactRefs,
+  }))}\n`, 'utf-8')
+  if (input.finalAction === 'requeue_or_blocked') {
+    await appendFile(roleArtifacts.messagesPath, `${serializeRoleMessage(createRoleMessage({
+      sessionId: input.session.id,
+      roundId,
+      fromRole: input.fromRole,
+      toRole: input.toRole || 'developer',
+      kind: 'blocked_for_human',
+      summary: input.reason,
+      artifactRefs: [{ path: roleNextRoundPath, label: 'next-round-input' }],
+    }))}\n`, 'utf-8')
+  }
+
+  input.session.artifacts.roleRoundsDir = roleArtifacts.roundsDir
+  input.session.artifacts.roleMessagesPath = roleArtifacts.messagesPath
+  input.session.artifacts.nextRoundInputPath = roleNextRoundPath
+
+  const knowledgeArtifacts = resolveLoopKnowledgeArtifacts(input.session)
+  if (knowledgeArtifacts) {
+    await updateTaskKnowledgeSummary(
+      knowledgeArtifacts,
+      'next-round-input',
+      buildLoopNextRoundMarkdown({
+        session: input.session,
+        stage: input.stage,
+        reason: input.reason,
+        nextRoundBrief,
+        finalAction: input.finalAction,
+      }),
+      `Next-round input updated for ${input.stage}.`
+    )
+  }
+
+  input.progressObserver?.onSessionUpdate?.(input.session)
 }
 
 function buildLoopCandidates(session: LoopSession, approved: boolean, summary: string, evidencePath?: string): KnowledgeCandidate[] {
@@ -841,6 +1092,16 @@ async function markSessionFailed(
   }
   session.status = 'failed'
   session.updatedAt = new Date()
+  await persistLoopNextRoundInput({
+    session,
+    stage,
+    stageIndex: session.currentStageIndex,
+    reason,
+    finalAction: 'requeue_or_blocked',
+    fromRole: 'architect',
+    toRole: 'developer',
+    progressObserver,
+  })
   await updateLoopState(session, {
     currentStage: stage,
     lastReliableResult: `Stage ${stage} failed.`,
@@ -1330,6 +1591,16 @@ async function continueSession(
         session.currentStageIndex = i
         session.status = 'paused_for_human'
         session.updatedAt = new Date()
+        await persistLoopNextRoundInput({
+          session,
+          stage,
+          stageIndex: i,
+          reason: session.lastFailureReason || constraintCheck.reasons.join('; ') || 'constraints need revision',
+          finalAction: 'requeue_or_blocked',
+          fromRole: 'architect',
+          toRole: 'developer',
+          progressObserver,
+        })
         await saveLoopSessionWithObserver(stateManager, session, progressObserver)
         await appendObservedEvent(session.artifacts.eventsPath, session.id, {
           event: constraintCheck.status === 'blocked' ? 'constraints_blocked' : 'constraints_revision_required',
@@ -1405,6 +1676,16 @@ async function continueSession(
           session.status = 'paused_for_human'
           session.lastFailureReason = 'Red test unexpectedly passed before implementation.'
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: session.lastFailureReason,
+            finalAction: 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           await appendObservedEvent(session.artifacts.eventsPath, session.id, {
             event: 'red_test_not_confirmed',
@@ -1442,6 +1723,16 @@ async function continueSession(
           session.artifacts.repairOpenIssuesPath = repairArtifacts.openIssuesPath
           session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: summary,
+            finalAction: 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           await appendObservedEvent(session.artifacts.eventsPath, session.id, {
             event: 'red_test_execution_retry_required',
@@ -1595,6 +1886,16 @@ async function continueSession(
     if (stageRun?.paused) {
       session.currentStageIndex = i
       session.status = 'paused_for_human'
+      await persistLoopNextRoundInput({
+        session,
+        stage,
+        stageIndex: i,
+        reason: completionStageResult?.summary || `Stage ${stage} paused for human confirmation.`,
+        finalAction: 'requeue_or_blocked',
+        fromRole: 'architect',
+        toRole: 'developer',
+        progressObserver,
+      })
       await saveLoopSessionWithObserver(stateManager, session, progressObserver)
       const pausedNotification = await dispatchStageNotification({
         config,
@@ -1713,6 +2014,16 @@ async function continueSession(
         if (repairState.blockedForHuman) {
           session.status = 'paused_for_human'
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: summary,
+            finalAction: greenTestResult.failureKind === 'quality' ? 'revise' : 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           return {
             status: 'paused',
@@ -1855,6 +2166,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     loopRuntime.executorModel = routingDecision.execution.model || routingDecision.execution.tool || loopRuntime.executorModel
     loopRuntime.executorAgent = routingDecision.execution.agent
   }
+  applyLoopRoleBindingOverrides(config.capabilities.loop, loopRuntime)
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
@@ -1891,6 +2203,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
+  const roleArtifacts = getRoleArtifactPaths(sessionDir)
+  const roleRoster = buildLoopRoleRoster(loopRuntime)
 
   await mkdir(sessionDir, { recursive: true })
   let branchName: string | undefined
@@ -1917,6 +2231,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     provider: planner,
     seedPlan: seededDocumentPlan,
   })
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
   const knowledgeArtifacts = await createTaskKnowledge({
     sessionDir,
     capability: 'loop',
@@ -1941,6 +2256,20 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     planningContextBlock
   )
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
+  await writeFile(roleArtifacts.rolesPath, JSON.stringify(roleRoster, null, 2), 'utf-8')
+  const initialRoleMessage = roleRoster.some((role) => role.roleId === 'architect')
+    && roleRoster.some((role) => role.roleId === 'developer')
+    ? `${serializeRoleMessage(createRoleMessage({
+      sessionId,
+      roundId: 'round-1',
+      fromRole: 'architect',
+      toRole: 'developer',
+      kind: 'plan_request',
+      summary: `Loop plan generated for ${tasks.length} task(s).`,
+      artifactRefs: [{ path: planPath, label: 'loop-plan' }],
+    }))}\n`
+    : ''
+  await writeFile(roleArtifacts.messagesPath, initialRoleMessage, 'utf-8')
   await updateTaskKnowledgeSummary(
     knowledgeArtifacts,
     'plan',
@@ -1993,6 +2322,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     plan: tasks,
     stageResults: [],
     humanConfirmations: [],
+    roles: roleRoster,
     branchName,
     routingTier: routingDecision?.tier,
     selectedComplexity: prepared.complexity || routingDecision?.tier,
@@ -2008,6 +2338,9 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       planPath,
       humanConfirmationPath,
       documentPlanPath,
+      roleRosterPath: roleArtifacts.rolesPath,
+      roleMessagesPath: roleArtifacts.messagesPath,
+      roleRoundsDir: roleArtifacts.roundsDir,
       ...knowledgeArtifacts,
       ...(routingDecision ? { routingDecisionPath } : {}),
     },
@@ -2136,6 +2469,20 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   } else if (resumeComplexity) {
     session.selectedComplexity = resumeComplexity
   }
+  applyLoopRoleBindingOverrides(config.capabilities.loop, loopRuntime)
+  const roleArtifacts = getRoleArtifactPaths(session.artifacts.sessionDir)
+  const roleRoster = buildLoopRoleRoster(loopRuntime)
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
+  await writeFile(roleArtifacts.rolesPath, JSON.stringify(roleRoster, null, 2), 'utf-8')
+  try {
+    await readFile(roleArtifacts.messagesPath, 'utf-8')
+  } catch {
+    await writeFile(roleArtifacts.messagesPath, '', 'utf-8')
+  }
+  session.roles = roleRoster
+  session.artifacts.roleRosterPath = roleArtifacts.rolesPath
+  session.artifacts.roleMessagesPath = roleArtifacts.messagesPath
+  session.artifacts.roleRoundsDir = roleArtifacts.roundsDir
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
@@ -2198,6 +2545,16 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     session.currentLoopState = 'blocked_for_human'
     session.lastFailureReason = resumeCheckpointError
     session.updatedAt = new Date()
+    await persistLoopNextRoundInput({
+      session,
+      stage: session.stages[session.currentStageIndex] || session.stages[0] || 'prd_review',
+      stageIndex: session.currentStageIndex,
+      reason: resumeCheckpointError,
+      finalAction: 'requeue_or_blocked',
+      fromRole: 'architect',
+      toRole: 'developer',
+      progressObserver,
+    })
     await saveLoopSessionWithObserver(stateManager, session, progressObserver)
     await appendObservedEvent(session.artifacts.eventsPath, session.id, {
       event: 'resume_blocked_invalid_checkpoint',

@@ -121,6 +121,44 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('review-1')
   })
 
+  it('renders the selected harness summary when a harness session is focused', () => {
+    const element = Dashboard({
+      selectedIndex: 5,
+      sessions: {
+        continue: [],
+        recent: [
+          {
+            id: 'harness-1',
+            capability: 'harness',
+            title: 'Deliver checkout v2',
+            detail: 'reviewing · 1=revise · dev+2 reviewers+arbitrator · revise: reviewer-1: Missing rollback handling · Fix rollback handling before rerun.',
+            selectedDetail: {
+              participants: 'developer, 2 reviewers, arbitrator',
+              reviewerSummaries: [
+                'security: revise - Missing rollback handling.',
+                'qa: pass - No additional risks.',
+              ],
+              arbitration: 'Decision: revise - Need another cycle after rollback fixes.',
+              nextStep: 'Fix rollback handling before rerun.',
+            },
+            status: 'in_progress',
+            updatedAt: new Date('2026-03-19T11:00:00.000Z'),
+            resumeCommand: ['harness', 'attach', 'harness-1'],
+            artifactPaths: [],
+          },
+        ],
+      },
+      health: {
+        items: [],
+      },
+    })
+
+    expect(normalizedText(element)).toContain('Participants: developer, 2 reviewers, arbitrator')
+    expect(normalizedText(element)).toContain('security: revise - Missing rollback handling.')
+    expect(normalizedText(element)).toContain('Decision: revise - Need another cycle after rollback fixes.')
+    expect(normalizedText(element)).toContain('Next: Fix rollback handling before rerun.')
+  })
+
   it('keeps session lists compact while browsing long history', () => {
     const recent = Array.from({ length: 16 }, (_, index) => ({
       id: `recent-${index + 1}`,

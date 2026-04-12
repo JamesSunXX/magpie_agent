@@ -4,6 +4,7 @@ import type { ReviewIssue } from '../reporter/types.js'
 import type { DomainBoundary } from '../trd/types.js'
 import type { LoopStageName, ComplexityTier } from '../config/types.js'
 import type { ExecutionHost } from '../platform/integrations/operations/types.js'
+import type { RoleInstance, RoleReliablePoint } from '../core/roles/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -184,6 +185,7 @@ export type LoopReliablePoint =
   | 'red_test_confirmed'
   | 'implementation_generated'
   | 'test_result_recorded'
+  | RoleReliablePoint
   | 'completed'
 
 export interface LoopSession {
@@ -199,6 +201,7 @@ export interface LoopSession {
   plan: LoopTask[]
   stageResults: LoopStageResult[]
   humanConfirmations: HumanConfirmationItem[]
+  roles?: RoleInstance[]
   constraintsValidated?: boolean
   constraintCheckStatus?: 'pass' | 'needs_revision' | 'blocked'
   tddEligible?: boolean
@@ -225,12 +228,16 @@ export interface LoopSession {
     tmuxSession?: string
     tmuxWindow?: string
     tmuxPane?: string
+    roleRosterPath?: string
+    roleMessagesPath?: string
+    roleRoundsDir?: string
     constraintsSnapshotPath?: string
     tddTargetPath?: string
     redTestResultPath?: string
     greenTestResultPath?: string
     repairOpenIssuesPath?: string
     repairEvidencePath?: string
+    nextRoundInputPath?: string
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string

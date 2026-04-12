@@ -374,6 +374,11 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/harness-1 (worktree)')
     expect(logSpy).toHaveBeenCalledWith('Host: tmux')
     expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
+    expect(logSpy).toHaveBeenCalledWith('Rounds: 1=revise')
+    expect(logSpy).toHaveBeenCalledWith('Latest round: revise | next: Fix rollback handling before rerun.')
+    expect(logSpy).toHaveBeenCalledWith('Participants: developer=codex, reviewer-1=claude-code, arbitrator=codex')
+    expect(logSpy).toHaveBeenCalledWith('Review notes: reviewer-1: Missing rollback handling.')
+    expect(logSpy).toHaveBeenCalledWith('Decision note: Need another cycle after rollback fixes.')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
     expect(logSpy).toHaveBeenCalledWith('Document mode: project_docs')
     expect(logSpy).toHaveBeenCalledWith('Formal docs root: /tmp/repo/docs/v2/checkout')
@@ -381,6 +386,26 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Last activity: 2026-04-11T00:00:07.000Z')
     expect(logSpy).toHaveBeenCalledWith('Loop activity: 2026-04-11T00:00:07.000Z stage=code_development Codex 正在执行命令。')
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Knowledge: '))
+    logSpy.mockRestore()
+  })
+
+  it('prints a selected persisted cycle for status and inspect', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSessionsDetail()
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'status', 'harness-1', '--cycle', '1'],
+      { from: 'node' }
+    )
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'inspect', 'harness-1', '--cycle', '1'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('Round 1: revise | next: Fix rollback handling before rerun.')
+    expect(logSpy).toHaveBeenCalledWith('Participants: developer=codex, reviewer-1=claude-code, arbitrator=codex')
+    expect(logSpy).toHaveBeenCalledWith('Decision note: Need another cycle after rollback fixes.')
     logSpy.mockRestore()
   })
 
@@ -485,6 +510,22 @@ describe('top-level harness CLI command', () => {
 
     expect(process.exitCode).toBe(1)
     expect(errorSpy).toHaveBeenCalledWith('Harness session not found: missing-session')
+    errorSpy.mockRestore()
+  })
+
+  it('fails clearly when a requested cycle is missing', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    process.exitCode = 0
+    loadWorkflowSessionsDetail()
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'status', 'harness-1', '--cycle', '3'],
+      { from: 'node' }
+    )
+
+    expect(process.exitCode).toBe(1)
+    expect(errorSpy).toHaveBeenCalledWith('Harness cycle not found: 3')
     errorSpy.mockRestore()
   })
 
@@ -620,7 +661,9 @@ function loadWorkflowSessionsDetail(): void {
   const summaryDir = join(knowledgeDir, 'summaries')
   const loopEventsPath = join(knowledgeDir, 'loop-events.jsonl')
   const documentPlanPath = join(knowledgeDir, 'document-plan.json')
+  const roleRoundsDir = join(knowledgeDir, 'role-rounds')
   mkdirSync(summaryDir, { recursive: true })
+  mkdirSync(roleRoundsDir, { recursive: true })
   writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
   writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
   writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
@@ -656,6 +699,25 @@ function loadWorkflowSessionsDetail(): void {
   writeFileSync(join(summaryDir, 'open-issues.md'), '- Missing migration rollback drill', 'utf-8')
   writeFileSync(join(summaryDir, 'evidence.md'), '- /tmp/review.json', 'utf-8')
   writeFileSync(join(summaryDir, 'stage-cycle-1.md'), 'Latest stage summary', 'utf-8')
+  writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
+    roundId: 'cycle-1',
+    roles: [
+      { roleId: 'developer', roleType: 'developer', displayName: 'developer', binding: { tool: 'codex' } },
+      { roleId: 'reviewer-1', roleType: 'reviewer', displayName: 'reviewer-1', binding: { tool: 'claude-code' } },
+      { roleId: 'arbitrator', roleType: 'arbitrator', displayName: 'arbitrator', binding: { tool: 'codex' } },
+    ],
+    reviewResults: [
+      {
+        reviewerRoleId: 'reviewer-1',
+        summary: 'Missing rollback handling.',
+      },
+    ],
+    arbitrationResult: {
+      summary: 'Need another cycle after rollback fixes.',
+    },
+    finalAction: 'revise',
+    nextRoundBrief: 'Fix rollback handling before rerun.',
+  }, null, 2), 'utf-8')
   writeFileSync(join(knowledgeDir, 'candidates.json'), JSON.stringify([
     {
       type: 'decision',
@@ -698,5 +760,10 @@ function loadWorkflowSessionsDetail(): void {
       loopSessionId: 'loop-1',
       loopEventsPath,
     },
+        knowledgeSummaryDir: summaryDir,
+        knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+        loopSessionId: 'loop-1',
+        roleRoundsDir,
+      },
   })
 }
