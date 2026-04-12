@@ -16,6 +16,10 @@
 - 只改 `loop`、`harness`、`harness-server` 三条主路径
 - 只补“自修前置底座”，不在本计划内实现完整 `workflow_self_repair`
 - 只增加仓库内可追踪的失败聚合，不引入外部服务
+- 本计划把“中断恢复”视为恢复语义，不默认记为失败；只有恢复点缺失、状态不一致或重新入队失败时，才升级为 `workflow_defect`
+- 第一版必须覆盖两类中断场景：
+  - `harness submit` 前台执行被 `SIGINT` / `SIGTERM` 打断后，session 仍可恢复
+  - `harness-server` 重启后，已在跑的 `harness` session 会重新入队并从最后可靠点继续
 
 ## 当前失败信号与接入点
 
@@ -46,6 +50,8 @@
 
 - `src/state/types.ts`
   - 增加统一失败事件、失败签名、恢复状态字段
+- `src/capabilities/workflows/harness/types.ts`
+  - 给 `HarnessResult` 暴露统一失败账本相关 artifact 字段
 - `src/capabilities/loop/application/execute.ts`
   - 接入统一失败记录与分类
 - `src/capabilities/workflows/harness/application/execute.ts`
@@ -125,7 +131,10 @@
 - [ ] 给 `LoopSession` 增加失败产物路径字段：
   - `artifacts.failureLogDir`
   - `artifacts.failureIndexPath`
-- [ ] 给 `WorkflowSession.artifacts` 增加同类字段，确保 `harness` 和 `harness-server` 也能落统一失败记录
+- [ ] 给 `WorkflowSession.artifacts` 增加同类字段，定义落在 `src/capabilities/workflows/shared/runtime.ts`，并同步更新 `src/capabilities/workflows/harness/types.ts` 的暴露类型
+- [ ] 明确 server 级失败记录分两类路径：
+  - 绑定具体 `harness` session 的失败：`<sessionDir>/failures/<failureId>.json`
+  - 没有可用 sessionId 的服务级失败：`.magpie/harness-server/failures/<failureId>.json`
 - [ ] 运行：
   - `npm run test:run -- tests/state/state-manager.test.ts`
 
@@ -153,6 +162,12 @@
   - `stage`
   - `category`
   - 归一化后的首个关键报错
+- [ ] 固定“归一化后的首个关键报错”规则，避免不同实现各自摘要：
+  - 全部转小写
+  - 去掉绝对路径、sessionId、时间戳、纯数字行号这类易变内容
+  - 连续空白折叠成单空格
+  - 只取首个非空关键报错行，最长 160 个字符
+  - 如果拿不到关键报错，就退回 `reason` 的同规则摘要
 - [ ] 保证签名能把“同类重复失败”归到一起，但不会把不同问题混成一类
 - [ ] 运行：
   - `npm run test:run -- tests/core/failures/classifier.test.ts tests/capabilities/loop/test-execution.test.ts`
@@ -171,9 +186,11 @@
   - 同一仓库的失败能更新 `.magpie/failure-index.json`
   - 重复签名会累加计数而不是重复建独立主题
   - 不同 capability 的相同签名也能聚合
+  - 并发两次写入不会破坏 `.magpie/failure-index.json`
 - [ ] 统一第一版落盘位置：
   - session 级：`<sessionDir>/failures/<failureId>.json`
   - repo 级：`.magpie/failure-index.json`
+  - server 无 session 级：`.magpie/harness-server/failures/<failureId>.json`
 - [ ] 为仓库级索引增加最小聚合字段：
   - `signature`
   - `count`
@@ -182,6 +199,10 @@
   - `lastSessionId`
   - `categories`
   - `candidateForSelfRepair`
+- [ ] 仓库级索引写入必须走单一辅助入口，并使用“仓库级锁文件 + 原子覆盖”组合：
+  - 锁文件固定为 `.magpie/failure-index.lock`
+  - 进入锁后再读最新索引、合并计数、写临时文件并替换
+  - 验证目标不只是 JSON 不损坏，还要保证并发两次写入后计数不丢
 - [ ] 为 `appendWorkflowEvent` 所在路径补一个失败写入辅助函数，避免 `loop`、`harness`、`harness-server` 各自拼路径
 - [ ] 运行：
   - `npm run test:run -- tests/core/failures/ledger.test.ts`
@@ -202,6 +223,7 @@
 - [ ] 在红灯测试命令无法正常执行时，记录一条 `environment` 或 `transient` 失败，而不是只暂停
 - [ ] 在绿灯测试失败进入 `repair_required` / `execution_retry_required` 时，也记录失败条目，不能只写 repair artifact
 - [ ] 在恢复校验失败时，统一记为 `workflow_defect`
+- [ ] 如果 `loop` 是因为等待人工确认而停在 `paused_for_human`，保持现有语义，不额外补失败记录
 - [ ] 保持现有 `paused_for_human` / `failed` 语义不变，不在这一步改变外部行为
 - [ ] 运行：
   - `npm run test:run -- tests/capabilities/loop/loop.test.ts`
@@ -238,6 +260,7 @@
   - `transient` -> `retry_with_backoff`
   - `environment` -> `run_diagnostics`
   - `quality` -> `block_for_human`
+  - `prompt_or_parse` 首次出现 -> `block_for_human`
   - `prompt_or_parse` 重复出现 -> `spawn_self_repair_candidate`
   - `workflow_defect` -> `spawn_self_repair_candidate`
 - [ ] 在 `runHarnessServerOnce` 的异常分支里，不再只靠 `isRetryableHarnessError`
@@ -245,10 +268,25 @@
   - `waiting_retry`
   - `failed`
   - `blocked`
+- [ ] 固定恢复动作到 session 状态的映射，避免 server 侧各自落不同状态：
+  - `retry_same_step` / `retry_with_backoff` -> `waiting_retry`
+  - `block_for_human` -> `blocked`
+  - `run_diagnostics` 执行后，如果发现配置、输入元数据或 repo 关键路径缺失，则 `blocked`；否则 `failed`
+  - `spawn_self_repair_candidate` -> 先写候选，再把当前 session 记为 `failed`
+  - `degrade_path` 第一版只保留类型，不在本阶段实际产出
+- [ ] `recoverInterruptedHarnessSessions` 产生的是恢复事件，不写失败账本；只有“找不到恢复输入”“状态与落盘不一致”“重新入队失败”这类情况才记 `workflow_defect`
 - [ ] 给 `run_diagnostics` 留最小实现，至少检查：
   - 配置是否存在
   - 会话输入元数据是否存在
   - 当前 repo 的关键路径是否还在
+- [ ] 为中断恢复补测试，至少覆盖：
+  - `in_progress` 的 session 在 server 重启后被改成 `waiting_next_cycle`
+  - 上述重排队不会额外累积失败计数
+  - 缺失恢复元数据时会留下 `workflow_defect` 失败记录
+- [ ] 明确 `candidateForSelfRepair` 的第一版判定：
+  - `workflow_defect` 一次命中即可置为 `true`
+  - `prompt_or_parse` 只有同签名累计达到 2 次后才置为 `true`
+  - 其余分类默认 `false`
 - [ ] 当恢复决策给出 `spawn_self_repair_candidate` 时，第一版只落一条候选记录到索引，不直接开修复任务
 - [ ] 运行：
   - `npm run test:run -- tests/core/failures/recovery-policy.test.ts tests/capabilities/workflows/harness-server.test.ts`
@@ -263,10 +301,10 @@
 
 - [ ] 明确“重复失败”的第一版门槛：
   - 同一签名累计至少 2 次
-  - 且最近一次仍未解决
+  - 第一版不单独维护“resolved”状态；达到门槛即可升级为 `failure-pattern` 候选，后续自修流程再定义消解语义
 - [ ] 从 `.magpie/failure-index.json` 生成可升级的 `failure-pattern` 候选
 - [ ] 把 `candidateForSelfRepair` 一并带入候选摘要，方便后续自修工作流读取
-- [ ] 保持现有 `decision` / `failure-pattern` 规则兼容，不破坏旧路径
+- [ ] 保持现有 `decision` / `failure-pattern` 规则兼容，不破坏旧路径；仓库内索引只作为当前仓库事实源，最终仍复用现有 `~/.magpie/knowledge/.../failure-patterns/` 提升链路
 - [ ] 运行：
   - `npm run test:run -- tests/knowledge/runtime.test.ts`
 

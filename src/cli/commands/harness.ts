@@ -5,8 +5,10 @@ import { getTypedCapability } from '../../core/capability/registry.js'
 import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import {
+  appendWorkflowEvent,
   listWorkflowSessions,
   loadWorkflowSession,
+  persistWorkflowSession,
 } from '../../capabilities/workflows/shared/runtime.js'
 import {
   enqueueHarnessSession,
@@ -40,6 +42,12 @@ interface HarnessCommandOptions {
 interface PersistedHarnessResumeEvidence {
   input?: HarnessInput
   configPath?: string
+  runtime?: {
+    retryCount?: number
+    nextRetryAt?: string
+    lastError?: string
+    lastReliablePoint?: string
+  }
 }
 
 const HARNESS_PRIORITIES = ['interactive', 'high', 'normal', 'background'] as const
@@ -157,7 +165,15 @@ async function runHarnessWithSession(
     registry,
     'harness'
   )
-  const progressReporter = createHarnessProgressReporter()
+  const baseProgressReporter = createHarnessProgressReporter()
+  let activeSessionId = sessionId?.trim() || ''
+  const progressReporter = {
+    ...baseProgressReporter,
+    onSessionUpdate(session: WorkflowSession): void {
+      activeSessionId = session.id
+      baseProgressReporter.onSessionUpdate(session)
+    },
+  }
   const ctx = createCapabilityContext({
     cwd: process.cwd(),
     configPath: options.config,
@@ -170,53 +186,138 @@ async function runHarnessWithSession(
   if (sessionId) {
     process.env.MAGPIE_SESSION_ID = sessionId
   }
-  const { output, result } = await (async () => {
-    try {
-      return await runCapability(capability, input, ctx)
-    } finally {
-      progressReporter.stop()
-      if (sessionId) {
-        if (previousSessionId === undefined) {
-          delete process.env.MAGPIE_SESSION_ID
-        } else {
-          process.env.MAGPIE_SESSION_ID = previousSessionId
-        }
-      }
-    }
-  })()
 
-  console.log(output.summary)
-  if (output.details) {
-    if (!progressReporter.hasAnnouncedSession()) {
-      console.log(`Session: ${output.details.id}`)
-      console.log(`Status: ${output.details.status}`)
-      if (output.details.currentStage) {
-        console.log(`Stage: ${output.details.currentStage}`)
-      }
-      if (output.details.artifacts.eventsPath) {
-        console.log(`Events: ${output.details.artifacts.eventsPath}`)
-      }
+  const interruptError = new Error('HARNESS_INTERRUPTED')
+  let interrupted = false
+  let lastSignalAt = 0
+  let interruptSettled = false
+  let rejectInterrupted!: (reason: Error) => void
+  const interruptedRun = new Promise<never>((_resolve, reject) => {
+    rejectInterrupted = reject
+  })
+
+  const queueInterruptedSession = async (signal: NodeJS.Signals): Promise<void> => {
+    if (interruptSettled) {
+      return
     }
-    if (output.details.artifacts.workspacePath) {
-      console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+    interruptSettled = true
+    process.exitCode = 130
+
+    if (!activeSessionId) {
+      rejectInterrupted(interruptError)
+      return
     }
-    if (output.details.artifacts.executionHost) {
-      console.log(`Host: ${output.details.artifacts.executionHost}`)
+
+    const persisted = await loadWorkflowSession(process.cwd(), 'harness', activeSessionId)
+    if (persisted?.status === 'in_progress') {
+      const evidence = persisted.evidence as PersistedHarnessResumeEvidence | undefined
+      await persistWorkflowSession(process.cwd(), {
+        ...persisted,
+        status: 'waiting_next_cycle',
+        updatedAt: new Date(),
+        summary: 'Harness session was interrupted and queued to resume.',
+        evidence: evidence
+          ? {
+            ...evidence,
+            runtime: {
+              ...(evidence.runtime || {}),
+              lastError: signal.toLowerCase(),
+              lastReliablePoint: 'waiting_next_cycle',
+            },
+          }
+          : persisted.evidence,
+      })
+      await appendWorkflowEvent(process.cwd(), 'harness', persisted.id, {
+        timestamp: new Date(),
+        type: 'session_requeued',
+        stage: persisted.currentStage,
+        summary: 'Harness session was interrupted and queued to resume.',
+        details: {
+          signal,
+        },
+      })
     }
-    if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
-      console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
-    }
-    console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
-    console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
-    console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
-    console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
-    if (output.details.artifacts.loopSessionId) {
-      console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
-    }
+
+    rejectInterrupted(interruptError)
   }
 
-  if (result.status === 'failed') {
-    process.exitCode = 1
+  const handleSignal = (signal: NodeJS.Signals) => {
+    const now = Date.now()
+    if (interrupted && now - lastSignalAt < 3000) {
+      console.error('\nForce exit.')
+      process.exit(130)
+    }
+    interrupted = true
+    lastSignalAt = now
+    console.error('\nHarness interrupted. Queueing resume... (press again to force exit)')
+    void queueInterruptedSession(signal).finally(() => {
+      process.exit(130)
+    })
+  }
+
+  const sigintHandler = () => handleSignal('SIGINT')
+  const sigtermHandler = () => handleSignal('SIGTERM')
+  process.on('SIGINT', sigintHandler)
+  process.on('SIGTERM', sigtermHandler)
+
+  try {
+    const execution = (async () => runCapability(capability, input, ctx))()
+    execution.catch(() => undefined)
+    const { output, result } = await Promise.race([execution, interruptedRun])
+
+    console.log(output.summary)
+    if (output.details) {
+      if (!progressReporter.hasAnnouncedSession()) {
+        console.log(`Session: ${output.details.id}`)
+        console.log(`Status: ${output.details.status}`)
+        if (output.details.currentStage) {
+          console.log(`Stage: ${output.details.currentStage}`)
+        }
+        if (output.details.artifacts.eventsPath) {
+          console.log(`Events: ${output.details.artifacts.eventsPath}`)
+        }
+      }
+      if (output.details.artifacts.workspacePath) {
+        console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+      }
+      if (output.details.artifacts.executionHost) {
+        console.log(`Host: ${output.details.artifacts.executionHost}`)
+      }
+      if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
+        console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
+      }
+      console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
+      console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
+      console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
+      console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
+      if (output.details.artifacts.loopSessionId) {
+        console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
+      }
+    }
+
+    if (result.status === 'failed') {
+      process.exitCode = 1
+    }
+  } catch (error) {
+    if (error === interruptError) {
+      if (activeSessionId) {
+        console.log(`Session: ${activeSessionId}`)
+        console.log('Status: waiting_next_cycle')
+      }
+      return
+    }
+    throw error
+  } finally {
+    progressReporter.stop()
+    process.off('SIGINT', sigintHandler)
+    process.off('SIGTERM', sigtermHandler)
+    if (sessionId) {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+    }
   }
 }
 

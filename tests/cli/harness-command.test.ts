@@ -8,6 +8,8 @@ const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
 const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
+const persistWorkflowSession = vi.fn()
+const appendWorkflowEvent = vi.fn()
 const launchMagpieInTmux = vi.fn()
 const enqueueHarnessSession = vi.fn()
 const isHarnessServerRunning = vi.fn()
@@ -31,6 +33,8 @@ vi.mock('../../src/capabilities/index.js', () => ({
 vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   listWorkflowSessions,
   loadWorkflowSession,
+  persistWorkflowSession,
+  appendWorkflowEvent,
 }))
 
 vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
@@ -107,6 +111,8 @@ describe('top-level harness CLI command', () => {
       },
       result: { status: 'completed' },
     })
+    persistWorkflowSession.mockResolvedValue(undefined)
+    appendWorkflowEvent.mockResolvedValue('/tmp/events.jsonl')
   })
 
   it('submits a harness run through the capability runtime', async () => {
@@ -466,6 +472,104 @@ describe('top-level harness CLI command', () => {
     expect(progressReporterMocks.start).toHaveBeenCalled()
     expect(progressReporterMocks.stop).toHaveBeenCalled()
     errorSpy.mockRestore()
+  })
+
+  it('queues the session to resume when submit is interrupted', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      process.exitCode = Number(code ?? 0)
+      return undefined as never
+    }) as typeof process.exit)
+    process.exitCode = 0
+
+    let releaseRun: (() => void) | undefined
+    runCapability.mockImplementation(async (_capability, _input, ctx) => {
+      const reporter = ctx.metadata?.harnessProgress as {
+        onSessionUpdate?: (session: Record<string, unknown>) => void
+      }
+      reporter.onSessionUpdate?.({
+        id: 'harness-live',
+        status: 'in_progress',
+        currentStage: 'developing',
+        artifacts: {
+          eventsPath: '/tmp/live-events.jsonl',
+        },
+      })
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve
+      })
+      return {
+        output: {
+          summary: 'Harness approved after 1 cycle(s).',
+        },
+        result: { status: 'completed' },
+      }
+    })
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-live',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z'),
+      status: 'in_progress',
+      currentStage: 'developing',
+      summary: 'Running loop development stage.',
+      artifacts: {
+        eventsPath: '/tmp/live-events.jsonl',
+      },
+      evidence: {
+        input: {
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        },
+        runtime: {
+          retryCount: 0,
+          lastReliablePoint: 'developing',
+        },
+      },
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    const parsePromise = harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
+    })
+    process.emit('SIGINT')
+    await vi.waitFor(() => {
+      expect(persistWorkflowSession).toHaveBeenCalled()
+    })
+    releaseRun?.()
+    await parsePromise
+
+    expect(process.exitCode).toBe(130)
+    expect(persistWorkflowSession).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-live',
+        status: 'waiting_next_cycle',
+        summary: 'Harness session was interrupted and queued to resume.',
+      })
+    )
+    expect(appendWorkflowEvent).toHaveBeenCalledWith(
+      process.cwd(),
+      'harness',
+      'harness-live',
+      expect.objectContaining({
+        type: 'session_requeued',
+        summary: 'Harness session was interrupted and queued to resume.',
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Status: waiting_next_cycle')
+    expect(exitSpy).toHaveBeenCalledWith(130)
+
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+    exitSpy.mockRestore()
   })
 
   it('prints a deterministic error when status session is missing', async () => {

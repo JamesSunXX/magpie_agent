@@ -79,6 +79,8 @@ magpie harness-server status
 magpie harness attach <session-id>
 magpie harness resume <session-id>
 
+前台运行的 `magpie harness submit` 如果被 `Ctrl+C` 或系统终止打断，会先把当前会话改成可恢复状态，再退出；之后直接用 `magpie harness resume <session-id>` 接着跑。
+
 # 10) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
