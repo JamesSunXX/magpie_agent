@@ -314,6 +314,9 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Host: tmux')
     expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
+    expect(logSpy).toHaveBeenCalledWith('Loop stage: code_development')
+    expect(logSpy).toHaveBeenCalledWith('Last activity: 2026-04-11T00:00:07.000Z')
+    expect(logSpy).toHaveBeenCalledWith('Loop activity: 2026-04-11T00:00:07.000Z stage=code_development Codex 正在执行命令。')
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Knowledge: '))
     logSpy.mockRestore()
   })
@@ -550,10 +553,19 @@ describe('top-level harness CLI command', () => {
 function loadWorkflowSessionsDetail(): void {
   const knowledgeDir = mkdtempSync(join(tmpdir(), 'magpie-harness-knowledge-'))
   const summaryDir = join(knowledgeDir, 'summaries')
+  const loopEventsPath = join(knowledgeDir, 'loop-events.jsonl')
   mkdirSync(summaryDir, { recursive: true })
   writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
   writeFileSync(join(knowledgeDir, 'index.md'), '# index', 'utf-8')
   writeFileSync(join(knowledgeDir, 'log.md'), '# log', 'utf-8')
+  writeFileSync(loopEventsPath, `${JSON.stringify({
+    ts: '2026-04-11T00:00:07.000Z',
+    event: 'provider_progress',
+    stage: 'code_development',
+    provider: 'codex',
+    progressType: 'item.started',
+    summary: 'shell command started.',
+  })}\n`, 'utf-8')
   writeFileSync(join(knowledgeDir, 'state.json'), JSON.stringify({
     currentStage: 'reviewing',
     lastReliableResult: 'Loop stage completed.',
@@ -600,10 +612,11 @@ function loadWorkflowSessionsDetail(): void {
         knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
         knowledgeIndexPath: join(knowledgeDir, 'index.md'),
         knowledgeLogPath: join(knowledgeDir, 'log.md'),
-      knowledgeStatePath: join(knowledgeDir, 'state.json'),
+        knowledgeStatePath: join(knowledgeDir, 'state.json'),
       knowledgeSummaryDir: summaryDir,
       knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
       loopSessionId: 'loop-1',
+      loopEventsPath,
     },
   })
 }
