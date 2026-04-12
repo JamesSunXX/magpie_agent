@@ -17,7 +17,7 @@ import { loadConfig } from '../../../platform/config/loader.js'
 import { getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
-import type { LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
+import type { ComplexityTier, LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
 import { dispatchStageNotification } from '../../../platform/integrations/notifications/stage-dispatch.js'
@@ -100,6 +100,13 @@ interface LoopRuntimeConfig {
     unitTest: string
     mockTest?: string
     integrationTest: string
+  }
+  executionTimeout: {
+    defaultMs: number
+    minMs: number
+    maxMs: number
+    complexityMultiplier: Record<ComplexityTier, number>
+    stageOverridesMs: Partial<Record<LoopStageName, number>>
   }
 }
 
@@ -273,7 +280,60 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
       mockTest: config?.commands?.mock_test?.trim() || undefined,
       integrationTest: config?.commands?.integration_test || 'npm run test:run -- tests/integration',
     },
+    executionTimeout: {
+      defaultMs: config?.execution_timeout?.default_ms ?? 15 * 60 * 1000,
+      minMs: config?.execution_timeout?.min_ms ?? 5 * 60 * 1000,
+      maxMs: config?.execution_timeout?.max_ms ?? 60 * 60 * 1000,
+      complexityMultiplier: {
+        simple: config?.execution_timeout?.complexity_multiplier?.simple ?? 1,
+        standard: config?.execution_timeout?.complexity_multiplier?.standard ?? 2,
+        complex: config?.execution_timeout?.complexity_multiplier?.complex ?? 3,
+      },
+      stageOverridesMs: config?.execution_timeout?.stage_overrides_ms || {},
+    },
   }
+}
+
+function clampTimeoutMs(value: number, minMs: number, maxMs: number): number {
+  return Math.max(minMs, Math.min(maxMs, value))
+}
+
+function resolveStageTimeoutMs(
+  runtime: LoopRuntimeConfig,
+  stage: LoopStageName,
+  tier: ComplexityTier
+): number {
+  const base = runtime.executionTimeout.stageOverridesMs[stage] ?? runtime.executionTimeout.defaultMs
+  const multiplier = runtime.executionTimeout.complexityMultiplier[tier] ?? 1
+  return clampTimeoutMs(
+    Math.round(base * multiplier),
+    runtime.executionTimeout.minMs,
+    runtime.executionTimeout.maxMs,
+  )
+}
+
+function applyLoopProviderTimeouts(
+  planner: AIProvider,
+  executor: AIProvider,
+  runtime: LoopRuntimeConfig,
+  stage: LoopStageName,
+  tier: ComplexityTier
+): number {
+  const timeoutMs = resolveStageTimeoutMs(runtime, stage, tier)
+  planner.setTimeoutMs?.(timeoutMs)
+  executor.setTimeoutMs?.(timeoutMs)
+  return timeoutMs
+}
+
+function resolveSessionComplexityTier(
+  session: LoopSession,
+  override?: ComplexityTier
+): ComplexityTier | undefined {
+  if (override) return override
+  if (session.selectedComplexity) return session.selectedComplexity
+  if (session.routingTier) return session.routingTier
+  if (session.artifacts.workspaceMode === 'worktree') return 'complex'
+  return undefined
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1179,6 +1239,7 @@ async function continueSession(
   session: LoopSession,
   prepared: LoopPreparedInput,
   runCwd: string,
+  timeoutTier: ComplexityTier,
   runtime: LoopRuntimeConfig,
   config: MagpieConfig,
   planner: AIProvider,
@@ -1192,6 +1253,7 @@ async function continueSession(
 ): Promise<LoopExecutionResult> {
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
+    const timeoutMs = applyLoopProviderTimeouts(planner, executor, runtime, stage, timeoutTier)
     const resumedExecutionRetry = stage === 'code_development'
       && session.currentLoopState === 'retrying_execution'
       && session.lastReliablePoint === 'test_result_recorded'
@@ -1409,12 +1471,13 @@ async function continueSession(
           aiRoster: buildLoopAiRoster(runtime, stage),
         },
         severity: 'info',
-        metadata: { stage },
+        metadata: { stage, timeoutMs },
         dedupeKey: `stage_entered:${session.id}:${stage}:${Date.now()}`,
       })
       await appendObservedEvent(session.artifacts.eventsPath, session.id, {
         event: 'stage_entered',
         stage,
+        timeoutMs,
         occurrence: enteredNotification.occurrence,
         delivered: enteredNotification.dispatch?.delivered ?? 0,
         attempted: enteredNotification.dispatch?.attempted ?? 0,
@@ -1890,6 +1953,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     humanConfirmations: [],
     branchName,
     routingTier: routingDecision?.tier,
+    selectedComplexity: prepared.complexity || routingDecision?.tier,
     artifacts: {
       sessionDir,
       repoRootPath: ctx.cwd,
@@ -1950,6 +2014,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     session,
     prepared,
     workspacePath,
+    prepared.complexity || routingDecision?.tier || 'standard',
     loopRuntime,
     config,
     planner,
@@ -2003,11 +2068,12 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
+  const resumeComplexity = resolveSessionComplexityTier(session, prepared.complexity)
   const routingDecision = isRoutingEnabled(config)
     ? createRoutingDecision({
       goal: session.goal,
       prdContent: await readFile(session.prdPath, 'utf-8').catch(() => ''),
-      overrideTier: prepared.complexity || session.routingTier,
+      overrideTier: resumeComplexity,
       config,
     })
     : undefined
@@ -2019,9 +2085,12 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     loopRuntime.executorModel = routingDecision.execution.model || routingDecision.execution.tool || loopRuntime.executorModel
     loopRuntime.executorAgent = routingDecision.execution.agent
     session.routingTier = routingDecision.tier
+    session.selectedComplexity = resumeComplexity || routingDecision.tier
     if (session.artifacts.routingDecisionPath) {
       await writeFile(session.artifacts.routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
     }
+  } else if (resumeComplexity) {
+    session.selectedComplexity = resumeComplexity
   }
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
@@ -2134,6 +2203,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     session,
     prepared,
     session.artifacts.workspacePath || ctx.cwd,
+    resumeComplexity || 'standard',
     loopRuntime,
     config,
     planner,

@@ -215,6 +215,235 @@ describe('loop capability', () => {
     expect(events).toContain('"progressType":"item.started"')
   })
 
+  it('applies configured execution timeout per stage and complexity', async () => {
+    const plannerSetTimeout = vi.fn()
+    const executorSetTimeout = vi.fn()
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          setTimeoutMs: plannerSetTimeout,
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          setTimeoutMs: executorSetTimeout,
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-timeout-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.worktrees'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, '.gitignore'), '.worktrees/*\n', 'utf-8')
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md .gitignore', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [domain_partition]\n    execution_timeout:\n      default_ms: 600000\n      min_ms: 300000\n      max_ms: 3600000\n      complexity_multiplier:\n        simple: 1\n        standard: 2\n        complex: 3\n      stage_overrides_ms:\n        domain_partition: 600000\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Apply dynamic execution timeout',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+      complexity: 'complex',
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(plannerSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(executorSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(events).toContain('"event":"stage_entered"')
+    expect(events).toContain('"stage":"domain_partition"')
+    expect(events).toContain('"timeoutMs":1800000')
+  })
+
+  it('keeps the stored complexity tier when resuming without an override', async () => {
+    const plannerSetTimeout = vi.fn()
+    const executorSetTimeout = vi.fn()
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          setTimeoutMs: plannerSetTimeout,
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          setTimeoutMs: executorSetTimeout,
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-timeout-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [domain_partition]\n    execution_timeout:\n      default_ms: 600000\n      min_ms: 300000\n      max_ms: 3600000\n      complexity_multiplier:\n        simple: 1\n        standard: 2\n        complex: 3\n      stage_overrides_ms:\n        domain_partition: 600000\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    const sessionId = 'resume-timeout-tier'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    await stateManager.saveLoopSession({
+      id: sessionId,
+      title: 'Resume timeout tier',
+      goal: 'Resume timeout tier',
+      prdPath,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['domain_partition'],
+      plan: [{
+        id: 'task-1',
+        stage: 'domain_partition',
+        title: 'domain_partition',
+        description: 'Execute domain partition',
+        dependencies: [],
+        successCriteria: ['Stage completed'],
+      }],
+      stageResults: [],
+      humanConfirmations: [],
+      selectedComplexity: 'complex',
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        workspaceMode: 'current',
+        workspacePath: dir,
+      },
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(plannerSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(executorSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(events).toContain('"timeoutMs":1800000')
+  })
+
+  it('backfills complex timeout tier for legacy worktree sessions on resume', async () => {
+    const plannerSetTimeout = vi.fn()
+    const executorSetTimeout = vi.fn()
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          setTimeoutMs: plannerSetTimeout,
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          setTimeoutMs: executorSetTimeout,
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-resume-timeout-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [domain_partition]\n    execution_timeout:\n      default_ms: 600000\n      min_ms: 300000\n      max_ms: 3600000\n      complexity_multiplier:\n        simple: 1\n        standard: 2\n        complex: 3\n      stage_overrides_ms:\n        domain_partition: 600000\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    const sessionId = 'legacy-resume-timeout-tier'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    await stateManager.saveLoopSession({
+      id: sessionId,
+      title: 'Legacy resume timeout tier',
+      goal: 'Legacy resume timeout tier',
+      prdPath,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['domain_partition'],
+      plan: [{
+        id: 'task-1',
+        stage: 'domain_partition',
+        title: 'domain_partition',
+        description: 'Execute domain partition',
+        dependencies: [],
+        successCriteria: ['Stage completed'],
+      }],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(dir, '.worktrees', 'legacy', 'human_confirmation.md'),
+        workspaceMode: 'worktree',
+        workspacePath: join(dir, '.worktrees', 'legacy'),
+        worktreeBranch: 'sch/legacy-timeout',
+      },
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(plannerSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(executorSetTimeout).toHaveBeenCalledWith(1800000)
+    expect(result.result.session?.selectedComplexity).toBe('complex')
+    expect(events).toContain('"timeoutMs":1800000')
+  })
+
   it('persists a completed loop session even if knowledge promotion fails', async () => {
     knowledgeMocks.failPromote = true
 

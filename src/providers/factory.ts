@@ -110,6 +110,7 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
     return new ClaudeCodeProvider({
       apiKey: '',
       model: selectedModel,
+      timeoutMs: options?.timeoutMs,
     })
   }
 
@@ -118,6 +119,7 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
     return new CodexCliProvider({
       apiKey: '',
       model: selectedModel,
+      timeoutMs: options?.timeoutMs,
     })
   }
 
@@ -126,6 +128,7 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
     return new ClawProvider({
       apiKey: '',
       model: selectedModel,
+      timeoutMs: options?.timeoutMs,
     })
   }
 
@@ -134,12 +137,16 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
     return new GeminiCliProvider({
       apiKey: '',
       model: selectedModel,
+      timeoutMs: options?.timeoutMs,
     })
   }
 
   // Qwen Code CLI doesn't need API key config (uses OAuth)
   if (providerName === 'qwen-code') {
-    return new QwenCodeProvider()
+    return new QwenCodeProvider({
+      apiKey: '',
+      timeoutMs: options?.timeoutMs,
+    })
   }
 
   // Kiro CLI doesn't need API key config (uses AWS subscription)
@@ -150,6 +157,7 @@ export function createProvider(model: string, config: MagpieConfig, options?: Pa
       logicalName: options?.logicalName,
       tool: options?.tool,
       agent: options?.agent,
+      timeoutMs: options?.timeoutMs,
     })
   }
 

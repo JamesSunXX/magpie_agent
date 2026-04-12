@@ -12,10 +12,12 @@ import type {
   ModelRouteBinding,
   TrdConfig,
   HarnessConfig,
+  LoopExecutionTimeoutConfig,
+  LoopStageName,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 8
+export const CURRENT_CONFIG_VERSION = 9
 
 export interface ConfigVersionStatus {
   path: string
@@ -272,6 +274,53 @@ function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Re
   })
 }
 
+function validatePositiveNumber(name: string, value: number | undefined): void {
+  if (value === undefined) return
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Config error: ${name} must be a positive number`)
+  }
+}
+
+function validateLoopExecutionTimeout(timeout: LoopExecutionTimeoutConfig | undefined): void {
+  if (!timeout) return
+
+  validatePositiveNumber('capabilities.loop.execution_timeout.default_ms', timeout.default_ms)
+  validatePositiveNumber('capabilities.loop.execution_timeout.min_ms', timeout.min_ms)
+  validatePositiveNumber('capabilities.loop.execution_timeout.max_ms', timeout.max_ms)
+
+  if (
+    timeout.min_ms !== undefined
+    && timeout.max_ms !== undefined
+    && timeout.min_ms > timeout.max_ms
+  ) {
+    throw new Error('Config error: capabilities.loop.execution_timeout.min_ms must be <= max_ms')
+  }
+
+  const multipliers = timeout.complexity_multiplier
+  if (multipliers) {
+    validatePositiveNumber('capabilities.loop.execution_timeout.complexity_multiplier.simple', multipliers.simple)
+    validatePositiveNumber('capabilities.loop.execution_timeout.complexity_multiplier.standard', multipliers.standard)
+    validatePositiveNumber('capabilities.loop.execution_timeout.complexity_multiplier.complex', multipliers.complex)
+  }
+
+  const stageOverrides = timeout.stage_overrides_ms
+  if (!stageOverrides) {
+    return
+  }
+
+  const stages: LoopStageName[] = [
+    'prd_review',
+    'domain_partition',
+    'trd_generation',
+    'code_development',
+    'unit_mock_test',
+    'integration_test',
+  ]
+  for (const stage of stages) {
+    validatePositiveNumber(`capabilities.loop.execution_timeout.stage_overrides_ms.${stage}`, stageOverrides[stage])
+  }
+}
+
 function isLegacyConfig(config: Record<string, unknown>): boolean {
   return !('capabilities' in config) && !('integrations' in config)
 }
@@ -321,6 +370,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
+  validateLoopExecutionTimeout(config.capabilities.loop?.execution_timeout)
 }
 
 export function loadConfig(configPath?: string): MagpieConfigV2 {

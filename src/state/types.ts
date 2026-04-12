@@ -177,6 +177,7 @@ export interface LoopSession {
   lastFailureReason?: string
   branchName?: string
   routingTier?: ComplexityTier
+  selectedComplexity?: ComplexityTier
   artifacts: {
     sessionDir: string
     eventsPath: string
