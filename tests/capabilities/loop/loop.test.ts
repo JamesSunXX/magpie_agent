@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
@@ -1626,5 +1626,143 @@ process.exit(result.status ?? 1)
     expect(artifact).toContain('unit-safe')
     expect(artifact).toContain('## Mock Test (echo mock-safe)')
     expect(artifact).toContain('mock-safe')
+  })
+
+  it('writes a workflow_defect failure record when resume checkpoint validation fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-failure-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [code_development]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', 'loop-resume-bad')
+    mkdirSync(sessionDir, { recursive: true })
+    await stateManager.saveLoopSession({
+      id: 'loop-resume-bad',
+      title: 'Loop resume failure',
+      goal: 'Resume loop safely',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'running',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      redTestConfirmed: true,
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(sessionDir, 'human_confirmation.md'),
+      },
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId: 'loop-resume-bad',
+      waitHuman: false,
+    }, ctx)
+
+    const failureDir = join(sessionDir, 'failures')
+    const failureFiles = readdirSync(failureDir)
+    const failure = JSON.parse(readFileSync(join(failureDir, failureFiles[0]!), 'utf-8')) as {
+      category: string
+      reason: string
+    }
+
+    expect(result.result.status).toBe('paused')
+    expect(failure.category).toBe('workflow_defect')
+    expect(failure.reason).toContain('no reliable checkpoint')
+  })
+
+  it('writes a failure record when a stage crashes', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.5,"risks":["boom"],"requireHumanConfirmation":false,"summary":"stage failed"}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            throw new Error('stage executor crashed hard')
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-failure-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Crash the stage',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const failureDir = join(result.result.session!.artifacts.sessionDir, 'failures')
+    const failureFiles = readdirSync(failureDir)
+    const failure = JSON.parse(readFileSync(join(failureDir, failureFiles[0]!), 'utf-8')) as {
+      category: string
+      reason: string
+    }
+
+    expect(result.result.status).toBe('failed')
+    expect(failure.category).toBe('unknown')
+    expect(failure.reason).toContain('stage executor crashed hard')
+  })
+
+  it('lists saved loop sessions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-list-'))
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession({
+      id: 'loop-listed',
+      title: 'Listed session',
+      goal: 'Show saved sessions',
+      prdPath: join(dir, 'docs', 'prd.md'),
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'completed',
+      currentStageIndex: 0,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: join(dir, '.magpie', 'sessions', 'loop', 'loop-listed'),
+        eventsPath: join(dir, '.magpie', 'sessions', 'loop', 'loop-listed', 'events.jsonl'),
+        planPath: join(dir, '.magpie', 'sessions', 'loop', 'loop-listed', 'plan.json'),
+        humanConfirmationPath: join(dir, '.magpie', 'sessions', 'loop', 'loop-listed', 'human_confirmation.md'),
+      },
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir })
+    const result = await runCapability(loopCapability, { mode: 'list' }, ctx)
+
+    expect(result.result.status).toBe('listed')
+    expect(result.result.sessions?.some((session) => session.id === 'loop-listed')).toBe(true)
   })
 })

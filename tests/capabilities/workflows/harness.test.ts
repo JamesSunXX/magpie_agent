@@ -2240,6 +2240,62 @@ describe('reportHarness logging levels', () => {
     errorSpy.mockRestore()
     infoSpy.mockRestore()
   })
+
+  it('writes a harness failure record when the inner loop fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-failure-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const loopFailurePath = join(dir, 'loop-failure.json')
+    writeFileSync(loopFailurePath, JSON.stringify({
+      signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+      reason: 'Cannot safely resume because no reliable checkpoint was recorded.',
+    }, null, 2), 'utf-8')
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'failed',
+            session: {
+              id: 'loop-failed',
+              status: 'failed',
+              artifacts: {
+                eventsPath: join(dir, 'loop-events.jsonl'),
+                lastFailurePath: loopFailurePath,
+              },
+            },
+          },
+          output: { summary: 'loop failed' } as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'Handle inner loop failure',
+      prdPath: join(dir, 'docs', 'prd.md'),
+      maxCycles: 1,
+    }, ctx)
+    const result = await executeHarness(prepared, ctx)
+
+    const failureFiles = readdirSync(result.session!.artifacts.failureLogDir!)
+    const failure = JSON.parse(readFileSync(join(result.session!.artifacts.failureLogDir!, failureFiles[0]!), 'utf-8')) as {
+      metadata: Record<string, unknown>
+    }
+
+    expect(result.status).toBe('failed')
+    expect(failure.metadata.relatedFailureSignature).toBe('loop|code_development|workflow_defect|resume-checkpoint')
+  })
 })
 
 describe('summarizeHarness', () => {

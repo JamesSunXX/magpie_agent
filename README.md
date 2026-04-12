@@ -96,6 +96,8 @@ magpie memory show --project
 
 `trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
 
+失败职责现在也固定下来了：`loop` 负责判断自己内部阶段失败，`harness` 负责补齐整个交付流程的外层失败，`harness-server` 只负责后台托管、重试和服务级恢复。三者都会把失败细节落到各自会话目录下的 `failures/`，并把仓库级聚合写到 `.magpie/failure-index.json`，排查时先看会话目录，再看仓库索引。
+
 从源码运行：
 
 ```bash

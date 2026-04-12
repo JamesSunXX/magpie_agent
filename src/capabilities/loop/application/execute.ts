@@ -27,8 +27,10 @@ import {
   extractPlanningItemKey,
 } from '../../../platform/integrations/planning/index.js'
 import {
+  appendWorkflowFailure,
   buildCommandSafetyConfig,
   runSafeCommand,
+  resolveWorkflowFailureArtifacts,
 } from '../../workflows/shared/runtime.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
@@ -876,6 +878,18 @@ async function markSessionFailed(
   }
   session.status = 'failed'
   session.updatedAt = new Date()
+  await recordLoopFailure(session, stage, runCwd, stateManager, {
+    reason,
+    rawError: reason,
+    evidencePaths: [
+      session.artifacts.eventsPath,
+      session.artifacts.greenTestResultPath,
+      session.artifacts.redTestResultPath,
+      session.artifacts.repairEvidencePath,
+      session.artifacts.repairOpenIssuesPath,
+    ].filter((path): path is string => Boolean(path)),
+    lastReliablePoint: session.lastReliablePoint,
+  }, progressObserver)
   await updateLoopState(session, {
     currentStage: stage,
     lastReliableResult: `Stage ${stage} failed.`,
@@ -935,6 +949,39 @@ async function markSessionFailed(
     summary: `Loop failed at stage ${stage}. Session: ${session.id}. Reason: ${reason}`,
     session,
   }
+}
+
+async function recordLoopFailure(
+  session: LoopSession,
+  stage: LoopStageName,
+  cwd: string,
+  stateManager: StateManager,
+  input: {
+    reason: string
+    rawError?: string
+    evidencePaths: string[]
+    lastReliablePoint?: string
+    retryableHint?: boolean
+    metadata?: Record<string, unknown>
+  },
+  progressObserver?: LoopProgressObserver,
+): Promise<void> {
+  const failure = await appendWorkflowFailure(cwd, {
+    sessionId: session.id,
+    capability: 'loop',
+    stage,
+    reason: input.reason,
+    rawError: input.rawError,
+    evidencePaths: input.evidencePaths,
+    lastReliablePoint: input.lastReliablePoint,
+    retryableHint: input.retryableHint,
+    metadata: input.metadata,
+  })
+  session.artifacts.failureLogDir = resolveWorkflowFailureArtifacts(cwd, 'loop', session.id).failureLogDir
+  session.artifacts.failureIndexPath = failure.indexPath
+  session.artifacts.lastFailurePath = failure.recordPath
+  session.lastFailureReason = input.reason
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
 }
 
 async function finalizeLoopKnowledge(
@@ -1473,6 +1520,21 @@ async function continueSession(
           session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
           session.updatedAt = new Date()
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+          await recordLoopFailure(session, stage, runCwd, stateManager, {
+            reason: summary,
+            rawError: redTestRun.output,
+            evidencePaths: [
+              session.artifacts.redTestResultPath,
+              repairArtifacts.openIssuesPath,
+              repairArtifacts.evidencePath,
+              session.artifacts.eventsPath,
+            ].filter((path): path is string => Boolean(path)),
+            lastReliablePoint: session.lastReliablePoint,
+            metadata: {
+              failureKind: redTestRun.failureKind,
+              attemptNumber: repairState.executionRetryCount,
+            },
+          }, progressObserver)
           await appendObservedEvent(session.artifacts.eventsPath, session.id, {
             event: 'red_test_execution_retry_required',
             stage,
@@ -1728,6 +1790,22 @@ async function continueSession(
         session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
         session.updatedAt = new Date()
         await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+        await recordLoopFailure(session, stage, runCwd, stateManager, {
+          reason: summary,
+          rawError: greenTestResult.output,
+          evidencePaths: [
+            session.artifacts.greenTestResultPath,
+            repairArtifacts.openIssuesPath,
+            repairArtifacts.evidencePath,
+            session.artifacts.eventsPath,
+          ].filter((path): path is string => Boolean(path)),
+          lastReliablePoint: session.lastReliablePoint,
+          retryableHint: greenTestResult.failureKind === 'execution',
+          metadata: {
+            failureKind: greenTestResult.failureKind,
+            attemptNumber,
+          },
+        }, progressObserver)
         await appendObservedEvent(session.artifacts.eventsPath, session.id, {
           event: greenTestResult.failureKind === 'quality' ? 'repair_required' : 'execution_retry_required',
           stage,
@@ -2024,6 +2102,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       eventsPath,
       planPath,
       humanConfirmationPath,
+      ...resolveWorkflowFailureArtifacts(ctx.cwd, 'loop', sessionId),
       ...knowledgeArtifacts,
       ...(routingDecision ? { routingDecisionPath } : {}),
     },
@@ -2201,6 +2280,19 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     session.lastFailureReason = resumeCheckpointError
     session.updatedAt = new Date()
     await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+    await recordLoopFailure(session, session.stages[session.currentStageIndex] || 'code_development', session.artifacts.workspacePath || ctx.cwd, stateManager, {
+      reason: resumeCheckpointError,
+      rawError: resumeCheckpointError,
+      evidencePaths: [
+        session.artifacts.eventsPath,
+        session.artifacts.greenTestResultPath,
+        session.artifacts.redTestResultPath,
+      ].filter((path): path is string => Boolean(path)),
+      lastReliablePoint: session.lastReliablePoint,
+      metadata: {
+        checkpointMissing: true,
+      },
+    }, progressObserver)
     await appendObservedEvent(session.artifacts.eventsPath, session.id, {
       event: 'resume_blocked_invalid_checkpoint',
       stage: session.stages[session.currentStageIndex] || 'unknown',

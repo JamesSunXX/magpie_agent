@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { classifyStructuredTestResult } from '../../../src/capabilities/loop/domain/test-execution.js'
+import {
+  classifyStructuredTestResult,
+  classifyStructuredTestFailureCategory,
+} from '../../../src/capabilities/loop/domain/test-execution.js'
 
 describe('loop structured test execution', () => {
   it('classifies ordinary failed tests as quality failures', () => {
@@ -29,5 +32,29 @@ describe('loop structured test execution', () => {
     })
 
     expect(classified.failureKind).toBe('execution')
+  })
+
+  it('maps structured execution failures onto failure categories used by the shared classifier', () => {
+    const timeout = classifyStructuredTestResult({
+      command: 'npm run test:run',
+      startedAt: '2026-04-12T00:00:00.000Z',
+      finishedAt: '2026-04-12T00:00:01.000Z',
+      exitCode: 1,
+      status: 'failed',
+      output: 'spawnSync npm ETIMEDOUT',
+      blocked: false,
+    })
+    const quality = classifyStructuredTestResult({
+      command: 'npm run test:run',
+      startedAt: '2026-04-12T00:00:00.000Z',
+      finishedAt: '2026-04-12T00:00:01.000Z',
+      exitCode: 1,
+      status: 'failed',
+      output: 'FAIL formatAmount formats values correctly',
+      blocked: false,
+    })
+
+    expect(classifyStructuredTestFailureCategory(timeout)).toBe('transient')
+    expect(classifyStructuredTestFailureCategory(quality)).toBe('quality')
   })
 })

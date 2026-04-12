@@ -9,9 +9,9 @@
 | 评审 | `magpie review` | `src/cli/commands/review.ts`、`src/capabilities/review/` | 支持 PR、本地改动、分支、文件、仓库级扫描 |
 | 讨论 | `magpie discuss` | `src/cli/commands/discuss.ts`、`src/capabilities/discuss/` | 多模型讨论，可选对抗视角 |
 | TRD 生成 | `magpie trd` | `src/cli/commands/trd.ts`、`src/capabilities/trd/` | 从 PRD Markdown 生成 TRD，并在仓库 `.magpie/constraints.json` 落一份可机读约束 |
-| 闭环执行 | `magpie loop run|resume|inspect|list` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 支持 `--host foreground|tmux`，可查看知识摘要；进入开发前会先过约束卡点；对适合的小任务会先确认失败测试，再继续实现；测试没过时会区分“继续修”和“执行事故”，按小次数重试后再停到人工介入；阶段评估结果如果只是格式没读出来，会优先自动兜底继续，不再把这类格式问题误挂到人工确认；复杂任务需要独立工作区时会自动准备本地 `.worktrees/` 并写入本地 Git 忽略；自动提交默认用 AI 生成中文提交信息，可用 `capabilities.loop.auto_commit_model` 覆盖模型；开启通知后会按阶段发摘要消息；`capabilities.loop.execution_timeout` 可按任务复杂度调整执行超时 |
-| Harness | `magpie harness submit|resume|status|attach|inspect|list` | `src/cli/commands/harness.ts`、`src/capabilities/workflows/harness/` | 需求到交付的闭环入口；支持 `--host foreground|tmux`；后台服务运行时，`submit` 会入队而不是立刻前台执行；前台 `submit` 被 `Ctrl+C` 或系统终止打断时，会先把会话改成可恢复状态再退出；默认评审人和每轮附加检查工具都可通过 `capabilities.harness` 配置，未配置时回退到内置默认值；恢复时会跳过已完成的开发阶段或评审轮次；如果内层 loop 是因为等人工处理而暂停，外层 Harness 也会保持在当前阶段暂停，不再直接记成失败，此时可直接用 `resume` 接着跑；开启通知后会按外层阶段发摘要消息 |
-| Harness 后台服务 | `magpie harness-server start|status|stop` | `src/cli/commands/harness-server.ts`、`src/capabilities/workflows/harness-server/` | 常驻队列宿主；负责接单、串行执行当前仓库任务、失败重试和服务重启后的会话恢复；中断中的任务会重新入队并从上一个已保存节点继续 |
+| 闭环执行 | `magpie loop run|resume|inspect|list` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 支持 `--host foreground|tmux`，可查看知识摘要；进入开发前会先过约束卡点；对适合的小任务会先确认失败测试，再继续实现；测试没过时会区分“继续修”和“执行事故”，按小次数重试后再停到人工介入；阶段评估结果如果只是格式没读出来，会优先自动兜底继续，不再把这类格式问题误挂到人工确认；复杂任务需要独立工作区时会自动准备本地 `.worktrees/` 并写入本地 Git 忽略；自动提交默认用 AI 生成中文提交信息，可用 `capabilities.loop.auto_commit_model` 覆盖模型；开启通知后会按阶段发摘要消息；`capabilities.loop.execution_timeout` 可按任务复杂度调整执行超时；内部阶段失败会落到当前 loop 会话的 `failures/` 目录，并同步聚合到仓库 `.magpie/failure-index.json` |
+| Harness | `magpie harness submit|resume|status|attach|inspect|list` | `src/cli/commands/harness.ts`、`src/capabilities/workflows/harness/` | 需求到交付的闭环入口；支持 `--host foreground|tmux`；后台服务运行时，`submit` 会入队而不是立刻前台执行；前台 `submit` 被 `Ctrl+C` 或系统终止打断时，会先把会话改成可恢复状态再退出；默认评审人和每轮附加检查工具都可通过 `capabilities.harness` 配置，未配置时回退到内置默认值；恢复时会跳过已完成的开发阶段或评审轮次；如果内层 loop 是因为等人工处理而暂停，外层 Harness 也会保持在当前阶段暂停，不再直接记成失败，此时可直接用 `resume` 接着跑；开启通知后会按外层阶段发摘要消息；外层 workflow 失败会写进当前 harness 会话的 `failures/`，并保留内层 loop 失败签名用于聚合 |
+| Harness 后台服务 | `magpie harness-server start|status|stop` | `src/cli/commands/harness-server.ts`、`src/capabilities/workflows/harness-server/` | 常驻队列宿主；负责接单、串行执行当前仓库任务、失败重试和服务重启后的会话恢复；中断中的任务会重新入队并从上一个已保存节点继续；服务级异常会先统一分类，再决定是等待重试、直接失败还是转人工阻塞，相关记录仍会写回对应 harness 会话或仓库级失败索引 |
 | Workflow | `magpie workflow issue-fix|docs-sync|harness|post-merge-regression` | `src/cli/commands/workflow.ts`、`src/capabilities/workflows/` | `workflow harness` 为兼容入口，`docs-sync` 依赖当前可用配置 |
 | 记忆 | `magpie memory show|edit|promote` | `src/cli/commands/memory.ts`、`src/knowledge/`、`src/memory/` | 查看、编辑、提炼长期记忆 |
 | TUI | `magpie tui` | `src/cli/commands/tui.ts`、`src/tui/` | 任务工作台 |
@@ -19,6 +19,12 @@
 | 统计 | `magpie stats` | `src/cli/commands/stats.ts`、`src/capabilities/stats/` | 当前仍偏轻量 |
 
 `trd`、`loop`、`harness` 以及 workflow 会话默认落到当前仓库 `.magpie/sessions/<capability>/<sessionId>/`；`harness-server` 额外把后台状态写到 `.magpie/harness-server/state.json`；长期记忆和仓库级知识仍走全局 `~/.magpie/`。
+
+统一失败账本约定：
+
+- 会话级失败记录：`.magpie/sessions/<capability>/<sessionId>/failures/*.json`
+- 仓库级聚合：`.magpie/failure-index.json`
+- 查看顺序：先看具体会话 `failures/`，再看仓库级索引里的重复模式和恢复候选
 
 ## 支撑模块
 

@@ -13,13 +13,16 @@ import { getRepoMagpieDir } from '../../../platform/paths.js'
 import { createOperationsProviders } from '../../../platform/integrations/operations/factory.js'
 import { TmuxOperationsProvider } from '../../../platform/integrations/operations/providers/tmux.js'
 import {
+  appendWorkflowFailure,
   appendWorkflowEvent,
   generateWorkflowId,
   listWorkflowSessions,
   loadWorkflowSession,
   persistWorkflowSession,
+  resolveWorkflowFailureArtifacts,
   type WorkflowSession,
 } from '../shared/runtime.js'
+import { runFailureDiagnostics } from '../../../core/failures/diagnostics.js'
 
 export interface HarnessServerState {
   serverId: string
@@ -108,17 +111,6 @@ function normalizeHarnessPriority(priority: HarnessPriority | undefined): Harnes
 
 function sessionPriority(session: WorkflowSession): HarnessPriority {
   return normalizeHarnessPriority(toQueuedEvidence(session)?.input.priority)
-}
-
-function isRetryableHarnessError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
-  return message.includes('timeout')
-    || message.includes('timed out')
-    || message.includes('disconnect')
-    || message.includes('econnreset')
-    || message.includes('tls')
-    || message.includes('429')
-    || message.includes('rate limit')
 }
 
 function nextRetryAt(delayMs = 15_000): string {
@@ -222,6 +214,7 @@ export async function enqueueHarnessSession(cwd: string, input: HarnessInput, op
     artifacts: {
       repoRootPath: cwd,
       eventsPath,
+      ...resolveWorkflowFailureArtifacts(cwd, 'harness', id),
     },
     evidence: makeQueuedEvidence(normalizedInput, options?.configPath),
   }
@@ -334,11 +327,29 @@ export async function runHarnessServerOnce(input: {
 
   const queued = toQueuedEvidence(next)
   if (!queued) {
+    const failure = await appendWorkflowFailure(input.cwd, {
+      capability: 'harness-server',
+      sessionId: next.id,
+      stage: next.currentStage || 'queued',
+      reason: 'Harness session is missing queued input metadata.',
+      rawError: 'missing queued input metadata',
+      evidencePaths: [next.artifacts.eventsPath].filter((path): path is string => Boolean(path)),
+      lastReliablePoint: 'queued',
+      metadata: {
+        checkpointMissing: true,
+      },
+    })
     await persistWorkflowSession(input.cwd, {
       ...next,
       status: 'blocked',
       updatedAt: new Date(),
       summary: 'Harness session is missing queued input metadata.',
+      artifacts: {
+        ...next.artifacts,
+        failureLogDir: resolveWorkflowFailureArtifacts(input.cwd, 'harness', next.id).failureLogDir,
+        failureIndexPath: failure.indexPath,
+        lastFailurePath: failure.recordPath,
+      },
     })
     await updateServerHeartbeat(input.cwd, { currentSessionId: undefined, status: 'running' })
     return {
@@ -381,42 +392,81 @@ export async function runHarnessServerOnce(input: {
       status: execution.result.status,
     }
   } catch (error) {
-    const retryable = isRetryableHarnessError(error)
+    const failure = await appendWorkflowFailure(input.cwd, {
+      capability: 'harness-server',
+      sessionId: next.id,
+      stage: next.currentStage || 'queued',
+      reason: `Harness execution failed: ${error instanceof Error ? error.message : String(error)}`,
+      rawError: error instanceof Error ? error.stack || error.message : String(error),
+      evidencePaths: [next.artifacts.eventsPath].filter((path): path is string => Boolean(path)),
+      lastReliablePoint: queued.runtime.lastReliablePoint,
+      metadata: {
+        retryCount: queued.runtime.retryCount + 1,
+        sessionStage: next.currentStage,
+      },
+    })
+    const action = failure.record.recoveryAction || 'block_for_human'
+    const diagnostics = action === 'run_diagnostics'
+      ? await runFailureDiagnostics({
+        configPath: queued.configPath || input.configPath,
+        metadataPath: next.artifacts.eventsPath,
+        requiredPaths: [input.cwd, queued.input.prdPath],
+      })
+      : null
+    const status = action === 'retry_same_step' || action === 'retry_with_backoff'
+      ? 'waiting_retry'
+      : action === 'run_diagnostics'
+        ? (diagnostics?.hasBlockingIssues ? 'blocked' : 'failed')
+        : action === 'block_for_human'
+          ? 'blocked'
+          : 'failed'
     const updatedRetryCount = queued.runtime.retryCount + 1
     await persistWorkflowSession(input.cwd, {
       ...next,
-      status: retryable ? 'waiting_retry' : 'failed',
+      status,
       updatedAt: new Date(),
-      summary: retryable
+      summary: status === 'waiting_retry'
         ? 'Harness execution failed with a retryable error; waiting to retry.'
-        : `Harness execution failed: ${error instanceof Error ? error.message : String(error)}`,
+        : status === 'blocked'
+          ? `Harness execution failed and is blocked for inspection: ${error instanceof Error ? error.message : String(error)}`
+          : `Harness execution failed: ${error instanceof Error ? error.message : String(error)}`,
       evidence: {
         ...queued,
         runtime: {
           ...queued.runtime,
           retryCount: updatedRetryCount,
           lastError: error instanceof Error ? error.message : String(error),
-          lastReliablePoint: retryable ? 'waiting_retry' : 'failed',
-          ...(retryable ? { nextRetryAt: nextRetryAt() } : {}),
+          lastReliablePoint: status === 'waiting_retry' ? 'waiting_retry' : 'failed',
+          ...(status === 'waiting_retry' ? { nextRetryAt: nextRetryAt() } : {}),
         },
+      },
+      artifacts: {
+        ...next.artifacts,
+        failureLogDir: resolveWorkflowFailureArtifacts(input.cwd, 'harness', next.id).failureLogDir,
+        failureIndexPath: failure.indexPath,
+        lastFailurePath: failure.recordPath,
       },
     })
     await appendWorkflowEvent(input.cwd, 'harness', next.id, {
       timestamp: new Date(),
-      type: retryable ? 'waiting_retry' : 'workflow_failed',
+      type: status === 'waiting_retry' ? 'waiting_retry' : 'workflow_failed',
       stage: next.currentStage,
-      summary: retryable
+      summary: status === 'waiting_retry'
         ? 'Harness execution failed and is waiting to retry.'
-        : 'Harness execution failed.',
+        : status === 'blocked'
+          ? 'Harness execution failed and is blocked.'
+          : 'Harness execution failed.',
       details: {
         error: error instanceof Error ? error.message : String(error),
+        recoveryAction: action,
+        ...(diagnostics ? { diagnostics } : {}),
       },
     })
     await updateServerHeartbeat(input.cwd, { currentSessionId: undefined, status: 'running' })
     return {
       processed: true,
       sessionId: next.id,
-      status: retryable ? 'waiting_retry' : 'failed',
+      status: status === 'waiting_retry' ? 'waiting_retry' : status === 'blocked' ? 'failed' : 'failed',
     }
   } finally {
     if (previousSessionId === undefined) {

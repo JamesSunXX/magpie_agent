@@ -3,6 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  appendWorkflowFailure,
   appendWorkflowEvent,
   buildCommandSafetyConfig,
   classifyDangerousCommand,
@@ -139,6 +140,27 @@ describe('workflow shared runtime helpers', () => {
     const raw = readFileSync(eventsPath, 'utf-8').trim()
     expect(raw).toContain('"type":"workflow_started"')
     expect(raw).toContain('"stage":"queued"')
+  })
+
+  it('persists workflow failure artifacts through the shared helper', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-failures-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-failures-cwd-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const result = await appendWorkflowFailure(cwd, {
+      capability: 'harness',
+      sessionId: 'harness-a',
+      stage: 'reviewing',
+      reason: 'Review cycle timed out',
+      rawError: 'spawnSync codex ETIMEDOUT',
+      evidencePaths: ['/tmp/review.json'],
+      lastReliablePoint: 'review_completed',
+    })
+
+    expect(result.record.category).toBe('transient')
+    expect(result.recordPath).toContain('/failures/')
+    expect(result.indexPath).toBe(join(cwd, '.magpie', 'failure-index.json'))
+    expect(readFileSync(result.indexPath, 'utf-8')).toContain('"count": 1')
   })
 
   it('parses shell-safe command arguments and rejects unsafe input', () => {

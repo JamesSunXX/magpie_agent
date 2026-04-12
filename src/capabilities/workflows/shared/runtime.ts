@@ -2,8 +2,13 @@ import { appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { closeSync, openSync, readSync, writeSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
-import { getRepoCapabilitySessionsDir, getRepoSessionDir } from '../../../platform/paths.js'
+import { randomBytes } from 'crypto'
+import { getRepoCapabilitySessionsDir, getRepoMagpieDir, getRepoSessionDir } from '../../../platform/paths.js'
 import type { SafetyConfig } from '../../../platform/config/types.js'
+import { appendFailureRecord, getFailureOccurrenceCount } from '../../../core/failures/ledger.js'
+import { buildFailureSignature, classifyFailureCategory } from '../../../core/failures/classifier.js'
+import { decideRecovery } from '../../../core/failures/recovery-policy.js'
+import type { FailureFactInput, FailureRecord } from '../../../core/failures/types.js'
 
 export type WorkflowCapability =
   | 'issue-fix'
@@ -30,6 +35,9 @@ export interface WorkflowSession {
   currentStage?: string
   summary: string
   artifacts: Record<string, string> & {
+    failureLogDir?: string
+    failureIndexPath?: string
+    lastFailurePath?: string
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string
@@ -80,6 +88,27 @@ export function generateWorkflowId(prefix: string): string {
 
 export function sessionDirFor(cwd: string, capability: WorkflowCapability, id: string): string {
   return getRepoSessionDir(cwd, capability, id)
+}
+
+export function resolveWorkflowFailureArtifacts(
+  cwd: string,
+  capability: FailureFactInput['capability'],
+  sessionId?: string
+): {
+  sessionDir?: string
+  failureLogDir: string
+  failureIndexPath: string
+} {
+  const repoMagpieDir = getRepoMagpieDir(cwd)
+  const sessionCapability = capability === 'harness-server' ? 'harness' : capability
+  const sessionDir = sessionId ? getRepoSessionDir(cwd, sessionCapability, sessionId) : undefined
+  return {
+    ...(sessionDir ? { sessionDir } : {}),
+    failureLogDir: sessionDir
+      ? join(sessionDir, 'failures')
+      : join(repoMagpieDir, 'harness-server', 'failures'),
+    failureIndexPath: join(repoMagpieDir, 'failure-index.json'),
+  }
 }
 
 export async function persistWorkflowSession(cwd: string, session: WorkflowSession): Promise<void> {
@@ -152,6 +181,58 @@ export async function appendWorkflowEvent(
   await mkdir(dir, { recursive: true })
   await appendFile(eventsPath, `${JSON.stringify(event)}\n`, 'utf-8')
   return eventsPath
+}
+
+export async function appendWorkflowFailure(
+  cwd: string,
+  fact: FailureFactInput
+): Promise<{
+  record: FailureRecord
+  recordPath: string
+  indexPath: string
+}> {
+  const category = classifyFailureCategory(fact)
+  const signature = buildFailureSignature({
+    capability: fact.capability,
+    stage: fact.stage,
+    category,
+    reason: fact.reason,
+    rawError: fact.rawError,
+  })
+  const occurrenceCount = await getFailureOccurrenceCount(cwd, signature) + 1
+  const decision = decideRecovery({
+    category,
+    occurrenceCount,
+    retryableHint: fact.retryableHint,
+  })
+  const record: FailureRecord = {
+    id: randomBytes(6).toString('hex'),
+    sessionId: fact.sessionId,
+    capability: fact.capability,
+    stage: fact.stage,
+    timestamp: new Date().toISOString(),
+    signature,
+    category,
+    reason: fact.reason,
+    retryable: decision.retryable,
+    selfHealCandidate: decision.candidateForSelfRepair,
+    lastReliablePoint: fact.lastReliablePoint,
+    evidencePaths: fact.evidencePaths,
+    metadata: fact.metadata || {},
+    recoveryAction: decision.action,
+  }
+  const paths = resolveWorkflowFailureArtifacts(cwd, fact.capability, fact.sessionId)
+  const persisted = await appendFailureRecord({
+    repoRoot: cwd,
+    record,
+    sessionDir: paths.sessionDir,
+    serverFailureDir: fact.sessionId ? undefined : paths.failureLogDir,
+  })
+  return {
+    record,
+    recordPath: persisted.recordPath,
+    indexPath: persisted.indexPath,
+  }
 }
 
 export function parseCommandArgs(command: string): string[] {

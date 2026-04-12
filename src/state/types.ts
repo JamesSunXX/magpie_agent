@@ -192,6 +192,9 @@ export interface LoopSession {
     tmuxSession?: string
     tmuxWindow?: string
     tmuxPane?: string
+    failureLogDir?: string
+    failureIndexPath?: string
+    lastFailurePath?: string
     constraintsSnapshotPath?: string
     tddTargetPath?: string
     redTestResultPath?: string
