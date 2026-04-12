@@ -10,6 +10,29 @@ const stateManagerMethods = vi.hoisted(() => ({
   saveFeatureAnalysis: vi.fn(async () => undefined),
   saveSession: vi.fn(async () => undefined),
   loadSession: vi.fn(async () => null),
+  saveReviewRoundCheckpoint: vi.fn(async () => undefined),
+  listReviewRoundCheckpoints: vi.fn(async () => [
+    {
+      schemaVersion: 1,
+      sessionId: 'session-1',
+      roundNumber: 1,
+      featureId: 'services',
+      featureName: 'Services',
+      status: 'completed',
+      origin: 'live',
+      focusAreas: ['security'],
+      filePaths: ['services/app.py'],
+      reviewerOutputs: [],
+      result: {
+        featureId: 'services',
+        issues: [],
+        summary: 'No issues',
+        reviewedAt: new Date(),
+      },
+      completedAt: new Date(),
+    },
+  ]),
+  getReviewStateDir: vi.fn((sessionId: string) => `/repo/.magpie/state/${sessionId}`),
 }))
 const scanFilesMock = vi.hoisted(() => vi.fn(async () => [
   { path: '/repo/services/app.py', relativePath: 'services/app.py', language: 'python', lines: 10, size: 40 },

@@ -92,7 +92,7 @@ magpie memory show --project
 
 `harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。
 
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
 
 从源码运行：
 

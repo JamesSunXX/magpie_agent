@@ -232,6 +232,72 @@ describe('RepoOrchestrator - Feature Based', () => {
 
     await orchestrator.executeFeaturePlan(featurePlan, 'test-repo')
 
-    expect(onFeatureComplete).toHaveBeenCalledWith('write', expect.any(Object))
+    expect(onFeatureComplete).toHaveBeenCalledWith(expect.objectContaining({
+      featureId: 'write',
+      roundNumber: 1,
+      result: expect.any(Object),
+      reviewerOutputs: expect.any(Array),
+    }))
+  })
+
+  it('runs each feature round in an isolated reviewer session', async () => {
+    const provider = {
+      name: 'mock',
+      chat: vi.fn()
+        .mockResolvedValueOnce('ISSUE: [write.ts:1] - [write issue] - [severity: medium]')
+        .mockResolvedValueOnce('ISSUE: [read.ts:2] - [read issue] - [severity: low]'),
+      chatStream: vi.fn(),
+      startSession: vi.fn(),
+      endSession: vi.fn(),
+    }
+
+    const reviewer = {
+      id: 'reviewer1',
+      provider,
+      systemPrompt: 'Review code',
+    }
+
+    const summarizer = {
+      id: 'summarizer',
+      provider: {
+        name: 'mock',
+        chat: vi.fn().mockResolvedValue('Architecture summary'),
+        chatStream: vi.fn(),
+      },
+      systemPrompt: 'Summarize',
+    }
+
+    const onFeatureComplete = vi.fn()
+    const featurePlan: FeaturePlan = {
+      steps: [
+        { featureId: 'write', name: 'Write', description: '', files: [], estimatedTokens: 100 },
+        { featureId: 'read', name: 'Read', description: '', files: [], estimatedTokens: 100 },
+      ],
+      totalEstimatedTokens: 200,
+      totalEstimatedCost: 0.002,
+    }
+
+    const orchestrator = new RepoOrchestrator([reviewer], summarizer, {
+      onFeatureComplete,
+    })
+
+    await orchestrator.executeFeaturePlan(featurePlan, 'test-repo')
+
+    expect(provider.startSession).toHaveBeenCalledTimes(2)
+    expect(provider.endSession).toHaveBeenCalledTimes(4)
+    expect(onFeatureComplete).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      featureId: 'write',
+      roundNumber: 1,
+      reviewerOutputs: [
+        expect.objectContaining({
+          reviewerId: 'reviewer1',
+          issuesParsed: 1,
+        }),
+      ],
+    }))
+    expect(onFeatureComplete).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      featureId: 'read',
+      roundNumber: 2,
+    }))
   })
 })

@@ -6,7 +6,7 @@
 
 | 能力 | 命令入口 | 主要代码位置 | 备注 |
 | --- | --- | --- | --- |
-| 评审 | `magpie review` | `src/cli/commands/review.ts`、`src/capabilities/review/` | 支持 PR、本地改动、分支、文件、仓库级扫描 |
+| 评审 | `magpie review` | `src/cli/commands/review.ts`、`src/capabilities/review/` | 支持 PR、本地改动、分支、文件、仓库级扫描；`review --repo` 会把每轮结果写到 `.magpie/state/<sessionId>/round_<N>.json`，启动或恢复时会先对齐已落盘轮次，再从最后一个成功轮次继续；只有全部轮次核齐后才生成最终总结 |
 | 讨论 | `magpie discuss` | `src/cli/commands/discuss.ts`、`src/capabilities/discuss/` | 多模型讨论，可选对抗视角 |
 | TRD 生成 | `magpie trd` | `src/cli/commands/trd.ts`、`src/capabilities/trd/` | 从 PRD Markdown 生成 TRD，并在仓库 `.magpie/constraints.json` 落一份可机读约束 |
 | 闭环执行 | `magpie loop run|resume|inspect|list` | `src/cli/commands/loop.ts`、`src/capabilities/loop/` | 支持 `--host foreground|tmux`，可查看知识摘要；会话开始时会先生成并持久化一份 `document-plan.json`，把正式文档落点和保守回退目录固定下来；进入开发前会先过约束卡点；对适合的小任务会先确认失败测试，再继续实现；测试没过时会区分“继续修”和“执行事故”，按小次数重试后再停到人工介入；阶段评估结果如果只是格式没读出来，会优先自动兜底继续，不再把这类格式问题误挂到人工确认；自动提交默认用 AI 生成中文提交信息，可用 `capabilities.loop.auto_commit_model` 覆盖模型；开启通知后会按阶段发摘要消息；`capabilities.loop.execution_timeout` 可按任务复杂度调整执行超时 |

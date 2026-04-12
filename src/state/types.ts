@@ -30,6 +30,32 @@ export interface FeatureReviewResult {
   reviewedAt: Date
 }
 
+export type ReviewRoundOrigin = 'live' | 'recovered_from_session'
+
+export interface ReviewRoundReviewerOutput {
+  reviewerId: string
+  provider: string
+  startedAt: Date
+  completedAt: Date
+  output: string
+  issuesParsed: number
+}
+
+export interface ReviewRoundCheckpoint {
+  schemaVersion: 1
+  sessionId: string
+  roundNumber: number
+  featureId: string
+  featureName: string
+  status: 'completed'
+  origin: ReviewRoundOrigin
+  focusAreas: ReviewFocus[]
+  filePaths: string[]
+  reviewerOutputs: ReviewRoundReviewerOutput[]
+  result: FeatureReviewResult
+  completedAt: Date
+}
+
 // Discuss session types
 export interface DiscussRound {
   roundNumber: number
@@ -93,6 +119,13 @@ export interface ReviewSession {
   startedAt: Date
   updatedAt: Date
   status: SessionStatus
+  checkpointing?: {
+    stateDir: string
+    totalRounds: number
+    lastCompletedRound: number
+    lastVerifiedRound: number
+    finalSummaryVerifiedAt?: Date
+  }
 
   config: {
     focusAreas: ReviewFocus[]
