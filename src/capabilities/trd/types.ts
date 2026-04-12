@@ -21,6 +21,33 @@ export interface TrdOptions extends Record<string, unknown> {
   autoAcceptDomains?: boolean
 }
 
+export type TrdConstraintCategory = 'dependency' | 'path' | 'api' | 'test'
+export type TrdConstraintSeverity = 'error' | 'warning'
+export type TrdConstraintCheckType =
+  | 'forbidden_dependency'
+  | 'required_path_prefix'
+  | 'path_pattern'
+  | 'required_test_file'
+
+export interface TrdConstraintRule {
+  id: string
+  category: TrdConstraintCategory
+  description: string
+  severity: TrdConstraintSeverity
+  scope: string
+  checkType: TrdConstraintCheckType
+  expected: string[]
+  forbidden: string[]
+}
+
+export interface TrdConstraintsArtifact {
+  version: number
+  sourcePrdPath: string
+  sourceTrdPath: string
+  generatedAt: string
+  rules: TrdConstraintRule[]
+}
+
 export interface RunTrdFlowInput {
   prdPath?: string
   options: TrdOptions

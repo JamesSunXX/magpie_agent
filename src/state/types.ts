@@ -83,6 +83,7 @@ export interface TrdSession {
     trdPath: string
     openQuestionsPath: string
     partialDir: string
+    constraintsPath?: string
   }
   rounds: TrdSessionRound[]
 }
@@ -145,6 +146,13 @@ export interface HumanConfirmationItem {
   updatedAt: Date
 }
 
+export type LoopReliablePoint =
+  | 'constraints_validated'
+  | 'red_test_confirmed'
+  | 'implementation_generated'
+  | 'test_result_recorded'
+  | 'completed'
+
 export interface LoopSession {
   id: string
   title: string
@@ -158,6 +166,15 @@ export interface LoopSession {
   plan: LoopTask[]
   stageResults: LoopStageResult[]
   humanConfirmations: HumanConfirmationItem[]
+  constraintsValidated?: boolean
+  constraintCheckStatus?: 'pass' | 'needs_revision' | 'blocked'
+  tddEligible?: boolean
+  redTestConfirmed?: boolean
+  currentLoopState?: 'revising' | 'retrying_execution' | 'blocked_for_human' | 'completed'
+  repairAttemptCount?: number
+  executionRetryCount?: number
+  lastReliablePoint?: LoopReliablePoint
+  lastFailureReason?: string
   branchName?: string
   routingTier?: ComplexityTier
   artifacts: {
@@ -174,6 +191,12 @@ export interface LoopSession {
     tmuxSession?: string
     tmuxWindow?: string
     tmuxPane?: string
+    constraintsSnapshotPath?: string
+    tddTargetPath?: string
+    redTestResultPath?: string
+    greenTestResultPath?: string
+    repairOpenIssuesPath?: string
+    repairEvidencePath?: string
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string

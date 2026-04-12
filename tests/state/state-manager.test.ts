@@ -282,6 +282,7 @@ describe('StateManager', () => {
         trdPath: '/tmp/trd.md',
         openQuestionsPath: '/tmp/questions.md',
         partialDir: '/tmp/partials',
+        constraintsPath: '/tmp/constraints.json',
       },
       rounds: [
         {
@@ -309,6 +310,7 @@ describe('StateManager', () => {
         trdPath: '/tmp/trd-2.md',
         openQuestionsPath: '/tmp/questions-2.md',
         partialDir: '/tmp/partials-2',
+        constraintsPath: '/tmp/constraints-2.json',
       },
       rounds: [],
     })
@@ -318,6 +320,7 @@ describe('StateManager', () => {
 
     expect(loaded?.updatedAt).toBeInstanceOf(Date)
     expect(loaded?.rounds[0]?.timestamp).toBeInstanceOf(Date)
+    expect(loaded?.artifacts.constraintsPath).toBe('/tmp/constraints.json')
     expect(listed.map((session) => session.id)).toEqual(['trd-2', 'trd-1'])
     expect(await readFile(join(tempDir, '.magpie', 'sessions', 'trd', 'trd-1', 'session.json'), 'utf-8')).toContain('"id": "trd-1"')
   })

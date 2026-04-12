@@ -13,8 +13,8 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 
 - `review`：多 AI 代码评审
 - `discuss`：多模型讨论
-- `trd`：PRD 转 TRD
-- `loop`：目标驱动的阶段化执行
+- `trd`：PRD 转 TRD，并产出可机读的约束文件
+- `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
@@ -76,6 +76,8 @@ magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 # 9) 查看长期记忆
 magpie memory show --project
 ```
+
+`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；超过阈值后才停下来等人处理。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
 

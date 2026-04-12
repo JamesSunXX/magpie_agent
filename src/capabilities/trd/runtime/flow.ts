@@ -10,7 +10,7 @@ import type { Reviewer } from '../../../core/debate/types.js'
 import { StateManager } from '../../../core/state/index.js'
 import type { TrdSession } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { getRepoSessionDir } from '../../../platform/paths.js'
+import { getRepoMagpieDir, getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { ChatImageInput } from '../../../platform/providers/index.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
@@ -44,6 +44,7 @@ import type {
 } from '../../../trd/types.js'
 import { CommandExitError, runInCommandContext } from '../../../core/capability/command-context.js'
 import type { RunTrdFlowInput, TrdFlowResult, TrdOptions } from '../types.js'
+import { buildConstraintsArtifact, serializeConstraintsArtifact } from '../domain/constraints.js'
 
 interface OutputPaths {
   domainOverviewPath: string
@@ -52,6 +53,7 @@ interface OutputPaths {
   trdPath: string
   openQuestionsPath: string
   partialDir: string
+  constraintsPath?: string
 }
 
 const FALLBACK_DOMAIN: DomainBoundary = {
@@ -112,6 +114,7 @@ function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions,
   const trdPath = options.output || `${base}${defaults.trdSuffix}`
   const openQuestionsPath = options.questionsOutput || `${base}${defaults.openQuestionsSuffix}`
   const partialDir = join(getRepoSessionDir(cwd, 'trd', sessionId), 'artifacts')
+  const constraintsPath = join(getRepoMagpieDir(cwd), 'constraints.json')
 
   return {
     domainOverviewPath,
@@ -120,6 +123,7 @@ function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions,
     trdPath,
     openQuestionsPath,
     partialDir,
+    constraintsPath,
   }
 }
 
@@ -681,6 +685,17 @@ async function runNewTrd(
 
   writeFileSync(paths.trdPath, synthesis.trdMarkdown, 'utf-8')
   writeFileSync(paths.openQuestionsPath, renderOpenQuestionsMarkdown(synthesis), 'utf-8')
+  const constraintsArtifact = buildConstraintsArtifact({
+    sourcePrdPath: prdPath,
+    sourceTrdPath: paths.trdPath,
+    generatedAt: new Date(),
+    texts: [resolvedPrd, synthesis.trdMarkdown],
+  })
+  writeFileSync(
+    paths.constraintsPath || join(getRepoMagpieDir(process.cwd()), 'constraints.json'),
+    serializeConstraintsArtifact(constraintsArtifact),
+    'utf-8'
+  )
 
   session.stage = 'integration_generated'
   session.updatedAt = new Date()
@@ -775,6 +790,17 @@ async function handleResume(
 
   writeFileSync(session.artifacts.trdPath, synthesis.trdMarkdown, 'utf-8')
   writeFileSync(session.artifacts.openQuestionsPath, renderOpenQuestionsMarkdown(synthesis), 'utf-8')
+  const constraintsArtifact = buildConstraintsArtifact({
+    sourcePrdPath: session.prdPath,
+    sourceTrdPath: session.artifacts.trdPath,
+    generatedAt: new Date(),
+    texts: [resolvedPrd, synthesis.trdMarkdown],
+  })
+  writeFileSync(
+    session.artifacts.constraintsPath || join(getRepoMagpieDir(process.cwd()), 'constraints.json'),
+    serializeConstraintsArtifact(constraintsArtifact),
+    'utf-8'
+  )
 
   session.stage = 'integration_generated'
   session.updatedAt = new Date()

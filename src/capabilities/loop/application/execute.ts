@@ -7,6 +7,7 @@ import type { CapabilityContext } from '../../../core/capability/context.js'
 import { createRoutingDecision, isRoutingEnabled } from '../../routing/index.js'
 import type {
   HumanConfirmationItem,
+  LoopReliablePoint,
   LoopSession,
   LoopStageResult,
   LoopTask,
@@ -37,6 +38,24 @@ import {
 import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
 import { resolveAutoCommitProviderBinding } from '../domain/auto-commit-provider-binding.js'
 import { generateLoopPlan } from '../domain/planner.js'
+import {
+  createConstraintsSnapshot,
+  evaluatePlanningConstraints,
+  loadLoopConstraints,
+} from '../domain/constraints.js'
+import {
+  assessTddEligibility,
+  createTddTarget,
+  recordRedTestResult,
+} from '../domain/tdd.js'
+import {
+  recordStructuredTestResult,
+  runStructuredTestCommand,
+} from '../domain/test-execution.js'
+import {
+  advanceRepairState,
+  writeRepairArtifacts,
+} from '../domain/repair.js'
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
 import {
   createTaskKnowledge,
@@ -104,6 +123,88 @@ interface WorktreeResolution {
   workspacePath: string
   worktreeBranch?: string
   failureReason?: string
+}
+
+const RELIABLE_POINTS: LoopReliablePoint[] = [
+  'constraints_validated',
+  'red_test_confirmed',
+  'implementation_generated',
+  'test_result_recorded',
+  'completed',
+]
+
+function isReliablePoint(value: unknown): value is LoopReliablePoint {
+  return typeof value === 'string' && RELIABLE_POINTS.includes(value as LoopReliablePoint)
+}
+
+function validateResumeCheckpoint(session: LoopSession): string | null {
+  const stage = session.stages[session.currentStageIndex]
+  if (stage !== 'code_development') {
+    return null
+  }
+
+  const hasCheckpointDependentState = session.constraintsValidated
+    || session.tddEligible
+    || session.redTestConfirmed
+    || Boolean(session.currentLoopState)
+    || Boolean(session.artifacts.redTestResultPath)
+    || Boolean(session.artifacts.greenTestResultPath)
+
+  if (!hasCheckpointDependentState) {
+    return null
+  }
+
+  if (!session.lastReliablePoint) {
+    return 'Cannot safely resume because no reliable checkpoint was recorded for code development.'
+  }
+
+  if (!isReliablePoint(session.lastReliablePoint)) {
+    return `Cannot safely resume because "${session.lastReliablePoint}" is not a complete reliable checkpoint.`
+  }
+
+  if (session.lastReliablePoint === 'red_test_confirmed' && session.redTestConfirmed !== true) {
+    return 'Cannot safely resume because the saved checkpoint says the red test was confirmed, but that result is missing.'
+  }
+
+  if (session.lastReliablePoint === 'test_result_recorded' && !session.artifacts.greenTestResultPath) {
+    return 'Cannot safely resume because the saved checkpoint says a test result was recorded, but the test result artifact is missing.'
+  }
+
+  if (session.lastReliablePoint === 'test_result_recorded'
+    && !session.stageResults.some((stageResult) => stageResult.stage === stage)) {
+    return 'Cannot safely resume because the saved checkpoint says a test result was recorded, but the stage result is missing.'
+  }
+
+  return null
+}
+
+function buildTestFailureSummary(
+  result: {
+    failureKind: 'quality' | 'execution' | null
+    firstError: string | null
+    failedTests: string[]
+  },
+  qualityFallback: string
+): string {
+  if (result.failureKind === 'execution') {
+    return `测试执行出现事故：${result.firstError || '命令未正常执行'}`
+  }
+
+  return `实现后测试仍失败：${result.firstError || result.failedTests[0] || qualityFallback}`
+}
+
+function buildRepairPrompt(stage: LoopStageName, session: LoopSession, summary: string): string {
+  return [
+    `You are retrying the implementation for stage "${stage}".`,
+    '',
+    `Goal: ${session.goal}`,
+    '',
+    `Failure summary: ${summary}`,
+    session.artifacts.tddTargetPath ? `TDD target: ${session.artifacts.tddTargetPath}` : '',
+    'Update production code only.',
+    'Do not bypass the existing test command.',
+    'Keep changes minimal and focused on the failing behavior.',
+  ].filter(Boolean).join('\n')
 }
 
 function describeLoopActor(binding: {
@@ -308,6 +409,9 @@ Execution requirements:
 2. Keep changes minimal and aligned with the goal.
 3. At the end, output a concise stage report in markdown.
 4. Include a section "Artifacts" with file paths touched or generated.
+${stage === 'code_development' && session.tddEligible && session.redTestConfirmed
+  ? '5. TDD state: red test has already been confirmed. Focus on the minimal implementation needed to satisfy that failing test.'
+  : ''}
 
 Return markdown only.`
 }
@@ -1069,63 +1173,271 @@ async function continueSession(
 ): Promise<LoopExecutionResult> {
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
-    await updateLoopState(session, {
-      currentStage: stage,
-      lastReliableResult: `Preparing stage ${stage}.`,
-      nextAction: `Execute ${stage}.`,
-      currentBlocker: 'Stage in progress.',
-    }, `Loop state moved to ${stage}.`)
-    const enteredNotification = await dispatchStageNotification({
-      config,
-      cwd: runCwd,
-      eventsPath: session.artifacts.eventsPath,
-      router: notificationRouter,
-      input: {
-        eventType: 'stage_entered',
-        sessionId: session.id,
-        capability: 'loop',
-        runTitle: session.goal,
+    const resumedExecutionRetry = stage === 'code_development'
+      && session.currentLoopState === 'retrying_execution'
+      && session.lastReliablePoint === 'test_result_recorded'
+      && Boolean(session.artifacts.greenTestResultPath)
+    if (stage === 'code_development') {
+      const constraints = await loadLoopConstraints(session.artifacts.repoRootPath || runCwd)
+      if (constraints) {
+        session.artifacts.constraintsSnapshotPath = await createConstraintsSnapshot(session.artifacts.sessionDir, constraints)
+      }
+
+      const constraintCheck = evaluatePlanningConstraints({
         stage,
-        summary: `开始执行 ${stage} 阶段。`,
-        nextAction: nextLoopAction(session, i),
-        aiRoster: buildLoopAiRoster(runtime, stage),
-      },
-      severity: 'info',
-      metadata: { stage },
-      dedupeKey: `stage_entered:${session.id}:${stage}:${Date.now()}`,
-    })
-    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
-      event: 'stage_entered',
-      stage,
-      occurrence: enteredNotification.occurrence,
-      delivered: enteredNotification.dispatch?.delivered ?? 0,
-      attempted: enteredNotification.dispatch?.attempted ?? 0,
-    }, progressObserver)
-    let stageRun: StageRunResult
-    try {
-      stageRun = await runSingleStage(
-        stage,
-        session,
-        session.plan,
-        runtime,
-        planner,
-        executor,
-        notificationRouter,
-        prepared.waitHuman !== false,
-        prepared.dryRun === true,
-        notificationsConfig,
-        runCwd,
-        commandSafety,
-        progressObserver,
-      )
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      return markSessionFailed(session, stage, reason, stateManager, notificationRouter, config, runtime, runCwd, progressObserver)
+        goal: session.goal,
+        stageTasks: session.plan.filter((task) => task.stage === stage),
+        constraints: constraints || {
+          version: 1,
+          sourcePrdPath: session.prdPath,
+          sourceTrdPath: '',
+          generatedAt: new Date().toISOString(),
+          rules: [],
+        },
+      })
+
+      session.constraintsValidated = true
+      session.constraintCheckStatus = constraintCheck.status
+      if (!resumedExecutionRetry) {
+        session.lastReliablePoint = 'constraints_validated'
+      }
+      session.lastFailureReason = constraintCheck.reasons.join('; ') || undefined
+      session.updatedAt = new Date()
+
+      await updateLoopState(session, {
+        currentStage: stage,
+        lastReliableResult: constraintCheck.status === 'pass'
+          ? 'Constraint checks passed before code development.'
+          : 'Constraint checks require attention before code development.',
+        nextAction: constraintCheck.status === 'pass'
+          ? `Execute ${stage}.`
+          : 'Revise the plan or constraints before continuing.',
+        currentBlocker: constraintCheck.reasons.join('; ') || 'None.',
+      }, `Constraint checks completed for ${stage}.`)
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+
+      if (constraintCheck.status !== 'pass') {
+        session.currentStageIndex = i
+        session.status = 'paused_for_human'
+        session.updatedAt = new Date()
+        await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+        await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: constraintCheck.status === 'blocked' ? 'constraints_blocked' : 'constraints_revision_required',
+          stage,
+          reasons: constraintCheck.reasons,
+          matchedRuleIds: constraintCheck.matchedRuleIds,
+          ...(session.artifacts.constraintsSnapshotPath
+            ? { snapshotPath: session.artifacts.constraintsSnapshotPath }
+            : {}),
+        }, progressObserver)
+
+        return {
+          status: 'paused',
+          summary: `Loop paused before ${stage}: ${constraintCheck.reasons.join('; ') || 'constraints need revision'}`,
+          session,
+        }
+      }
+
+      const tdd = assessTddEligibility({
+        goal: session.goal,
+        stageTasks: session.plan.filter((task) => task.stage === stage),
+      })
+      session.tddEligible = tdd.eligible
+      session.updatedAt = new Date()
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+
+      if (tdd.eligible && !session.redTestConfirmed) {
+        session.artifacts.tddTargetPath = await createTddTarget({
+          sessionDir: session.artifacts.sessionDir,
+          goal: session.goal,
+          stageTasks: session.plan.filter((task) => task.stage === stage),
+        })
+        await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: 'tdd_target_created',
+          stage,
+          targetPath: session.artifacts.tddTargetPath,
+        }, progressObserver)
+
+        if (prepared.dryRun !== true) {
+          const redPrompt = [
+            `You are preparing the red-test phase for stage "${stage}".`,
+            '',
+            `Goal: ${session.goal}`,
+            '',
+            'Before implementation, create or refine the failing test only.',
+            'Do not implement production code in this step.',
+            session.artifacts.tddTargetPath ? `TDD target: ${session.artifacts.tddTargetPath}` : '',
+          ].filter(Boolean).join('\n')
+          await executor.chat([{ role: 'user', content: redPrompt }], undefined)
+        }
+
+        const redTestRun = runStructuredTestCommand(
+          runCwd,
+          runtime.commands.unitTest,
+          commandSafety
+        )
+        session.artifacts.redTestResultPath = await recordRedTestResult(session.artifacts.sessionDir, {
+          command: redTestRun.command,
+          startedAt: redTestRun.startedAt,
+          finishedAt: redTestRun.finishedAt,
+          exitCode: redTestRun.exitCode,
+          status: redTestRun.status,
+          output: redTestRun.output,
+          confirmed: redTestRun.status === 'failed' && redTestRun.failureKind === 'quality',
+          blocked: redTestRun.blocked,
+          failureKind: redTestRun.failureKind,
+          firstError: redTestRun.firstError,
+        })
+
+        if (redTestRun.status === 'passed') {
+          session.redTestConfirmed = false
+          session.currentStageIndex = i
+          session.status = 'paused_for_human'
+          session.lastFailureReason = 'Red test unexpectedly passed before implementation.'
+          session.updatedAt = new Date()
+          await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+          await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+            event: 'red_test_not_confirmed',
+            stage,
+            resultPath: session.artifacts.redTestResultPath,
+          }, progressObserver)
+
+          return {
+            status: 'paused',
+            summary: `Loop paused before ${stage}: red test unexpectedly passed.`,
+            session,
+          }
+        }
+
+        if (redTestRun.failureKind === 'execution') {
+          const repairState = advanceRepairState({
+            failureKind: 'execution',
+            repairAttemptCount: session.repairAttemptCount || 0,
+            executionRetryCount: session.executionRetryCount || 0,
+          })
+          const summary = `Red test could not be established: ${redTestRun.firstError || 'test command failed before a real assertion failure was observed'}`
+          const repairArtifacts = await writeRepairArtifacts({
+            sessionDir: session.artifacts.sessionDir,
+            attemptNumber: repairState.executionRetryCount,
+            summary,
+            classifiedResult: redTestRun,
+          })
+
+          session.currentLoopState = repairState.currentLoopState
+          session.repairAttemptCount = repairState.repairAttemptCount
+          session.executionRetryCount = repairState.executionRetryCount
+          session.currentStageIndex = i
+          session.status = 'paused_for_human'
+          session.lastFailureReason = summary
+          session.artifacts.repairOpenIssuesPath = repairArtifacts.openIssuesPath
+          session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
+          session.updatedAt = new Date()
+          await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+          await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+            event: 'red_test_execution_retry_required',
+            stage,
+            summary,
+            currentLoopState: session.currentLoopState,
+            resultPath: session.artifacts.redTestResultPath,
+            openIssuesPath: repairArtifacts.openIssuesPath,
+            evidencePath: repairArtifacts.evidencePath,
+          }, progressObserver)
+
+          return {
+            status: 'paused',
+            summary,
+            session,
+          }
+        }
+
+        session.redTestConfirmed = true
+        session.lastReliablePoint = 'red_test_confirmed'
+        session.updatedAt = new Date()
+        await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+        await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: 'red_test_confirmed',
+          stage,
+          resultPath: session.artifacts.redTestResultPath,
+        }, progressObserver)
+      }
     }
 
-    session.stageResults.push(stageRun.stageResult)
-    session.updatedAt = new Date()
-    if (session.artifacts.knowledgeSummaryDir) {
+    const reuseImplementationFromRetry = resumedExecutionRetry
+
+    let stageRun: StageRunResult | null = null
+    let completionStageResult: LoopStageResult | null = null
+
+    if (!reuseImplementationFromRetry) {
+      await updateLoopState(session, {
+        currentStage: stage,
+        lastReliableResult: `Preparing stage ${stage}.`,
+        nextAction: `Execute ${stage}.`,
+        currentBlocker: 'Stage in progress.',
+      }, `Loop state moved to ${stage}.`)
+      const enteredNotification = await dispatchStageNotification({
+        config,
+        cwd: runCwd,
+        eventsPath: session.artifacts.eventsPath,
+        router: notificationRouter,
+        input: {
+          eventType: 'stage_entered',
+          sessionId: session.id,
+          capability: 'loop',
+          runTitle: session.goal,
+          stage,
+          summary: `开始执行 ${stage} 阶段。`,
+          nextAction: nextLoopAction(session, i),
+          aiRoster: buildLoopAiRoster(runtime, stage),
+        },
+        severity: 'info',
+        metadata: { stage },
+        dedupeKey: `stage_entered:${session.id}:${stage}:${Date.now()}`,
+      })
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'stage_entered',
+        stage,
+        occurrence: enteredNotification.occurrence,
+        delivered: enteredNotification.dispatch?.delivered ?? 0,
+        attempted: enteredNotification.dispatch?.attempted ?? 0,
+      }, progressObserver)
+      try {
+        stageRun = await runSingleStage(
+          stage,
+          session,
+          session.plan,
+          runtime,
+          planner,
+          executor,
+          notificationRouter,
+          prepared.waitHuman !== false,
+          prepared.dryRun === true,
+          notificationsConfig,
+          runCwd,
+          commandSafety,
+          progressObserver,
+        )
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        return markSessionFailed(session, stage, reason, stateManager, notificationRouter, config, runtime, runCwd, progressObserver)
+      }
+
+      completionStageResult = stageRun.stageResult
+      session.stageResults.push(stageRun.stageResult)
+      session.updatedAt = new Date()
+      if (stage === 'code_development' && session.tddEligible && session.redTestConfirmed) {
+        session.lastReliablePoint = 'implementation_generated'
+        await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+      }
+    } else {
+      completionStageResult = [...session.stageResults].reverse().find((item) => item.stage === stage) || null
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'execution_retry_resumed',
+        stage,
+        resultPath: session.artifacts.greenTestResultPath,
+      }, progressObserver)
+    }
+
+    if (!reuseImplementationFromRetry && session.artifacts.knowledgeSummaryDir && stageRun) {
       await updateTaskKnowledgeSummary({
         knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath || join(session.artifacts.sessionDir, 'knowledge', 'SCHEMA.md'),
         knowledgeIndexPath: session.artifacts.knowledgeIndexPath || join(session.artifacts.sessionDir, 'knowledge', 'index.md'),
@@ -1151,22 +1463,24 @@ async function continueSession(
         knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
       }, 'evidence', renderEvidence(stageRun), `Stage ${stage} evidence updated.`)
     }
-    await updateLoopState(session, {
-      currentStage: stage,
-      lastReliableResult: stageRun.stageResult.summary,
-      nextAction: stageRun.paused
-        ? 'Wait for human confirmation.'
-        : session.stages[i + 1]
-          ? `Start ${session.stages[i + 1]}.`
-          : 'Finalize loop output.',
-      currentBlocker: stageRun.paused
-        ? 'Waiting for human confirmation.'
-        : stageRun.stageResult.success
-          ? 'None.'
-          : 'Stage did not complete successfully.',
-    }, `Loop state refreshed after ${stage}.`)
+    if (!reuseImplementationFromRetry && stageRun) {
+      await updateLoopState(session, {
+        currentStage: stage,
+        lastReliableResult: stageRun.stageResult.summary,
+        nextAction: stageRun.paused
+          ? 'Wait for human confirmation.'
+          : session.stages[i + 1]
+            ? `Start ${session.stages[i + 1]}.`
+            : 'Finalize loop output.',
+        currentBlocker: stageRun.paused
+          ? 'Waiting for human confirmation.'
+          : stageRun.stageResult.success
+            ? 'None.'
+            : 'Stage did not complete successfully.',
+      }, `Loop state refreshed after ${stage}.`)
+    }
 
-    if (stageRun.paused) {
+    if (stageRun?.paused) {
       session.currentStageIndex = i
       session.status = 'paused_for_human'
       await saveLoopSessionWithObserver(stateManager, session, progressObserver)
@@ -1215,7 +1529,7 @@ async function continueSession(
       }
     }
 
-    if (stageRun.failed) {
+    if (stageRun?.failed) {
       return markSessionFailed(
         session,
         stage,
@@ -1229,6 +1543,90 @@ async function continueSession(
       )
     }
 
+    if (stage === 'code_development' && session.tddEligible && session.redTestConfirmed) {
+      while (true) {
+        const greenTestResult = runStructuredTestCommand(
+          runCwd,
+          runtime.commands.unitTest,
+          commandSafety
+        )
+        session.artifacts.greenTestResultPath = await recordStructuredTestResult(
+          session.artifacts.sessionDir,
+          'green-test-result.json',
+          greenTestResult
+        )
+        session.lastReliablePoint = 'test_result_recorded'
+        session.updatedAt = new Date()
+        await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+
+        if (greenTestResult.status === 'passed' || !greenTestResult.failureKind) {
+          break
+        }
+
+        const repairState = advanceRepairState({
+          failureKind: greenTestResult.failureKind,
+          repairAttemptCount: session.repairAttemptCount || 0,
+          executionRetryCount: session.executionRetryCount || 0,
+        })
+        const attemptNumber = greenTestResult.failureKind === 'quality'
+          ? repairState.repairAttemptCount
+          : repairState.executionRetryCount
+        const summary = buildTestFailureSummary(greenTestResult, '需要继续修复')
+        const repairArtifacts = await writeRepairArtifacts({
+          sessionDir: session.artifacts.sessionDir,
+          attemptNumber,
+          summary,
+          classifiedResult: greenTestResult,
+        })
+
+        session.currentLoopState = repairState.currentLoopState
+        session.repairAttemptCount = repairState.repairAttemptCount
+        session.executionRetryCount = repairState.executionRetryCount
+        session.lastFailureReason = summary
+        session.artifacts.repairOpenIssuesPath = repairArtifacts.openIssuesPath
+        session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
+        session.updatedAt = new Date()
+        await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+        await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: greenTestResult.failureKind === 'quality' ? 'repair_required' : 'execution_retry_required',
+          stage,
+          summary,
+          currentLoopState: session.currentLoopState,
+          resultPath: session.artifacts.greenTestResultPath,
+          openIssuesPath: repairArtifacts.openIssuesPath,
+          evidencePath: repairArtifacts.evidencePath,
+          blockedForHuman: repairState.blockedForHuman,
+        }, progressObserver)
+
+        if (repairState.blockedForHuman) {
+          session.status = 'paused_for_human'
+          session.updatedAt = new Date()
+          await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+          return {
+            status: 'paused',
+            summary,
+            session,
+          }
+        }
+
+        if (greenTestResult.failureKind === 'quality') {
+          if (prepared.dryRun !== true) {
+            await executor.chat([{
+              role: 'user',
+              content: buildRepairPrompt(stage, session, summary),
+            }], undefined)
+          }
+          continue
+        }
+
+        await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: 'execution_retry_restarted',
+          stage,
+          retryCount: session.executionRetryCount,
+        }, progressObserver)
+      }
+    }
+
     const completedNotification = await dispatchStageNotification({
       config,
       cwd: runCwd,
@@ -1240,17 +1638,17 @@ async function continueSession(
         capability: 'loop',
         runTitle: session.goal,
         stage,
-        summary: stageRun.stageResult.summary,
-        blocker: stageRun.stageResult.risks[0],
+        summary: completionStageResult?.summary || `阶段 ${stage} 已完成。`,
+        blocker: completionStageResult?.risks[0],
         nextAction: nextLoopAction(session, i),
         aiRoster: buildLoopAiRoster(runtime, stage),
       },
       severity: 'info',
       metadata: {
         stage,
-        success: stageRun.stageResult.success,
-        confidence: stageRun.stageResult.confidence,
-        retryCount: stageRun.stageResult.retryCount,
+        success: completionStageResult?.success ?? true,
+        confidence: completionStageResult?.confidence ?? 1,
+        retryCount: completionStageResult?.retryCount ?? 0,
       },
       dedupeKey: `stage_completed:${session.id}:${stage}:${Date.now()}`,
     })
@@ -1260,12 +1658,12 @@ async function continueSession(
       occurrence: completedNotification.occurrence,
       delivered: completedNotification.dispatch?.delivered ?? 0,
       attempted: completedNotification.dispatch?.attempted ?? 0,
-      success: stageRun.stageResult.success,
-      confidence: stageRun.stageResult.confidence,
+      success: completionStageResult?.success ?? true,
+      confidence: completionStageResult?.confidence ?? 1,
     }, progressObserver)
 
     session.currentStageIndex = i + 1
-    if (runtime.autoCommit && session.branchName && stageRun.stageResult.success && prepared.dryRun !== true) {
+    if (runtime.autoCommit && session.branchName && (completionStageResult?.success ?? true) && prepared.dryRun !== true) {
       const commitResult = await commitIfChanged(stage, runCwd, autoCommitProvider, session.branchName)
       await appendObservedEvent(session.artifacts.eventsPath, session.id, {
         event: 'auto_commit',
@@ -1281,6 +1679,8 @@ async function continueSession(
   }
 
   session.status = 'completed'
+  session.currentLoopState = 'completed'
+  session.lastReliablePoint = 'completed'
   session.updatedAt = new Date()
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_completed' }, progressObserver)
@@ -1645,6 +2045,26 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
       planningContextBlock
     )
     await writeFile(session.artifacts.planPath, JSON.stringify(session.plan, null, 2), 'utf-8')
+  }
+
+  const resumeCheckpointError = validateResumeCheckpoint(session)
+  if (resumeCheckpointError) {
+    session.status = 'paused_for_human'
+    session.currentLoopState = 'blocked_for_human'
+    session.lastFailureReason = resumeCheckpointError
+    session.updatedAt = new Date()
+    await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'resume_blocked_invalid_checkpoint',
+      stage: session.stages[session.currentStageIndex] || 'unknown',
+      reason: resumeCheckpointError,
+    }, progressObserver)
+
+    return {
+      status: 'paused',
+      summary: resumeCheckpointError,
+      session,
+    }
   }
 
   if (session.status === 'paused_for_human') {

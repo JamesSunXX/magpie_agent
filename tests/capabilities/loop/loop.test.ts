@@ -5,6 +5,7 @@ import { execSync } from 'child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
+import { StateManager, type LoopSession } from '../../../src/core/state/index.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
 import type { ProviderBindingInput, AIProvider } from '../../../src/platform/providers/index.js'
 
@@ -237,6 +238,626 @@ describe('loop capability', () => {
 
     expect(result.result.status).toBe('completed')
     expect(result.result.session?.status).toBe('completed')
+  })
+
+  it('pauses before code development when constraints block the planned work', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Implement checkout client',
+        description: 'Use axios to call the upstream service',
+        dependencies: [],
+        successCriteria: ['Checkout client implemented'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-constraints-block-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nCheckout client.', 'utf-8')
+    writeFileSync(join(dir, '.magpie', 'constraints.json'), JSON.stringify({
+      version: 1,
+      sourcePrdPath: prdPath,
+      sourceTrdPath: join(dir, 'sample.trd.md'),
+      generatedAt: '2026-04-12T00:00:00.000Z',
+      rules: [
+        {
+          id: 'dependency-no-axios',
+          category: 'dependency',
+          description: '禁止引入 axios',
+          severity: 'error',
+          scope: 'repository',
+          checkType: 'forbidden_dependency',
+          expected: [],
+          forbidden: ['axios'],
+        },
+      ],
+    }, null, 2), 'utf-8')
+
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Build checkout client with axios',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(result.result.session?.constraintsValidated).toBe(true)
+    expect(result.result.session?.constraintCheckStatus).toBe('blocked')
+    expect(result.result.session?.lastReliablePoint).toBe('constraints_validated')
+    expect(result.result.session?.lastFailureReason).toContain('axios')
+    expect(events).toContain('"event":"constraints_blocked"')
+  })
+
+  it('confirms a red test before code development for TDD-eligible tasks', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-tdd-red-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            if (executorCalls >= 2) {
+              writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            }
+            return '# Stage Report\n\nPrepared code development output.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const sessionDir = result.result.session!.artifacts.sessionDir
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    const redIndex = events.indexOf('"event":"red_test_confirmed"')
+    const stageIndex = events.indexOf('"event":"stage_entered"')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.tddEligible).toBe(true)
+    expect(result.result.session?.redTestConfirmed).toBe(true)
+    expect(result.result.session?.currentLoopState).toBe('completed')
+    expect(result.result.session?.lastReliablePoint).toBe('completed')
+    expect(existsSync(join(sessionDir, 'tdd', 'target.md'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'tdd', 'red-test-result.json'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'tdd', 'green-test-result.json'))).toBe(true)
+    expect(redIndex).toBeGreaterThan(-1)
+    expect(stageIndex).toBeGreaterThan(redIndex)
+  })
+
+  it('pauses before implementation when the red test command itself is broken', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-red-command-broken-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "magpie-command-that-does-not-exist"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.redTestConfirmed).not.toBe(true)
+    expect(result.result.session?.currentLoopState).toBe('retrying_execution')
+    expect(result.result.session?.executionRetryCount).toBe(1)
+    expect(result.result.session?.lastFailureReason).toContain('Red test could not be established')
+    expect(events).toContain('"event":"red_test_execution_retry_required"')
+  })
+
+  it('automatically retries a failed quality fix before pausing the loop', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-quality-auto-retry-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            if (executorCalls >= 3) {
+              writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            }
+            return '# Stage Report\n\nPrepared code development output.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.repairAttemptCount).toBe(1)
+    expect(result.result.session?.currentLoopState).toBe('completed')
+    expect(executorCalls).toBe(3)
+  })
+
+  it('pauses with revising state when post-implementation tests still fail', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-quality-fail-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'process.exit(process.env.RED_PHASE === "1" ? 1 : 1)\n', 'utf-8')
+
+    const originalEnv = process.env.RED_PHASE
+    process.env.RED_PHASE = '1'
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+    process.env.RED_PHASE = originalEnv
+
+    const sessionDir = result.result.session!.artifacts.sessionDir
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.currentLoopState).toBe('blocked_for_human')
+    expect(result.result.session?.repairAttemptCount).toBe(3)
+    expect(result.result.session?.lastReliablePoint).toBe('test_result_recorded')
+    expect(existsSync(join(sessionDir, 'tdd', 'green-test-result.json'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'repairs', 'open-issues.md'))).toBe(true)
+  })
+
+  it('resumes code development from the confirmed red test checkpoint', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-red-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-resume-red'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const eventsPath = join(sessionDir, 'events.jsonl')
+    const planPath = join(sessionDir, 'plan.json')
+    const redTestResultPath = join(sessionDir, 'tdd', 'red-test-result.json')
+    const tddTargetPath = join(sessionDir, 'tdd', 'target.md')
+    mkdirSync(join(sessionDir, 'tdd'), { recursive: true })
+    writeFileSync(eventsPath, '', 'utf-8')
+    writeFileSync(planPath, JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(tddTargetPath, '# TDD Target\n\n- Keep formatter behavior stable.\n', 'utf-8')
+    writeFileSync(redTestResultPath, JSON.stringify({
+      command: 'node script.js',
+      startedAt: '2026-04-12T00:00:00.000Z',
+      finishedAt: '2026-04-12T00:00:01.000Z',
+      exitCode: 1,
+      status: 'failed',
+      output: 'Expected failure before implementation.',
+      confirmed: true,
+    }, null, 2), 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Resume from red test',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'code_development',
+          title: 'Add amount formatter utility',
+          description: 'Implement a pure formatter for checkout amounts',
+          dependencies: [],
+          successCriteria: ['Formatter output matches the spec'],
+        },
+      ],
+      stageResults: [],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      constraintCheckStatus: 'pass',
+      tddEligible: true,
+      redTestConfirmed: true,
+      lastReliablePoint: 'red_test_confirmed',
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath,
+        planPath,
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        tddTargetPath,
+        redTestResultPath,
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            return '# Stage Report\n\nImplemented formatter.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.currentLoopState).toBe('completed')
+    expect(result.result.session?.lastReliablePoint).toBe('completed')
+    expect(result.result.session?.redTestConfirmed).toBe(true)
+    expect(executorCalls).toBe(1)
+    expect(existsSync(join(sessionDir, 'tdd', 'green-test-result.json'))).toBe(true)
+  })
+
+  it('blocks resume when the saved checkpoint is not a complete reliable point', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-invalid-checkpoint-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-invalid-checkpoint'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const eventsPath = join(sessionDir, 'events.jsonl')
+    const planPath = join(sessionDir, 'plan.json')
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(eventsPath, '', 'utf-8')
+    writeFileSync(planPath, JSON.stringify([], null, 2), 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Invalid checkpoint',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'code_development',
+          title: 'Add amount formatter utility',
+          description: 'Implement a pure formatter for checkout amounts',
+          dependencies: [],
+          successCriteria: ['Formatter output matches the spec'],
+        },
+      ],
+      stageResults: [],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      constraintCheckStatus: 'pass',
+      tddEligible: true,
+      redTestConfirmed: true,
+      currentLoopState: 'revising',
+      lastReliablePoint: 'half_written_output' as never,
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath,
+        planPath,
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(eventsPath, 'utf-8')
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.currentLoopState).toBe('blocked_for_human')
+    expect(result.result.session?.lastFailureReason).toContain('reliable checkpoint')
+    expect(events).toContain('"event":"resume_blocked_invalid_checkpoint"')
+  })
+
+  it('consumes the execution retry budget before pausing for human help', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'code_development',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-execution-retry-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'runner.js'), `const fs = require('fs')
+const { spawnSync } = require('child_process')
+if (!fs.existsSync('impl.flag')) {
+  process.exit(1)
+}
+const result = spawnSync('magpie-command-that-does-not-exist', [], { encoding: 'utf-8' })
+if (result.error) {
+  console.error(result.error.message)
+  process.exit(1)
+}
+process.exit(result.status ?? 1)
+`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        let stageCalls = 0
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            stageCalls += 1
+            if (stageCalls >= 2) {
+              writeFileSync(join(dir, 'impl.flag'), 'ready', 'utf-8')
+            }
+            return '# Stage Report\n\nImplemented formatter.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const firstResult = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(firstResult.result.status).toBe('paused')
+    expect(firstResult.result.session?.currentLoopState).toBe('blocked_for_human')
+    expect(firstResult.result.session?.executionRetryCount).toBe(2)
+    expect(firstResult.result.session?.lastReliablePoint).toBe('test_result_recorded')
+    expect(firstResult.result.session?.lastFailureReason).toContain('测试执行出现事故')
+    expect(readFileSync(firstResult.result.session!.artifacts.eventsPath, 'utf-8')).toContain('"event":"execution_retry_restarted"')
+  })
+
+  it('retries execution-only failures on resume without regenerating code', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-execution-resume-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'runner.js'), 'const fs = require("fs"); process.exit(fs.existsSync("resume-ok.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-execution-resume'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    mkdirSync(join(sessionDir, 'tdd'), { recursive: true })
+    writeFileSync(join(sessionDir, 'events.jsonl'), '', 'utf-8')
+    writeFileSync(join(sessionDir, 'plan.json'), JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(join(sessionDir, 'tdd', 'green-test-result.json'), JSON.stringify({
+      command: 'node runner.js',
+      startedAt: '2026-04-12T00:00:00.000Z',
+      finishedAt: '2026-04-12T00:00:01.000Z',
+      exitCode: 1,
+      status: 'failed',
+      output: 'command failed before environment recovery',
+      blocked: false,
+      failureKind: 'execution',
+      failedTests: [],
+      firstError: 'temporary execution issue',
+    }, null, 2), 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Resume execution retry',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'code_development',
+          title: 'Add amount formatter utility',
+          description: 'Implement a pure formatter for checkout amounts',
+          dependencies: [],
+          successCriteria: ['Formatter output matches the spec'],
+        },
+      ],
+      stageResults: [
+        {
+          stage: 'code_development',
+          success: true,
+          confidence: 0.91,
+          summary: 'Implementation already generated before the retry.',
+          risks: [],
+          retryCount: 0,
+          artifacts: [],
+          timestamp: new Date('2026-04-12T00:00:00.000Z'),
+        },
+      ],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      constraintCheckStatus: 'pass',
+      tddEligible: true,
+      redTestConfirmed: true,
+      currentLoopState: 'retrying_execution',
+      executionRetryCount: 1,
+      lastReliablePoint: 'test_result_recorded',
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        greenTestResultPath: join(sessionDir, 'tdd', 'green-test-result.json'),
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+    writeFileSync(join(dir, 'resume-ok.flag'), 'ok', 'utf-8')
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            return '# Stage Report\n\nShould not be called.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(executorCalls).toBe(0)
+    expect(readFileSync(session.artifacts.eventsPath, 'utf-8')).toContain('"event":"execution_retry_resumed"')
   })
 
   it('syncs loop plan artifacts to the planning router when configured', async () => {
