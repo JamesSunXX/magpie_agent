@@ -261,6 +261,21 @@ function renderEvidence(stageRun: StageRunResult): string {
   ].filter(Boolean).join('\n')
 }
 
+function mergeStageReportWithVerification(stageReport: string, testOutput: string): string {
+  if (!testOutput.trim()) {
+    return stageReport
+  }
+
+  const base = stageReport.trimEnd()
+  return [
+    base,
+    '',
+    '# Verification',
+    '',
+    testOutput,
+  ].join('\n')
+}
+
 function buildLoopCandidates(session: LoopSession, approved: boolean, summary: string, evidencePath?: string): KnowledgeCandidate[] {
   if (approved) {
     return [{
@@ -821,8 +836,6 @@ async function runSingleStage(
     })
     await Promise.all(progressWrites)
     stageReport = response
-    await mkdir(dirname(stageArtifactPath), { recursive: true })
-    await writeFile(stageArtifactPath, response, 'utf-8')
 
     if (stage === 'unit_mock_test') {
       const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
@@ -850,6 +863,10 @@ async function runSingleStage(
       stageSucceeded = integration.passed
       testOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
     }
+
+    stageReport = mergeStageReportWithVerification(stageReport, testOutput)
+    await mkdir(dirname(stageArtifactPath), { recursive: true })
+    await writeFile(stageArtifactPath, stageReport, 'utf-8')
   }
 
   const evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
@@ -979,7 +996,6 @@ async function runSingleStage(
       await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
 
       const retried = await executor.chat([{ role: 'user', content: `${buildStagePrompt(stage, session, tasks, knowledgeContext)}\n\nAdditional guidance:\n${replanOutput}` }])
-      await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${retried}\n`, 'utf-8')
 
       if (stage === 'unit_mock_test') {
         const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
@@ -1008,7 +1024,10 @@ async function runSingleStage(
         finalSucceeded = true
       }
 
-      finalEval = await evaluateStage(planner, stage, retried, finalTestOutput)
+      stageReport = mergeStageReportWithVerification(retried, finalTestOutput)
+      await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${stageReport}\n`, 'utf-8')
+
+      finalEval = await evaluateStage(planner, stage, stageReport, finalTestOutput)
       stageResult.retryCount = attempt
       stageResult.confidence = finalEval.confidence
       stageResult.summary = finalEval.summary

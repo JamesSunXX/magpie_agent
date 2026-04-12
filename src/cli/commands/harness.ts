@@ -19,7 +19,7 @@ import type {
   HarnessResult,
   HarnessSummary,
 } from '../../capabilities/workflows/harness/types.js'
-import { createHarnessProgressReporter, followHarnessEventStream } from './harness-progress.js'
+import { createHarnessProgressReporter, followHarnessEventStream, formatHarnessEventLine } from './harness-progress.js'
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
@@ -70,6 +70,62 @@ function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typ
     currentBlocker: 'Legacy session has no persisted state card.',
     lastReliableResult: session.summary,
   }
+}
+
+interface LoopActivitySnapshot {
+  timestamp: string
+  line: string
+  stage?: string
+}
+
+async function loadLatestLoopActivity(loopEventsPath: string | undefined): Promise<LoopActivitySnapshot | null> {
+  if (!loopEventsPath) {
+    return null
+  }
+
+  const raw = await readFile(loopEventsPath, 'utf-8').catch(() => '')
+  if (!raw) {
+    return null
+  }
+
+  const lines = raw.trim().split('\n').reverse()
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue
+    }
+    try {
+      const event = JSON.parse(line) as {
+        ts?: string
+        event?: string
+        stage?: string
+        cycle?: number
+        summary?: string
+        provider?: string
+        progressType?: string
+      }
+      if (!event.ts || !event.event) {
+        continue
+      }
+      const displayEvent = {
+        ts: event.ts,
+        event: event.event,
+        ...(event.stage ? { stage: event.stage } : {}),
+        ...(Number.isFinite(event.cycle) ? { cycle: event.cycle } : {}),
+        ...(event.summary ? { summary: event.summary } : {}),
+        ...(event.provider ? { provider: event.provider } : {}),
+        ...(event.progressType ? { progressType: event.progressType } : {}),
+      }
+      return {
+        timestamp: event.ts,
+        line: formatHarnessEventLine(displayEvent),
+        stage: event.stage,
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return null
 }
 
 async function runHarness(input: HarnessInput, options: HarnessCommandOptions): Promise<void> {
@@ -239,6 +295,14 @@ harnessCommand
     console.log(`Updated: ${session.updatedAt.toISOString()}`)
     if (session.artifacts.eventsPath) {
       console.log(`Events: ${session.artifacts.eventsPath}`)
+    }
+    const latestLoopActivity = await loadLatestLoopActivity(session.artifacts.loopEventsPath)
+    if (latestLoopActivity) {
+      if (latestLoopActivity.stage) {
+        console.log(`Loop stage: ${latestLoopActivity.stage}`)
+      }
+      console.log(`Last activity: ${latestLoopActivity.timestamp}`)
+      console.log(`Loop activity: ${latestLoopActivity.line}`)
     }
     await printKnowledgeSummary(session.artifacts)
   })
