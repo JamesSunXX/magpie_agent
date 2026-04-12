@@ -41,6 +41,21 @@ describe('loop CLI command', () => {
     writeFileSync(join(summaryDir, 'open-issues.md'), '- Waiting for canary verification', 'utf-8')
     writeFileSync(join(summaryDir, 'evidence.md'), '- /tmp/evidence.log', 'utf-8')
     writeFileSync(join(summaryDir, 'stage-prd-review.md'), 'Latest stage summary', 'utf-8')
+    const documentPlanPath = join(cwd, '.magpie', 'sessions', 'loop', 'loop-123', 'document-plan.json')
+    writeFileSync(documentPlanPath, JSON.stringify({
+      mode: 'fallback',
+      formalDocsRoot: join(cwd, '.magpie', 'project-docs', 'loop-123'),
+      formalDocTargets: {
+        trd: join(cwd, '.magpie', 'project-docs', 'loop-123', 'trd.md'),
+      },
+      artifactPolicy: {
+        processArtifactsRoot: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123'),
+        fallbackFormalDocsRoot: join(cwd, '.magpie', 'project-docs', 'loop-123'),
+      },
+      confidence: 0.4,
+      fallbackReason: 'Model confidence too low.',
+      reasoningSources: [join(cwd, 'AGENTS.md')],
+    }, null, 2), 'utf-8')
     writeFileSync(join(knowledgeDir, 'candidates.json'), JSON.stringify([
       {
         type: 'decision',
@@ -76,6 +91,7 @@ describe('loop CLI command', () => {
         knowledgeStatePath: join(knowledgeDir, 'state.json'),
         knowledgeSummaryDir: summaryDir,
         knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+        documentPlanPath,
       },
     }
     await state.saveLoopSession(session)
@@ -94,6 +110,8 @@ describe('loop CLI command', () => {
 
     expect(logSpy).toHaveBeenCalledWith('Goal: Ship checkout v2 safely')
     expect(logSpy).toHaveBeenCalledWith('State: prd_review | next: Run PRD review stage. | blocker: Waiting for PRD review output.')
+    expect(logSpy).toHaveBeenCalledWith('Document mode: fallback')
+    expect(logSpy).toHaveBeenCalledWith(`Formal docs root: ${join(cwd, '.magpie', 'project-docs', 'loop-123')}`)
     expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
     expect(logSpy).toHaveBeenCalledWith('Open issues: Waiting for canary verification')
     expect(logSpy).toHaveBeenCalledWith(`Knowledge: ${knowledgeDir}`)

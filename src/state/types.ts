@@ -204,5 +204,6 @@ export interface LoopSession {
     knowledgeStatePath?: string
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
+    documentPlanPath?: string
   }
 }

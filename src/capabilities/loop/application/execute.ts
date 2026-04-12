@@ -30,6 +30,11 @@ import {
   buildCommandSafetyConfig,
   runSafeCommand,
 } from '../../workflows/shared/runtime.js'
+import {
+  generateDocumentPlan,
+  renderDocumentPlanForStage,
+  type DocumentPlan,
+} from '../../../core/project-documents/document-plan.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
   appendHumanConfirmationItem,
@@ -490,6 +495,23 @@ ${stage === 'code_development' && session.tddEligible && session.redTestConfirme
   : ''}
 
 Return markdown only.`
+}
+
+function buildStagePromptWithDocuments(
+  stage: LoopStageName,
+  session: LoopSession,
+  tasks: LoopTask[],
+  knowledgeContext: string,
+  documentPlan: DocumentPlan
+): string {
+  return [
+    buildStagePrompt(stage, session, tasks, knowledgeContext).trimEnd(),
+    '',
+    renderDocumentPlanForStage(stage, documentPlan),
+    '',
+    'When you generate repository documents, follow the document routing above exactly.',
+    'Return markdown only.',
+  ].join('\n')
 }
 
 async function evaluateStage(
@@ -957,6 +979,7 @@ async function runSingleStage(
   stage: LoopStageName,
   session: LoopSession,
   tasks: LoopTask[],
+  documentPlan: DocumentPlan,
   runtime: LoopRuntimeConfig,
   planner: AIProvider,
   executor: AIProvider,
@@ -986,7 +1009,7 @@ async function runSingleStage(
   if (dryRun) {
     stageReport = `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`
   } else {
-    const stagePrompt = buildStagePrompt(stage, session, tasks, knowledgeContext)
+    const stagePrompt = buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)
     const progressWrites: Array<Promise<void>> = []
     const response = await executor.chat([{ role: 'user', content: stagePrompt }], undefined, {
       onProgress: (event) => {
@@ -1161,7 +1184,10 @@ async function runSingleStage(
       const replanOutput = await planner.chat([{ role: 'user', content: replanPrompt }])
       await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
 
-      const retried = await executor.chat([{ role: 'user', content: `${buildStagePrompt(stage, session, tasks, knowledgeContext)}\n\nAdditional guidance:\n${replanOutput}` }])
+      const retried = await executor.chat([{
+        role: 'user',
+        content: `${buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)}\n\nAdditional guidance:\n${replanOutput}`,
+      }])
 
       if (stage === 'unit_mock_test') {
         const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
@@ -1240,6 +1266,7 @@ async function runSingleStage(
 async function continueSession(
   session: LoopSession,
   prepared: LoopPreparedInput,
+  documentPlan: DocumentPlan,
   runCwd: string,
   timeoutTier: ComplexityTier,
   runtime: LoopRuntimeConfig,
@@ -1489,6 +1516,7 @@ async function continueSession(
           stage,
           session,
           session.plan,
+          documentPlan,
           runtime,
           planner,
           executor,
@@ -1865,6 +1893,30 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
 
   await mkdir(sessionDir, { recursive: true })
+  let branchName: string | undefined
+  let workspaceMode: 'current' | 'worktree' = 'current'
+  let workspacePath = ctx.cwd
+  let worktreeFailureReason: string | undefined
+  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
+  if (shouldUseWorktree) {
+    const worktree = ensureWorktree(loopRuntime.autoBranchPrefix, ctx.cwd)
+    workspaceMode = worktree.workspaceMode
+    workspacePath = worktree.workspacePath
+    branchName = worktree.worktreeBranch
+    worktreeFailureReason = worktree.failureReason
+  }
+  const seededDocumentPlan = ctx.metadata?.documentPlan as DocumentPlan | undefined
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: workspacePath,
+    sessionDir,
+    capability: 'loop',
+    sessionId,
+    goal: prepared.goal,
+    prdPath: prepared.prdPath,
+    stages: loopRuntime.stages,
+    provider: planner,
+    seedPlan: seededDocumentPlan,
+  })
   const knowledgeArtifacts = await createTaskKnowledge({
     sessionDir,
     capability: 'loop',
@@ -1914,18 +1966,6 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     ].join('\n'),
   })
 
-  let branchName: string | undefined
-  let workspaceMode: 'current' | 'worktree' = 'current'
-  let workspacePath = ctx.cwd
-  let worktreeFailureReason: string | undefined
-  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
-  if (shouldUseWorktree) {
-    const worktree = ensureWorktree(loopRuntime.autoBranchPrefix, ctx.cwd)
-    workspaceMode = worktree.workspaceMode
-    workspacePath = worktree.workspacePath
-    branchName = worktree.worktreeBranch
-    worktreeFailureReason = worktree.failureReason
-  }
   let reusedCurrentBranch = false
   if (loopRuntime.autoCommit && prepared.dryRun !== true && workspaceMode !== 'worktree' && !worktreeFailureReason) {
     const currentBranch = loopRuntime.reuseCurrentBranch
@@ -1967,6 +2007,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       eventsPath,
       planPath,
       humanConfirmationPath,
+      documentPlanPath,
       ...knowledgeArtifacts,
       ...(routingDecision ? { routingDecisionPath } : {}),
     },
@@ -2015,6 +2056,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   return continueSession(
     session,
     prepared,
+    documentPlan,
     workspacePath,
     prepared.complexity || routingDecision?.tier || 'standard',
     loopRuntime,
@@ -2137,6 +2179,19 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     await writeFile(session.artifacts.planPath, JSON.stringify(session.plan, null, 2), 'utf-8')
   }
 
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: session.artifacts.workspacePath || ctx.cwd,
+    sessionDir: session.artifacts.sessionDir,
+    capability: 'loop',
+    sessionId: session.id,
+    goal: session.goal,
+    prdPath: session.prdPath,
+    stages: session.stages,
+    provider: planner,
+    existingPlanPath: session.artifacts.documentPlanPath,
+  })
+  session.artifacts.documentPlanPath = documentPlanPath
+
   const resumeCheckpointError = validateResumeCheckpoint(session)
   if (resumeCheckpointError) {
     session.status = 'paused_for_human'
@@ -2204,6 +2259,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   return continueSession(
     session,
     prepared,
+    documentPlan,
     session.artifacts.workspacePath || ctx.cwd,
     resumeComplexity || 'standard',
     loopRuntime,

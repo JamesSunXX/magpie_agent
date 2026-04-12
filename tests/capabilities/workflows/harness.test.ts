@@ -529,7 +529,7 @@ integrations:
     expect(reviewCalls[0]?.reviewers).toBe('alpha,beta')
     expect(validatorProviderMocks.codex).toHaveBeenCalled()
     expect(validatorProviderMocks.claw).not.toHaveBeenCalled()
-    expect(validatorProviderMocks.kiro).not.toHaveBeenCalled()
+    expect(validatorProviderMocks.kiro).toHaveBeenCalledTimes(1)
     expect(harnessConfig.reviewers.alpha?.prompt).toBe('alpha review')
     expect(harnessConfig.reviewers.beta?.prompt).toBe('beta review')
     expect(harnessConfig.capabilities.issue_fix?.planner_model).toBe('mock')

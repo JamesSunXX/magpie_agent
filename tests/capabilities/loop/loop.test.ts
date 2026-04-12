@@ -148,8 +148,10 @@ describe('loop capability', () => {
     expect(result.result.session?.artifacts.knowledgeLogPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeStatePath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeSummaryDir).toBeTruthy()
+    expect(result.result.session?.artifacts.documentPlanPath).toBeTruthy()
     expect(existsSync(result.result.session!.artifacts.knowledgeSchemaPath)).toBe(true)
     expect(existsSync(result.result.session!.artifacts.knowledgeStatePath!)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.documentPlanPath!)).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
@@ -1422,6 +1424,37 @@ process.exit(result.status ?? 1)
   })
 
   it('creates an isolated worktree for complex runs and persists workspace metadata', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn(async (messages) => {
+            const prompt = String(messages.at(-1)?.content ?? '')
+            if (prompt.includes('Plan project document routing for this Magpie session.')) {
+              const repoRoot = prompt.match(/^Repository root: (.+)$/m)?.[1]?.trim()
+              return `\`\`\`json
+{
+  "mode": "project_docs",
+  "reasoningSources": ["${join(repoRoot || '', 'AGENTS.md')}"],
+  "formalDocsRoot": "${join(repoRoot || '', 'docs', 'guides')}",
+  "formalDocTargets": {
+    "trd": "${join(repoRoot || '', 'docs', 'guides', 'delivery-trd.md')}"
+  },
+  "confidence": 0.95
+}
+\`\`\``
+            }
+            if (prompt.includes('Evaluate this stage execution quality.')) {
+              return '{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"ok"}'
+            }
+            return actual.createConfiguredProvider(input, config as never).chat(messages)
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
     mkdirSync(join(dir, '.worktrees'), { recursive: true })
@@ -1452,6 +1485,12 @@ process.exit(result.status ?? 1)
     }, ctx)
 
     const afterBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const documentPlan = JSON.parse(
+      readFileSync(result.result.session!.artifacts.documentPlanPath!, 'utf-8')
+    ) as { formalDocsRoot: string; formalDocTargets: { trd?: string } }
+    const normalizedFormalDocsRoot = documentPlan.formalDocsRoot.replace(/^\/private/, '')
+    const normalizedFormalTrdTarget = documentPlan.formalDocTargets.trd?.replace(/^\/private/, '')
+    const normalizedWorkspacePath = result.result.session!.artifacts.workspacePath!.replace(/^\/private/, '')
 
     expect(result.result.status).toBe('completed')
     expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
@@ -1460,6 +1499,8 @@ process.exit(result.status ?? 1)
     expect(result.result.session?.artifacts.worktreeBranch).toMatch(/^sch\//)
     expect(result.result.session?.branchName).toBe(result.result.session?.artifacts.worktreeBranch)
     expect(existsSync(join(result.result.session!.artifacts.workspacePath!, '.git'))).toBe(true)
+    expect(normalizedFormalDocsRoot).toBe(join(normalizedWorkspacePath, 'docs', 'guides'))
+    expect(normalizedFormalTrdTarget).toBe(join(normalizedWorkspacePath, 'docs', 'guides', 'delivery-trd.md'))
     expect(result.result.session?.artifacts.humanConfirmationPath).toBe(
       join(result.result.session!.artifacts.workspacePath!, 'human_confirmation.md')
     )
