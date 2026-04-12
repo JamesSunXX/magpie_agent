@@ -2,7 +2,7 @@ import { appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { closeSync, openSync, readSync, writeSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
-import { getMagpieHomeDir } from '../../../platform/paths.js'
+import { getRepoCapabilitySessionsDir, getRepoSessionDir } from '../../../platform/paths.js'
 import type { SafetyConfig } from '../../../platform/config/types.js'
 
 export type WorkflowCapability =
@@ -75,12 +75,12 @@ export function generateWorkflowId(prefix: string): string {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}`
 }
 
-export function sessionDirFor(capability: WorkflowCapability, id: string): string {
-  return join(getMagpieHomeDir(), 'workflow-sessions', capability, id)
+export function sessionDirFor(cwd: string, capability: WorkflowCapability, id: string): string {
+  return getRepoSessionDir(cwd, capability, id)
 }
 
-export async function persistWorkflowSession(session: WorkflowSession): Promise<void> {
-  const dir = sessionDirFor(session.capability, session.id)
+export async function persistWorkflowSession(cwd: string, session: WorkflowSession): Promise<void> {
+  const dir = sessionDirFor(cwd, session.capability, session.id)
   const sessionPath = join(dir, 'session.json')
   await mkdir(dir, { recursive: true })
   try {
@@ -110,24 +110,25 @@ function reviveWorkflowSession(content: string): WorkflowSession {
 }
 
 export async function loadWorkflowSession(
+  cwd: string,
   capability: WorkflowCapability,
   id: string
 ): Promise<WorkflowSession | null> {
   try {
-    const content = await readFile(join(sessionDirFor(capability, id), 'session.json'), 'utf-8')
+    const content = await readFile(join(sessionDirFor(cwd, capability, id), 'session.json'), 'utf-8')
     return reviveWorkflowSession(content)
   } catch {
     return null
   }
 }
 
-export async function listWorkflowSessions(capability: WorkflowCapability): Promise<WorkflowSession[]> {
-  const baseDir = join(getMagpieHomeDir(), 'workflow-sessions', capability)
+export async function listWorkflowSessions(cwd: string, capability: WorkflowCapability): Promise<WorkflowSession[]> {
+  const baseDir = getRepoCapabilitySessionsDir(cwd, capability)
 
   try {
     const ids = await readdir(baseDir)
     const sessions = (await Promise.all(
-      ids.map(async (id) => loadWorkflowSession(capability, id))
+      ids.map(async (id) => loadWorkflowSession(cwd, capability, id))
     )).filter((session): session is WorkflowSession => session !== null)
 
     sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
@@ -138,11 +139,12 @@ export async function listWorkflowSessions(capability: WorkflowCapability): Prom
 }
 
 export async function appendWorkflowEvent(
+  cwd: string,
   capability: WorkflowCapability,
   id: string,
   event: WorkflowEvent
 ): Promise<string> {
-  const dir = sessionDirFor(capability, id)
+  const dir = sessionDirFor(cwd, capability, id)
   const eventsPath = join(dir, 'events.jsonl')
   await mkdir(dir, { recursive: true })
   await appendFile(eventsPath, `${JSON.stringify(event)}\n`, 'utf-8')

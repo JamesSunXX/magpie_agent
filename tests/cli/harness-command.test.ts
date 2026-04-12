@@ -265,7 +265,7 @@ describe('top-level harness CLI command', () => {
       { from: 'node' }
     )
 
-    expect(loadWorkflowSession).toHaveBeenCalledWith('harness', 'harness-1')
+    expect(loadWorkflowSession).toHaveBeenCalledWith(process.cwd(), 'harness', 'harness-1')
     expect(logSpy).toHaveBeenCalledWith('Status: in_progress')
     expect(logSpy).toHaveBeenCalledWith('Stage: reviewing')
     expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/harness-1 (worktree)')
@@ -320,7 +320,7 @@ describe('top-level harness CLI command', () => {
       { from: 'node' }
     )
 
-    expect(listWorkflowSessions).toHaveBeenCalledWith('harness')
+    expect(listWorkflowSessions).toHaveBeenCalledWith(process.cwd(), 'harness')
     expect(logSpy).toHaveBeenCalledWith('harness-2\tcompleted\tcompleted\t2026-04-10T10:00:00.000Z\tCheckout')
     expect(logSpy).toHaveBeenCalledWith('harness-1\tin_progress\treviewing\t2026-04-10T09:00:00.000Z\tPayments')
     logSpy.mockRestore()

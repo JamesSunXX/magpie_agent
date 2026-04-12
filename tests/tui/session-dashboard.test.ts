@@ -11,9 +11,9 @@ describe('session dashboard', () => {
 
     mkdirSync(join(repoDir, '.magpie', 'sessions'), { recursive: true })
     mkdirSync(join(magpieHomeDir, 'discussions'), { recursive: true })
-    mkdirSync(join(magpieHomeDir, 'trd-sessions'), { recursive: true })
-    mkdirSync(join(magpieHomeDir, 'loop-sessions'), { recursive: true })
-    mkdirSync(join(magpieHomeDir, 'workflow-sessions', 'issue-fix', 'wf-1'), { recursive: true })
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'trd', 'trd-1'), { recursive: true })
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'loop', 'loop-1'), { recursive: true })
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'issue-fix', 'wf-1'), { recursive: true })
 
     writeFileSync(join(repoDir, '.magpie', 'sessions', 'review-1.json'), JSON.stringify({
       id: 'review-1',
@@ -46,7 +46,7 @@ describe('session dashboard', () => {
       rounds: [],
     }), 'utf-8')
 
-    writeFileSync(join(magpieHomeDir, 'trd-sessions', 'trd-1.json'), JSON.stringify({
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'trd', 'trd-1', 'session.json'), JSON.stringify({
       id: 'trd-1',
       title: 'Checkout PRD',
       prdPath: '/tmp/prd.md',
@@ -66,7 +66,7 @@ describe('session dashboard', () => {
       rounds: [],
     }), 'utf-8')
 
-    writeFileSync(join(magpieHomeDir, 'loop-sessions', 'loop-1.json'), JSON.stringify({
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'loop', 'loop-1', 'session.json'), JSON.stringify({
       id: 'loop-1',
       title: 'Paused loop',
       goal: 'Fix dashboard',
@@ -87,7 +87,7 @@ describe('session dashboard', () => {
       },
     }), 'utf-8')
 
-    writeFileSync(join(magpieHomeDir, 'workflow-sessions', 'issue-fix', 'wf-1', 'session.json'), JSON.stringify({
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'issue-fix', 'wf-1', 'session.json'), JSON.stringify({
       id: 'wf-1',
       capability: 'issue-fix',
       title: 'Fix dashboard crash',
@@ -137,9 +137,9 @@ describe('session dashboard', () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
 
-    mkdirSync(join(magpieHomeDir, 'workflow-sessions', 'harness', 'harness-1'), { recursive: true })
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1'), { recursive: true })
 
-    writeFileSync(join(magpieHomeDir, 'workflow-sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
       id: 'harness-1',
       capability: 'harness',
       title: 'Deliver checkout v2',
@@ -157,5 +157,40 @@ describe('session dashboard', () => {
 
     expect(result.continue).toEqual([])
     expect(result.recent[0]).toMatchObject({ capability: 'harness', status: 'in_progress' })
+  })
+
+  it('loads repo-local sessions when launched from a nested directory', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const nestedDir = join(repoDir, 'packages', 'feature')
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(nestedDir, { recursive: true })
+    writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ name: 'magpie-test-repo' }), 'utf-8')
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'loop', 'loop-nested'), { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'loop', 'loop-nested', 'session.json'), JSON.stringify({
+      id: 'loop-nested',
+      title: 'Nested loop',
+      goal: 'Verify nested cwd',
+      prdPath: '/tmp/prd.md',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T10:30:00.000Z',
+      status: 'paused_for_human',
+      currentStageIndex: 1,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: '/tmp/loop-nested',
+        eventsPath: '/tmp/loop-nested/events.jsonl',
+        planPath: '/tmp/loop-nested/plan.md',
+        humanConfirmationPath: '/tmp/loop-nested/human_confirmation.md',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: nestedDir, magpieHomeDir })
+
+    expect(result.continue[0]).toMatchObject({ capability: 'loop', id: 'loop-nested' })
   })
 })

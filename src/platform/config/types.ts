@@ -33,7 +33,7 @@ export interface StageRoutePolicy {
   execution?: Partial<Record<ComplexityTier, ModelRouteBinding>>
 }
 
-export interface ReviewerPoolPolicy extends Partial<Record<ComplexityTier, string[]>> {}
+export type ReviewerPoolPolicy = Partial<Record<ComplexityTier, string[]>>
 
 export interface RoutingFallbackChain {
   planning?: Partial<Record<ComplexityTier, ModelRouteBinding[]>>

@@ -10,7 +10,7 @@ import type { Reviewer } from '../../../core/debate/types.js'
 import { StateManager } from '../../../core/state/index.js'
 import type { TrdSession } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { getMagpieHomeDir } from '../../../platform/paths.js'
+import { getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { ChatImageInput } from '../../../platform/providers/index.js'
 import { loadProjectContext } from '../../../utils/context-loader.js'
@@ -101,7 +101,7 @@ function resolveTrdDefaults(config: MagpieConfigV2) {
   }
 }
 
-function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions, config: MagpieConfigV2): OutputPaths {
+function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions, config: MagpieConfigV2, cwd: string): OutputPaths {
   const defaults = resolveTrdDefaults(config)
   const ext = prdPath.toLowerCase().endsWith('.md') ? '.md' : ''
   const base = ext ? prdPath.slice(0, -ext.length) : prdPath
@@ -111,7 +111,7 @@ function getOutputPaths(prdPath: string, sessionId: string, options: TrdOptions,
   const confirmedDomainsPath = `${base}.domains.confirmed.yaml`
   const trdPath = options.output || `${base}${defaults.trdSuffix}`
   const openQuestionsPath = options.questionsOutput || `${base}${defaults.openQuestionsSuffix}`
-  const partialDir = join(getMagpieHomeDir(), 'trd-sessions', sessionId, 'artifacts')
+  const partialDir = join(getRepoSessionDir(cwd, 'trd', sessionId), 'artifacts')
 
   return {
     domainOverviewPath,
@@ -602,7 +602,7 @@ async function runNewTrd(
   const sessionId = generateShortId()
   const defaults = resolveTrdDefaults(config)
   const reviewerIds = resolveReviewerIds(config, options)
-  const paths = getOutputPaths(prdPath, sessionId, options, config)
+  const paths = getOutputPaths(prdPath, sessionId, options, config, process.cwd())
   ensureDir(paths.partialDir)
 
   const rawPrd = readFileSync(prdPath, 'utf-8')

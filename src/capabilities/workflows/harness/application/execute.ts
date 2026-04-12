@@ -540,7 +540,7 @@ export async function executeHarness(
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
-  const sessionDir = sessionDirFor('harness', sessionId)
+  const sessionDir = sessionDirFor(ctx.cwd, 'harness', sessionId)
   const roundsPath = join(sessionDir, 'rounds.json')
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
@@ -617,7 +617,7 @@ export async function executeHarness(
       updatedAt: new Date(),
       artifacts: nextArtifacts,
     }
-    await persistWorkflowSession(session)
+    await persistWorkflowSession(ctx.cwd, session)
     progressObserver?.onSessionUpdate?.(session)
   }
 
@@ -635,7 +635,7 @@ export async function executeHarness(
       type,
       ...patch,
     }
-    await appendWorkflowEvent('harness', sessionId, event)
+    await appendWorkflowEvent(ctx.cwd, 'harness', sessionId, event)
     progressObserver?.onEvent?.({
       sessionId,
       ...event,

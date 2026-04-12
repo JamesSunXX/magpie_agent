@@ -200,7 +200,7 @@ describe('StateManager', () => {
 
     await manager.saveLoopSession(laterSession)
 
-    const raw = await readFile(join(tempDir, 'loop-sessions', 'loop-123.json'), 'utf-8')
+    const raw = await readFile(join(tempDir, '.magpie', 'sessions', 'loop', 'loop-123', 'session.json'), 'utf-8')
     const persisted = JSON.parse(raw) as { artifacts: Record<string, string> }
     expect(persisted.artifacts.tmuxSession).toBe('magpie-loop-123')
     expect(persisted.artifacts.tmuxWindow).toBe('@1')
@@ -319,6 +319,7 @@ describe('StateManager', () => {
     expect(loaded?.updatedAt).toBeInstanceOf(Date)
     expect(loaded?.rounds[0]?.timestamp).toBeInstanceOf(Date)
     expect(listed.map((session) => session.id)).toEqual(['trd-2', 'trd-1'])
+    expect(await readFile(join(tempDir, '.magpie', 'sessions', 'trd', 'trd-1', 'session.json'), 'utf-8')).toContain('"id": "trd-1"')
   })
 
   it('should save, load, and list loop sessions', async () => {
@@ -399,5 +400,6 @@ describe('StateManager', () => {
     expect(loaded?.humanConfirmations[0]?.createdAt).toBeInstanceOf(Date)
     expect(loaded?.humanConfirmations[0]?.updatedAt).toBeInstanceOf(Date)
     expect(listed.map((session) => session.id)).toEqual(['loop-b', 'loop-a'])
+    expect(await readFile(join(tempDir, '.magpie', 'sessions', 'loop', 'loop-a', 'session.json'), 'utf-8')).toContain('"id": "loop-a"')
   })
 })

@@ -17,6 +17,8 @@
 | 初始化 | `magpie init` | `src/cli/commands/init.ts`、`src/platform/config/` | 生成或升级配置 |
 | 统计 | `magpie stats` | `src/cli/commands/stats.ts`、`src/capabilities/stats/` | 当前仍偏轻量 |
 
+`trd`、`loop`、`harness` 以及 workflow 会话默认落到当前仓库 `.magpie/sessions/<capability>/<sessionId>/`；长期记忆和仓库级知识仍走全局 `~/.magpie/`。
+
 ## 支撑模块
 
 | 模块 | 主要位置 | 负责什么 |

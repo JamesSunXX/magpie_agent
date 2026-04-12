@@ -24,7 +24,7 @@ export async function executePostMergeRegression(
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const commands = prepared.commands || runtime.commands || []
   const sessionId = generateWorkflowId('post-merge-regression')
-  const sessionDir = sessionDirFor('post-merge-regression', sessionId)
+  const sessionDir = sessionDirFor(ctx.cwd, 'post-merge-regression', sessionId)
   const reportPath = join(sessionDir, 'regression-report.md')
   const evidencePath = join(sessionDir, 'evidence.json')
   await mkdir(sessionDir, { recursive: true })
@@ -106,7 +106,7 @@ export async function executePostMergeRegression(
     },
     evidence,
   }
-  await persistWorkflowSession(session)
+  await persistWorkflowSession(ctx.cwd, session)
 
   return {
     status: session.status,

@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const randomBytesMock = vi.hoisted(() => vi.fn(() => Buffer.from('01020304', 'hex')))
 const loadConfigMock = vi.hoisted(() => vi.fn())
 const createOperationsProvidersMock = vi.hoisted(() => vi.fn())
-const getMagpieHomeDirMock = vi.hoisted(() => vi.fn())
-
 vi.mock('crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('crypto')>()
   return {
@@ -24,14 +22,6 @@ vi.mock('../../src/platform/integrations/operations/factory.js', () => ({
   createOperationsProviders: createOperationsProvidersMock,
 }))
 
-vi.mock('../../src/platform/paths.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/platform/paths.js')>()
-  return {
-    ...actual,
-    getMagpieHomeDir: getMagpieHomeDirMock,
-  }
-})
-
 import { launchMagpieInTmux } from '../../src/cli/commands/tmux-launch.js'
 import { TmuxOperationsProvider } from '../../src/platform/integrations/operations/providers/tmux.js'
 
@@ -47,7 +37,6 @@ describe('launchMagpieInTmux', () => {
     cwd = mkdtempSync(join(tmpdir(), 'magpie-cwd-'))
     originalArgv = [...process.argv]
     originalExecArgv = [...process.execArgv]
-    getMagpieHomeDirMock.mockReturnValue(homeDir)
     loadConfigMock.mockReturnValue({
       integrations: {
         operations: {
@@ -61,8 +50,8 @@ describe('launchMagpieInTmux', () => {
     process.argv = [process.execPath, join(process.cwd(), 'dist', 'cli.js')]
     process.execArgv = []
 
-    mkdirSync(join(homeDir, 'loop-sessions'), { recursive: true })
-    writeFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), JSON.stringify({
+    mkdirSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304'), { recursive: true })
+    writeFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), JSON.stringify({
       artifacts: {
         existing: 'yes',
       },
@@ -95,12 +84,12 @@ describe('launchMagpieInTmux', () => {
       sessionName: 'magpie-loop-01020304',
       command: expect.stringContaining(`${process.execPath}`),
     }))
-    expect(launchSpy.mock.calls[0]?.[0].command).toContain(join(process.cwd(), 'dist', 'cli.js'))
+    expect(launchSpy.mock.calls[0]?.[0].command).toMatch(new RegExp(`${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(dist/cli\\.js|src/cli\\.ts)`))
     expect(launchSpy.mock.calls[0]?.[0].command).not.toContain(join(cwd, 'dist', 'cli.js'))
     expect(launchSpy.mock.calls[0]?.[0].command).toContain("MAGPIE_SESSION_ID='loop-01020304'")
     expect(launchSpy.mock.calls[0]?.[0].command).toContain("MAGPIE_EXECUTION_HOST='tmux'")
 
-    const patched = JSON.parse(readFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), 'utf-8')) as {
+    const patched = JSON.parse(readFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), 'utf-8')) as {
       artifacts: Record<string, string>
     }
     expect(patched.artifacts).toMatchObject({
@@ -116,8 +105,8 @@ describe('launchMagpieInTmux', () => {
     process.argv = [process.execPath, join(process.cwd(), 'src', 'cli.ts')]
     process.execArgv = ['--import', 'tsx']
 
-    mkdirSync(join(homeDir, 'loop-sessions'), { recursive: true })
-    writeFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), JSON.stringify({
+    mkdirSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304'), { recursive: true })
+    writeFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), JSON.stringify({
       artifacts: {},
     }, null, 2), 'utf-8')
 
@@ -151,8 +140,8 @@ describe('launchMagpieInTmux', () => {
       'tsx',
     ]
 
-    mkdirSync(join(homeDir, 'loop-sessions'), { recursive: true })
-    writeFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), JSON.stringify({
+    mkdirSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304'), { recursive: true })
+    writeFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), JSON.stringify({
       artifacts: {},
     }, null, 2), 'utf-8')
 
@@ -177,8 +166,8 @@ describe('launchMagpieInTmux', () => {
   })
 
   it('prefers the configured default tmux provider when multiple are enabled', async () => {
-    mkdirSync(join(homeDir, 'loop-sessions'), { recursive: true })
-    writeFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), JSON.stringify({
+    mkdirSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304'), { recursive: true })
+    writeFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), JSON.stringify({
       artifacts: {},
     }, null, 2), 'utf-8')
 
@@ -219,8 +208,8 @@ describe('launchMagpieInTmux', () => {
   })
 
   it('patches harness session metadata after tmux launch', async () => {
-    mkdirSync(join(homeDir, 'workflow-sessions', 'harness', 'harness-01020304'), { recursive: true })
-    writeFileSync(join(homeDir, 'workflow-sessions', 'harness', 'harness-01020304', 'session.json'), JSON.stringify({
+    mkdirSync(join(cwd, '.magpie', 'sessions', 'harness', 'harness-01020304'), { recursive: true })
+    writeFileSync(join(cwd, '.magpie', 'sessions', 'harness', 'harness-01020304', 'session.json'), JSON.stringify({
       artifacts: {},
     }, null, 2), 'utf-8')
 
@@ -246,9 +235,9 @@ describe('launchMagpieInTmux', () => {
       tmuxPane: undefined,
     })
     expect(loadConfigMock).toHaveBeenCalledWith('/tmp/config.yaml')
-    expect(launchSpy.mock.calls[0]?.[0].command).toContain(join(process.cwd(), 'dist', 'cli.js'))
+    expect(launchSpy.mock.calls[0]?.[0].command).toMatch(new RegExp(`${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(dist/cli\\.js|src/cli\\.ts)`))
 
-    const patched = JSON.parse(readFileSync(join(homeDir, 'workflow-sessions', 'harness', 'harness-01020304', 'session.json'), 'utf-8')) as {
+    const patched = JSON.parse(readFileSync(join(cwd, '.magpie', 'sessions', 'harness', 'harness-01020304', 'session.json'), 'utf-8')) as {
       artifacts: Record<string, string>
     }
     expect(patched.artifacts).toMatchObject({
@@ -279,8 +268,8 @@ describe('launchMagpieInTmux', () => {
     })
 
     setTimeout(() => {
-      mkdirSync(join(homeDir, 'loop-sessions'), { recursive: true })
-      writeFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), JSON.stringify({
+      mkdirSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304'), { recursive: true })
+      writeFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), JSON.stringify({
         artifacts: {
           existing: 'late',
         },
@@ -291,7 +280,7 @@ describe('launchMagpieInTmux', () => {
     const result = await launchPromise
 
     expect(result.tmuxWindow).toBe('@9')
-    const patched = JSON.parse(readFileSync(join(homeDir, 'loop-sessions', 'loop-01020304.json'), 'utf-8')) as {
+    const patched = JSON.parse(readFileSync(join(cwd, '.magpie', 'sessions', 'loop', 'loop-01020304', 'session.json'), 'utf-8')) as {
       artifacts: Record<string, string>
     }
     expect(patched.artifacts).toMatchObject({

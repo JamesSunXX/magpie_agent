@@ -1,6 +1,6 @@
 import { readFile, readdir } from 'fs/promises'
 import { join } from 'path'
-import { getMagpieHomeDir } from '../platform/paths.js'
+import { getMagpieHomeDir, getRepoMagpieDir, getRepoSessionsDir } from '../platform/paths.js'
 import { buildResumeArgv } from './command-builder.js'
 import { CONTINUABLE_STATUSES } from './types.js'
 import type { DashboardSessions, SessionCard } from './types.js'
@@ -69,13 +69,38 @@ async function readJsonFiles<T>(dir: string): Promise<T[]> {
   }
 }
 
-async function loadWorkflowSessions(magpieHomeDir: string): Promise<WorkflowSessionFile[]> {
-  const baseDir = join(magpieHomeDir, 'workflow-sessions')
+async function loadSessionJsonCards<T>(dir: string): Promise<T[]> {
+  const sessions: T[] = []
+
+  try {
+    const sessionDirs = await readdir(dir)
+    for (const sessionDir of sessionDirs) {
+      const filePath = join(dir, sessionDir, 'session.json')
+
+      try {
+        sessions.push(JSON.parse(await readFile(filePath, 'utf-8')) as T)
+      } catch {
+        // Ignore malformed or incomplete session directories.
+      }
+    }
+  } catch {
+    return []
+  }
+
+  return sessions
+}
+
+async function loadWorkflowSessions(repoMagpieDir: string): Promise<WorkflowSessionFile[]> {
+  const baseDir = join(repoMagpieDir, 'sessions')
   const sessions: WorkflowSessionFile[] = []
+  const workflowCapabilities = new Set(['harness', 'issue-fix', 'docs-sync', 'post-merge-regression'])
 
   try {
     const capabilityDirs = await readdir(baseDir)
     for (const capability of capabilityDirs) {
+      if (!workflowCapabilities.has(capability)) {
+        continue
+      }
       const capabilityDir = join(baseDir, capability)
       const sessionDirs = await readdir(capabilityDir)
 
@@ -188,17 +213,19 @@ function groupCards(cards: SessionCard[]): DashboardSessions {
 
 export async function loadSessionDashboard(options: SessionDashboardOptions): Promise<DashboardSessions> {
   const magpieHomeDir = options.magpieHomeDir || getMagpieHomeDir()
-  const reviewDir = join(options.cwd, '.magpie', 'sessions')
+  const repoMagpieDir = getRepoMagpieDir(options.cwd)
+  const sessionsDir = getRepoSessionsDir(options.cwd)
+  const reviewDir = sessionsDir
   const discussDir = join(magpieHomeDir, 'discussions')
-  const trdDir = join(magpieHomeDir, 'trd-sessions')
-  const loopDir = join(magpieHomeDir, 'loop-sessions')
+  const trdDir = join(sessionsDir, 'trd')
+  const loopDir = join(sessionsDir, 'loop')
 
   const [reviewSessions, discussSessions, trdSessions, loopSessions, workflowSessions] = await Promise.all([
     readJsonFiles<ReviewSessionFile>(reviewDir),
     readJsonFiles<DiscussSessionFile>(discussDir),
-    readJsonFiles<TrdSessionFile>(trdDir),
-    readJsonFiles<LoopSessionFile>(loopDir),
-    loadWorkflowSessions(magpieHomeDir),
+    loadSessionJsonCards<TrdSessionFile>(trdDir),
+    loadSessionJsonCards<LoopSessionFile>(loopDir),
+    loadWorkflowSessions(repoMagpieDir),
   ])
 
   const cards = [

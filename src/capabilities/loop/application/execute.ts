@@ -13,7 +13,7 @@ import type {
 } from '../../../core/state/index.js'
 import { StateManager } from '../../../core/state/index.js'
 import { loadConfig } from '../../../platform/config/loader.js'
-import { getMagpieHomeDir } from '../../../platform/paths.js'
+import { getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import type { LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
@@ -1375,7 +1375,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const progressObserver = getLoopProgressObserver(ctx)
 
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
-  const sessionDir = join(getMagpieHomeDir(), 'loop-sessions', sessionId)
+  const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')

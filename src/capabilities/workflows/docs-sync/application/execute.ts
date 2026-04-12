@@ -15,7 +15,7 @@ export async function executeDocsSync(
   const config = loadConfig(ctx.configPath)
   const runtime = config.capabilities.docs_sync || {}
   const sessionId = generateWorkflowId('docs-sync')
-  const sessionDir = sessionDirFor('docs-sync', sessionId)
+  const sessionDir = sessionDirFor(ctx.cwd, 'docs-sync', sessionId)
   const reportPath = join(sessionDir, 'docs-sync-report.md')
   await mkdir(sessionDir, { recursive: true })
 
@@ -49,7 +49,7 @@ export async function executeDocsSync(
       reportPath,
     },
   }
-  await persistWorkflowSession(session)
+  await persistWorkflowSession(ctx.cwd, session)
 
   return {
     status: 'completed',

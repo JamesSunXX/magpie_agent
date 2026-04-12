@@ -65,7 +65,7 @@ async function findPromotableSession(sessionId: string, cwd: string) {
       knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath,
     }))
 
-  const harnessMatches = (await listWorkflowSessions('harness'))
+  const harnessMatches = (await listWorkflowSessions(cwd, 'harness'))
     .filter((session) => session.id === sessionId || session.id.startsWith(sessionId))
     .map((session) => ({
       capability: 'harness' as const,

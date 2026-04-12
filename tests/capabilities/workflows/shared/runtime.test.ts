@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -17,6 +17,7 @@ import {
 
 describe('workflow shared runtime helpers', () => {
   let magpieHome: string | undefined
+  let cwd: string | undefined
 
   afterEach(() => {
     if (magpieHome) {
@@ -24,13 +25,18 @@ describe('workflow shared runtime helpers', () => {
       magpieHome = undefined
       delete process.env.MAGPIE_HOME
     }
+    if (cwd) {
+      rmSync(cwd, { recursive: true, force: true })
+      cwd = undefined
+    }
   })
 
   it('persists, loads, and lists workflow sessions in updated order', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-cwd-'))
     process.env.MAGPIE_HOME = magpieHome
 
-    await persistWorkflowSession({
+    await persistWorkflowSession(cwd, {
       id: 'harness-a',
       capability: 'harness',
       title: 'First session',
@@ -44,7 +50,7 @@ describe('workflow shared runtime helpers', () => {
       },
     })
 
-    await persistWorkflowSession({
+    await persistWorkflowSession(cwd, {
       id: 'harness-b',
       capability: 'harness',
       title: 'Second session',
@@ -58,27 +64,30 @@ describe('workflow shared runtime helpers', () => {
       },
     })
 
-    const loaded = await loadWorkflowSession('harness', 'harness-a')
-    const listed = await listWorkflowSessions('harness')
+    const loaded = await loadWorkflowSession(cwd, 'harness', 'harness-a')
+    const listed = await listWorkflowSessions(cwd, 'harness')
 
     expect(loaded?.updatedAt).toBeInstanceOf(Date)
     expect(loaded?.currentStage).toBe('reviewing')
     expect(listed.map((session) => session.id)).toEqual(['harness-b', 'harness-a'])
+    expect(readFileSync(join(cwd, '.magpie', 'sessions', 'harness', 'harness-a', 'session.json'), 'utf-8')).toContain('"id": "harness-a"')
   })
 
   it('returns null or empty list when workflow sessions are missing', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-empty-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-empty-cwd-'))
     process.env.MAGPIE_HOME = magpieHome
 
-    expect(await loadWorkflowSession('harness', 'missing')).toBeNull()
-    expect(await listWorkflowSessions('harness')).toEqual([])
+    expect(await loadWorkflowSession(cwd, 'harness', 'missing')).toBeNull()
+    expect(await listWorkflowSessions(cwd, 'harness')).toEqual([])
   })
 
   it('preserves existing workflow artifacts when later saves omit tmux details', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-merge-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-merge-cwd-'))
     process.env.MAGPIE_HOME = magpieHome
 
-    await persistWorkflowSession({
+    await persistWorkflowSession(cwd, {
       id: 'harness-a',
       capability: 'harness',
       title: 'First session',
@@ -95,7 +104,7 @@ describe('workflow shared runtime helpers', () => {
       },
     })
 
-    await persistWorkflowSession({
+    await persistWorkflowSession(cwd, {
       id: 'harness-a',
       capability: 'harness',
       title: 'First session',
@@ -109,7 +118,7 @@ describe('workflow shared runtime helpers', () => {
       },
     })
 
-    const loaded = await loadWorkflowSession('harness', 'harness-a')
+    const loaded = await loadWorkflowSession(cwd, 'harness', 'harness-a')
     expect(loaded?.artifacts.tmuxSession).toBe('magpie-harness-a')
     expect(loaded?.artifacts.tmuxWindow).toBe('@1')
     expect(loaded?.artifacts.tmuxPane).toBe('%1')
@@ -117,9 +126,10 @@ describe('workflow shared runtime helpers', () => {
 
   it('appends workflow events to the persisted jsonl stream', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-events-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-events-cwd-'))
     process.env.MAGPIE_HOME = magpieHome
 
-    const eventsPath = await appendWorkflowEvent('harness', 'harness-a', {
+    const eventsPath = await appendWorkflowEvent(cwd, 'harness', 'harness-a', {
       timestamp: new Date('2026-04-10T09:00:00.000Z'),
       type: 'workflow_started',
       stage: 'queued',
@@ -176,12 +186,13 @@ describe('workflow shared runtime helpers', () => {
 
   it('generates workflow ids and session directories under MAGPIE_HOME', () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-paths-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-paths-cwd-'))
     process.env.MAGPIE_HOME = magpieHome
 
     const id = generateWorkflowId('harness')
-    const dir = sessionDirFor('harness', 'example-session')
+    const dir = sessionDirFor(cwd, 'harness', 'example-session')
 
     expect(id).toMatch(/^harness-[0-9a-f]{8}$/)
-    expect(dir).toBe(join(magpieHome, 'workflow-sessions', 'harness', 'example-session'))
+    expect(dir).toBe(join(realpathSync(cwd), '.magpie', 'sessions', 'harness', 'example-session'))
   })
 })

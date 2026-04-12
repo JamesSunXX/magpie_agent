@@ -176,7 +176,7 @@ harnessCommand
   .description('Show details for a persisted harness session')
   .argument('<sessionId>', 'Harness session ID')
   .action(async (sessionId: string) => {
-    const session = await loadWorkflowSession('harness', sessionId)
+    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -211,7 +211,7 @@ harnessCommand
   .argument('<sessionId>', 'Harness session ID')
   .option('--once', 'Print current events and exit')
   .action(async (sessionId: string, options: { once?: boolean }) => {
-    const session = await loadWorkflowSession('harness', sessionId)
+    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -233,7 +233,7 @@ harnessCommand
     await followHarnessEventStream({
       sessionId,
       initialSession: session,
-      loadSession: async (id) => loadWorkflowSession('harness', id),
+      loadSession: async (id) => loadWorkflowSession(process.cwd(), 'harness', id),
       once: !!options.once,
     })
   })
@@ -243,7 +243,7 @@ harnessCommand
   .description('Show the knowledge summary for a harness session')
   .argument('<sessionId>', 'Harness session ID')
   .action(async (sessionId: string) => {
-    const session = await loadWorkflowSession('harness', sessionId)
+    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -257,7 +257,7 @@ harnessCommand
   .command('list')
   .description('List persisted harness sessions')
   .action(async () => {
-    const sessions = await listWorkflowSessions('harness')
+    const sessions = await listWorkflowSessions(process.cwd(), 'harness')
     if (sessions.length === 0) {
       console.log('No harness sessions found.')
       return

@@ -1,7 +1,7 @@
 // src/state/state-manager.ts
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
 import { join } from 'path'
-import { getMagpieHomeDir } from '../platform/paths.js'
+import { getMagpieHomeDir, getRepoCapabilitySessionsDir, getRepoSessionFile } from '../platform/paths.js'
 import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession, LoopSession } from './types.js'
 
 async function mergePersistedLoopArtifacts(filePath: string, session: LoopSession): Promise<LoopSession> {
@@ -173,9 +173,9 @@ export class StateManager {
     }
   }
 
-  // TRD session methods — stored in ~/.magpie/trd-sessions/
+  // TRD session methods — stored in <repo>/.magpie/sessions/trd/<id>/session.json
   private get trdSessionsDir(): string {
-    return join(getMagpieHomeDir(), 'trd-sessions')
+    return getRepoCapabilitySessionsDir(this.baseDir, 'trd')
   }
 
   async initTrdSessions(): Promise<void> {
@@ -183,13 +183,13 @@ export class StateManager {
   }
 
   async saveTrdSession(session: TrdSession): Promise<void> {
-    await mkdir(this.trdSessionsDir, { recursive: true })
-    const filePath = join(this.trdSessionsDir, `${session.id}.json`)
+    const filePath = getRepoSessionFile(this.baseDir, 'trd', session.id)
+    await mkdir(join(this.trdSessionsDir, session.id), { recursive: true })
     await writeFile(filePath, JSON.stringify(session, null, 2))
   }
 
   async loadTrdSession(id: string): Promise<TrdSession | null> {
-    const filePath = join(this.trdSessionsDir, `${id}.json`)
+    const filePath = getRepoSessionFile(this.baseDir, 'trd', id)
     try {
       const content = await readFile(filePath, 'utf-8')
       const data = JSON.parse(content)
@@ -207,14 +207,11 @@ export class StateManager {
 
   async listTrdSessions(): Promise<TrdSession[]> {
     try {
-      const files = await readdir(this.trdSessionsDir)
+      const entries = await readdir(this.trdSessionsDir)
       const sessions: TrdSession[] = []
-      for (const file of files) {
-        if (file.endsWith('.json')) {
-          const id = file.replace('.json', '')
-          const session = await this.loadTrdSession(id)
-          if (session) sessions.push(session)
-        }
+      for (const id of entries) {
+        const session = await this.loadTrdSession(id)
+        if (session) sessions.push(session)
       }
       sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       return sessions
@@ -223,9 +220,9 @@ export class StateManager {
     }
   }
 
-  // Loop session methods — stored in ~/.magpie/loop-sessions/
+  // Loop session methods — stored in <repo>/.magpie/sessions/loop/<id>/session.json
   private get loopSessionsDir(): string {
-    return join(getMagpieHomeDir(), 'loop-sessions')
+    return getRepoCapabilitySessionsDir(this.baseDir, 'loop')
   }
 
   async initLoopSessions(): Promise<void> {
@@ -233,14 +230,14 @@ export class StateManager {
   }
 
   async saveLoopSession(session: LoopSession): Promise<void> {
-    await mkdir(this.loopSessionsDir, { recursive: true })
-    const filePath = join(this.loopSessionsDir, `${session.id}.json`)
+    const filePath = getRepoSessionFile(this.baseDir, 'loop', session.id)
+    await mkdir(join(this.loopSessionsDir, session.id), { recursive: true })
     const mergedSession = await mergePersistedLoopArtifacts(filePath, session)
     await writeFile(filePath, JSON.stringify(mergedSession, null, 2))
   }
 
   async loadLoopSession(id: string): Promise<LoopSession | null> {
-    const filePath = join(this.loopSessionsDir, `${id}.json`)
+    const filePath = getRepoSessionFile(this.baseDir, 'loop', id)
     try {
       const content = await readFile(filePath, 'utf-8')
       const data = JSON.parse(content)
@@ -263,14 +260,11 @@ export class StateManager {
 
   async listLoopSessions(): Promise<LoopSession[]> {
     try {
-      const files = await readdir(this.loopSessionsDir)
+      const entries = await readdir(this.loopSessionsDir)
       const sessions: LoopSession[] = []
-      for (const file of files) {
-        if (file.endsWith('.json')) {
-          const id = file.replace('.json', '')
-          const session = await this.loadLoopSession(id)
-          if (session) sessions.push(session)
-        }
+      for (const id of entries) {
+        const session = await this.loadLoopSession(id)
+        if (session) sessions.push(session)
       }
       sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       return sessions

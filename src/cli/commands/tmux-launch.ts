@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'fs/promises'
 import { randomBytes } from 'crypto'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { getMagpieHomeDir } from '../../platform/paths.js'
+import { getRepoSessionFile } from '../../platform/paths.js'
 import { loadConfig } from '../../platform/config/loader.js'
 import { createOperationsProviders } from '../../platform/integrations/operations/factory.js'
 import { TmuxOperationsProvider } from '../../platform/integrations/operations/providers/tmux.js'
@@ -98,12 +98,11 @@ function resolveTmuxProvider(configPath?: string): TmuxOperationsProvider {
 
 async function patchSessionArtifacts(
   capability: 'loop' | 'harness',
+  cwd: string,
   sessionId: string,
   patch: Record<string, string>,
 ): Promise<void> {
-  const sessionJson = capability === 'loop'
-    ? join(getMagpieHomeDir(), 'loop-sessions', `${sessionId}.json`)
-    : join(getMagpieHomeDir(), 'workflow-sessions', 'harness', sessionId, 'session.json')
+  const sessionJson = getRepoSessionFile(cwd, capability, sessionId)
 
   const deadline = Date.now() + SESSION_PATCH_MAX_WAIT_MS
   while (Date.now() < deadline) {
@@ -159,7 +158,7 @@ export async function launchMagpieInTmux(options: {
     sessionName,
   })
 
-  await patchSessionArtifacts(options.capability, sessionId, {
+  await patchSessionArtifacts(options.capability, options.cwd, sessionId, {
     executionHost: 'tmux',
     tmuxSession: launch.sessionName,
     ...(launch.windowId ? { tmuxWindow: launch.windowId } : {}),

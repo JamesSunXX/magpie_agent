@@ -30,7 +30,7 @@ export async function executeIssueFix(
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(prepared.issue)
   const sessionId = generateWorkflowId('issue-fix')
-  const sessionDir = sessionDirFor('issue-fix', sessionId)
+  const sessionDir = sessionDirFor(ctx.cwd, 'issue-fix', sessionId)
   const planPath = join(sessionDir, 'plan.md')
   const executionPath = join(sessionDir, 'execution.md')
   const verificationPath = join(sessionDir, 'verification.txt')
@@ -157,7 +157,7 @@ export async function executeIssueFix(
       ...(verifyCommand ? { verificationPath } : {}),
     },
   }
-  await persistWorkflowSession(session)
+  await persistWorkflowSession(ctx.cwd, session)
   log.debug(`[issue-fix] session persisted, status=${session.status}`)
 
   return {

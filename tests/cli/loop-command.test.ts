@@ -24,7 +24,7 @@ describe('loop CLI command', () => {
     const state = new StateManager(cwd)
     await state.initLoopSessions()
 
-    const knowledgeDir = join(magpieHome, 'loop-sessions', 'loop-123', 'knowledge')
+    const knowledgeDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-123', 'knowledge')
     const summaryDir = join(knowledgeDir, 'summaries')
     mkdirSync(summaryDir, { recursive: true })
     writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
@@ -66,7 +66,7 @@ describe('loop CLI command', () => {
       stageResults: [],
       humanConfirmations: [],
       artifacts: {
-        sessionDir: join(magpieHome, 'loop-sessions', 'loop-123'),
+        sessionDir: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123'),
         eventsPath: '/tmp/events.jsonl',
         planPath: '/tmp/plan.json',
         humanConfirmationPath: '/tmp/human_confirmation.md',
@@ -107,7 +107,7 @@ describe('loop CLI command', () => {
     const state = new StateManager(cwd)
     await state.initLoopSessions()
 
-    const knowledgeDir = join(magpieHome, 'loop-sessions', 'loop-legacy', 'knowledge')
+    const knowledgeDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-legacy', 'knowledge')
     const summaryDir = join(knowledgeDir, 'summaries')
     mkdirSync(summaryDir, { recursive: true })
     writeFileSync(join(knowledgeDir, 'SCHEMA.md'), '# schema', 'utf-8')
@@ -131,7 +131,7 @@ describe('loop CLI command', () => {
       stageResults: [],
       humanConfirmations: [],
       artifacts: {
-        sessionDir: join(magpieHome, 'loop-sessions', 'loop-legacy'),
+        sessionDir: join(cwd, '.magpie', 'sessions', 'loop', 'loop-legacy'),
         eventsPath: '/tmp/events.jsonl',
         planPath: '/tmp/plan.json',
         humanConfirmationPath: '/tmp/human_confirmation.md',

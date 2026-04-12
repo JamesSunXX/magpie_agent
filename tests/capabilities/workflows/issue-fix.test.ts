@@ -23,7 +23,7 @@ vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
 }))
 
 describe('issue-fix workflow', () => {
-  it('stores workflow artifacts under MAGPIE_HOME when provided', async () => {
+  it('stores workflow artifacts under the repo-local .magpie sessions directory', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-home-'))
     const magpieHome = join(dir, '.magpie-test-home')
     mkdirSync(join(dir, 'src'), { recursive: true })
@@ -43,8 +43,8 @@ describe('issue-fix workflow', () => {
       }, ctx)
 
       expect(result.result.status).toBe('completed')
-      expect(result.result.session?.artifacts.planPath).toContain(magpieHome)
-      expect(result.result.session?.artifacts.executionPath).toContain(magpieHome)
+      expect(result.result.session?.artifacts.planPath).toContain(join(dir, '.magpie', 'sessions', 'issue-fix'))
+      expect(result.result.session?.artifacts.executionPath).toContain(join(dir, '.magpie', 'sessions', 'issue-fix'))
     } finally {
       if (previousMagpieHome === undefined) {
         delete process.env.MAGPIE_HOME

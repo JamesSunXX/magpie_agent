@@ -22,7 +22,7 @@
 
 - `workflow harness` 一键闭环（开发 -> 对抗评审 -> 单测 -> 自动修复循环）
 - 默认模型对抗（`gemini-cli` + `kiro`）
-- 每轮产物持久化到 `~/.magpie/workflow-sessions/harness/*`
+- 每轮产物持久化到仓库内 `.magpie/sessions/harness/*`
 
 当前不足：
 
@@ -283,4 +283,3 @@ magpie loop run "Deliver self-driven harness v2" \
 ```
 
 每个 loop 完成后，用同一 session 继续推进，直到 Loop 6。
-

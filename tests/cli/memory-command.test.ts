@@ -81,7 +81,7 @@ describe('memory CLI command', () => {
     const state = new StateManager(cwd)
     await state.initLoopSessions()
 
-    const sessionDir = join(magpieHome, 'loop-sessions', 'loop-123')
+    const sessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-123')
     const knowledgeDir = join(sessionDir, 'knowledge')
     const summaryDir = join(knowledgeDir, 'summaries')
     mkdirSync(summaryDir, { recursive: true })
@@ -136,7 +136,7 @@ describe('memory CLI command', () => {
     const state = new StateManager(cwd)
     await state.initLoopSessions()
 
-    const sessionDir = join(magpieHome, 'loop-sessions', 'loop-cross')
+    const sessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-cross')
     const knowledgeDir = join(sessionDir, 'knowledge')
     const summaryDir = join(knowledgeDir, 'summaries')
     mkdirSync(summaryDir, { recursive: true })
@@ -191,7 +191,7 @@ describe('memory CLI command', () => {
     const state = new StateManager(cwd)
     await state.initLoopSessions()
 
-    const sessionDir = join(magpieHome, 'loop-sessions', 'loop-empty')
+    const sessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-empty')
     const knowledgeDir = join(sessionDir, 'knowledge')
     mkdirSync(knowledgeDir, { recursive: true })
     writeFileSync(join(knowledgeDir, 'candidates.json'), JSON.stringify([
