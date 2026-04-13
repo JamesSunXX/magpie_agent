@@ -148,6 +148,10 @@ export interface LoopHumanConfirmationConfig {
   poll_interval_sec?: number
 }
 
+export interface LoopMrConfig {
+  enabled?: boolean
+}
+
 export interface LoopConfig {
   enabled?: boolean
   planner_tool?: string
@@ -168,6 +172,7 @@ export interface LoopConfig {
   auto_commit?: boolean
   reuse_current_branch?: boolean
   auto_branch_prefix?: string
+  mr?: LoopMrConfig
   human_confirmation?: LoopHumanConfirmationConfig
   commands?: LoopCommandsConfig
   execution_timeout?: LoopExecutionTimeoutConfig
@@ -195,6 +200,8 @@ export type NotificationEventType =
   | 'loop_resumed'
   | 'loop_failed'
   | 'loop_completed'
+  | 'loop_auto_mr_created'
+  | 'loop_auto_mr_manual_follow_up'
 
 export interface StageAiNotificationConfig {
   enabled?: boolean

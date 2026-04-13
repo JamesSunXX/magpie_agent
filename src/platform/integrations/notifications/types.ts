@@ -9,6 +9,8 @@ export type NotificationEventType =
   | 'loop_resumed'
   | 'loop_failed'
   | 'loop_completed'
+  | 'loop_auto_mr_created'
+  | 'loop_auto_mr_manual_follow_up'
 
 export type NotificationSeverity = 'info' | 'warning' | 'error'
 

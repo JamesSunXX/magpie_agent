@@ -164,6 +164,27 @@ describe('session dashboard', () => {
     const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
 
     mkdirSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1'), { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
+      id: 'harness-1',
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'blocked',
+      currentStage: 'developing',
+      summary: 'Waiting for human confirmation.',
+      artifacts: {
+        eventsPath: '/tmp/workflow/events.jsonl',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+
+    expect(result.continue[0]).toMatchObject({ capability: 'harness', status: 'blocked' })
+    expect(result.continue[0]?.resumeCommand).toEqual(['harness', 'resume', 'harness-1'])
+  })
+
   it('builds harness round summaries and selected detail from persisted role rounds', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
@@ -177,10 +198,6 @@ describe('session dashboard', () => {
       title: 'Deliver checkout v2',
       createdAt: '2026-03-19T09:00:00.000Z',
       updatedAt: '2026-03-19T11:00:00.000Z',
-      status: 'blocked',
-      currentStage: 'developing',
-      summary: 'Waiting for human confirmation.',
-      artifacts: {
       status: 'in_progress',
       currentStage: 'reviewing',
       summary: 'Running review cycle 2.',
@@ -190,10 +207,6 @@ describe('session dashboard', () => {
       },
     }), 'utf-8')
 
-    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
-
-    expect(result.continue[0]).toMatchObject({ capability: 'harness', status: 'blocked' })
-    expect(result.continue[0]?.resumeCommand).toEqual(['harness', 'resume', 'harness-1'])
     writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
       finalAction: 'revise',
       nextRoundBrief: 'Fix rollback handling before rerun.',
