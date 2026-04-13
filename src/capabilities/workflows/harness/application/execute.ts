@@ -1662,6 +1662,7 @@ export async function executeHarness(
       evidencePaths: [roundsPath, eventsPath],
       lastReliablePoint: 'review_completed',
       metadata: {
+        failureKind: 'quality',
         finalApprovalDenied: true,
         loopSessionId: session.artifacts.loopSessionId,
       },

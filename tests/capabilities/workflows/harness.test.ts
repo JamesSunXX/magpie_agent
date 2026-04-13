@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -832,6 +832,10 @@ integrations:
       expect(result.status).toBe('blocked')
       expect(result.session?.status).toBe('blocked')
       expect(result.session?.currentStage).toBe('developing')
+      const failureLogDir = result.session?.artifacts.failureLogDir
+      if (failureLogDir && existsSync(failureLogDir)) {
+        expect(readdirSync(failureLogDir)).toHaveLength(0)
+      }
       const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
       expect(events).toContain('"type":"stage_paused","stage":"developing","summary":"Harness paused during loop development stage for human intervention."')
       expect(events).not.toContain('"type":"stage_completed","stage":"developing"')
@@ -1423,6 +1427,13 @@ integrations:
       expect(result.session?.status).toBe('failed')
       expect(result.session?.currentStage).toBe('failed')
       expect(issueFixCalls).toBe(2)
+      const failureFiles = readdirSync(result.session!.artifacts.failureLogDir!)
+      const failure = JSON.parse(readFileSync(join(result.session!.artifacts.failureLogDir!, failureFiles[0]!), 'utf-8')) as {
+        category: string
+        metadata: Record<string, unknown>
+      }
+      expect(failure.category).toBe('quality')
+      expect(failure.metadata.finalApprovalDenied).toBe(true)
       const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
         .trim()
         .split('\n')
