@@ -570,14 +570,16 @@ JSON schema:
 }
 
 function shouldGateHuman(
+  stage: LoopStageName,
   runtime: LoopRuntimeConfig,
   stageSucceeded: boolean,
   evaluation: StageEvaluation
 ): boolean {
   if (runtime.gatePolicy === 'always') return true
-  if (evaluation.requireHumanConfirmation) return true
   if (evaluation.parseFailed && stageSucceeded) return false
   if (runtime.gatePolicy === 'manual_only') return false
+  if ((stage === 'unit_mock_test' || stage === 'integration_test') && stageSucceeded) return false
+  if (evaluation.requireHumanConfirmation) return true
   if (!stageSucceeded) return true
   return evaluation.confidence < runtime.confidenceThreshold
 }
@@ -1221,7 +1223,7 @@ async function runSingleStage(
   }
 
   const evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
-  const gateHuman = shouldGateHuman(runtime, stageSucceeded, evaluation)
+  const gateHuman = shouldGateHuman(stage, runtime, stageSucceeded, evaluation)
 
   const stageResult: LoopStageResult = {
     stage,

@@ -1767,6 +1767,66 @@ process.exit(result.status ?? 1)
     expect(artifact).toContain('Skipped: no matching tests for legacy default mock target.')
   })
 
+  it('does not pause for human review when unit mock verification succeeds with an expected legacy mock skip', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue(JSON.stringify({
+            confidence: 0.2,
+            risks: ['Mock test was skipped.'],
+            requireHumanConfirmation: true,
+            summary: 'Verification looked incomplete.',
+          })),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nVerified unit mock stage.\n'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-mock-skip-no-pause-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'mock-skip-no-pause',
+      private: true,
+      scripts: {
+        'test:run': 'node mock-runner.js',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(join(dir, 'mock-runner.js'), [
+      "if (process.argv.includes('tests/mock')) {",
+      "  console.error('No test files found, exiting with code 1')",
+      "  process.exit(1)",
+      "}",
+      "console.log('unit-safe')",
+    ].join('\n'), 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.78\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "exception_or_low_confidence"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "echo unit-safe"\n      mock_test: "npm run test:run -- tests/mock"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Verify unit and mock tests',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.status).toBe('completed')
+    expect(existsSync(join(dir, 'human_confirmation.md'))).toBe(false)
+  })
+
   it('uses the default e2e target for integration tests when no integration command is configured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-default-integration-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
