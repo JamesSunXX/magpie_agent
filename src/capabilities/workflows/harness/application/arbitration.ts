@@ -20,12 +20,90 @@ const DEFAULT_REVISE_BRIEF = 'Address blocking review findings and rerun the che
 const DEFAULT_BLOCKED_BRIEF = 'Adjudication did not produce an actionable next step.'
 const DEFAULT_RATIONALE = 'No parsable decision returned by discuss final conclusion.'
 
+function parseNarrativeAction(line: string): string | null {
+  const actionMatch = line.match(/^(?:[-*]|\d+\.)\s*(.+)$/)
+  if (actionMatch?.[1]) {
+    return actionMatch[1].trim() || null
+  }
+
+  return line.trim() || null
+}
+
+function inferDecisionFromNarrative(text: string): HarnessArbitrationDecision | null {
+  const normalized = text.replace(/\r\n/g, '\n')
+  const lines = normalized.split('\n').map(line => line.trim())
+  const decisionLineIndex = lines.findIndex(line => /^(?:决定|decision)\s*[:：]\s*(approved|revise)\b/i.test(line))
+  if (decisionLineIndex === -1) {
+    return null
+  }
+
+  const decisionMatch = lines[decisionLineIndex]?.match(/^(?:决定|decision)\s*[:：]\s*(approved|revise)\b/i)
+  if (!decisionMatch) {
+    return null
+  }
+
+  const inferredDecision = decisionMatch[1].toLowerCase() as 'approved' | 'revise'
+  let rationale: string | undefined
+  const requiredActions: string[] = []
+  let collectingActions = false
+
+  for (const line of lines.slice(decisionLineIndex + 1)) {
+    if (line.length === 0 || /^(?:>|\|)/.test(line)) {
+      continue
+    }
+    if (/^#{1,6}\s+/.test(line)) {
+      break
+    }
+
+    const rationaleMatch = line.match(/^(?:结论|理由|说明|rationale)\s*[:：]\s*(.+)$/i)
+    if (rationaleMatch?.[1]) {
+      rationale = rationaleMatch[1].trim()
+      collectingActions = false
+      continue
+    }
+
+    const actionHeaderMatch = line.match(/^(?:建议动作|required actions?)\s*[:：]\s*(.*)$/i)
+    if (actionHeaderMatch) {
+      collectingActions = true
+      const inlineAction = parseNarrativeAction(actionHeaderMatch[1] || '')
+      if (inlineAction) {
+        requiredActions.push(inlineAction)
+      }
+      continue
+    }
+
+    if (collectingActions) {
+      const action = parseNarrativeAction(line)
+      if (action) {
+        requiredActions.push(action)
+      }
+      continue
+    }
+
+    rationale ||= line
+  }
+
+  return {
+    decision: inferredDecision,
+    ...(rationale ? { rationale } : {}),
+    ...(requiredActions.length > 0 ? { requiredActions } : {}),
+  }
+}
+
 export function resolveHarnessArbitrationOutcome(params: {
   finalConclusion: string
+  fallbackTexts?: string[]
   blockingIssueCount: number
   testsPassed: boolean
 }): HarnessArbitrationOutcome {
-  const decision = extractJsonBlock<HarnessArbitrationDecision>(params.finalConclusion)
+  const candidates = [
+    params.finalConclusion,
+    ...(params.fallbackTexts || []),
+  ]
+  const decision = candidates
+    .map((text) => extractJsonBlock<HarnessArbitrationDecision>(text) || inferDecisionFromNarrative(text))
+    .find((candidate): candidate is HarnessArbitrationDecision => candidate !== null)
+    || null
   const approved = params.blockingIssueCount === 0
     && params.testsPassed
     && decision?.decision === 'approved'

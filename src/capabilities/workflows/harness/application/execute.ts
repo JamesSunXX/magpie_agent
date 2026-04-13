@@ -125,6 +125,22 @@ interface PersistedHarnessResumeEvidence {
   }
 }
 
+function collectAdjudicationFallbackTexts(adjudicationData: {
+  analysis?: string
+  messages?: Array<{ content?: string }>
+  summaries?: Array<{ summary?: string }>
+}): string[] {
+  return [
+    adjudicationData.analysis || '',
+    ...(Array.isArray(adjudicationData.messages)
+      ? adjudicationData.messages.map((message) => message.content || '')
+      : []),
+    ...(Array.isArray(adjudicationData.summaries)
+      ? adjudicationData.summaries.map((summary) => summary.summary || '')
+      : []),
+  ].filter(Boolean)
+}
+
 function describeHarnessActor(
   binding: { tool?: string; model?: string; agent?: string },
   fallbackId: string,
@@ -1214,9 +1230,15 @@ async function completeHarnessCycleFromReviewCheckpoint(
     },
   }, cycleCtx)
 
-  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
+  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as {
+    finalConclusion?: string
+    analysis?: string
+    messages?: Array<{ content?: string }>
+    summaries?: Array<{ summary?: string }>
+  }
   const outcome = resolveHarnessArbitrationOutcome({
     finalConclusion: adjudicationData.finalConclusion || '',
+    fallbackTexts: collectAdjudicationFallbackTexts(adjudicationData),
     blockingIssueCount: combinedBlockingIssues.length,
     testsPassed,
   })
@@ -1433,9 +1455,15 @@ async function runCycle(
     },
   }, cycleCtx)
 
-  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
+  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as {
+    finalConclusion?: string
+    analysis?: string
+    messages?: Array<{ content?: string }>
+    summaries?: Array<{ summary?: string }>
+  }
   const outcome = resolveHarnessArbitrationOutcome({
     finalConclusion: adjudicationData.finalConclusion || '',
+    fallbackTexts: collectAdjudicationFallbackTexts(adjudicationData),
     blockingIssueCount: combinedBlockingIssues.length,
     testsPassed,
   })
