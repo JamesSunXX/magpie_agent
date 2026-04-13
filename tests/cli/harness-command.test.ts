@@ -8,9 +8,14 @@ const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
 const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
+const persistWorkflowSession = vi.fn()
+const appendWorkflowEvent = vi.fn()
 const launchMagpieInTmux = vi.fn()
 const enqueueHarnessSession = vi.fn()
 const isHarnessServerRunning = vi.fn()
+const loadHarnessGraphArtifact = vi.fn()
+const persistHarnessGraphArtifact = vi.fn()
+const recordHarnessGraphApprovalDecision = vi.fn()
 const progressReporterMocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
@@ -31,6 +36,8 @@ vi.mock('../../src/capabilities/index.js', () => ({
 vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   listWorkflowSessions,
   loadWorkflowSession,
+  persistWorkflowSession,
+  appendWorkflowEvent,
 }))
 
 vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
@@ -40,6 +47,12 @@ vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
 vi.mock('../../src/capabilities/workflows/harness-server/runtime.js', () => ({
   enqueueHarnessSession,
   isHarnessServerRunning,
+}))
+
+vi.mock('../../src/capabilities/workflows/harness-server/graph.js', () => ({
+  loadHarnessGraphArtifact,
+  persistHarnessGraphArtifact,
+  recordHarnessGraphApprovalDecision,
 }))
 
 vi.mock('../../src/cli/commands/harness-progress.js', async (importOriginal) => {
@@ -107,6 +120,14 @@ describe('top-level harness CLI command', () => {
       },
       result: { status: 'completed' },
     })
+    loadHarnessGraphArtifact.mockResolvedValue(null)
+    persistHarnessGraphArtifact.mockResolvedValue('/tmp/harness-graph.json')
+    appendWorkflowEvent.mockResolvedValue('/tmp/events.jsonl')
+    persistWorkflowSession.mockResolvedValue(undefined)
+    recordHarnessGraphApprovalDecision.mockImplementation((graph, input) => ({
+      ...graph,
+      approvalDecision: input,
+    }))
   })
 
   it('submits a harness run through the capability runtime', async () => {
@@ -361,6 +382,72 @@ describe('top-level harness CLI command', () => {
   it('prints a detailed status view for a persisted harness session', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     loadWorkflowSessionsDetail()
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 4,
+        pending: 0,
+        ready: 1,
+        running: 1,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 0,
+        completed: 1,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'design-api',
+          title: 'Design API',
+          goal: 'Lock the API contract',
+          type: 'feature',
+          dependencies: [],
+          state: 'completed',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: ['design-api'],
+          state: 'ready',
+          conflictScope: 'src/checkout',
+          riskMarkers: ['touches-checkout-ui'],
+          approvalGates: [],
+          statusReason: 'Ready to run.',
+        },
+        {
+          id: 'qa-rollout',
+          title: 'QA rollout',
+          goal: 'Validate rollout',
+          type: 'validation',
+          dependencies: ['build-ui'],
+          state: 'running',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: ['qa-rollout'],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for node approval: Approve release',
+        },
+      ],
+      version: 1,
+    })
     const { harnessCommand } = await import('../../src/cli/commands/harness.js')
 
     await harnessCommand.parseAsync(
@@ -374,6 +461,9 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Workspace: /tmp/.worktrees/sch/harness-1 (worktree)')
     expect(logSpy).toHaveBeenCalledWith('Host: tmux')
     expect(logSpy).toHaveBeenCalledWith('Tmux: session=magpie-harness-1 window=@1 pane=%1')
+    expect(logSpy).toHaveBeenCalledWith('Graph: checkout-v2 | active | total=4 ready=1 running=1 waiting_approval=1 blocked=0 completed=1 failed=0')
+    expect(logSpy).toHaveBeenCalledWith('Graph ready: build-ui')
+    expect(logSpy).toHaveBeenCalledWith('Graph waiting approval: release-approval')
     expect(logSpy).toHaveBeenCalledWith('Rounds: 1=revise')
     expect(logSpy).toHaveBeenCalledWith('Latest round: revise | next: Fix rollback handling before rerun.')
     expect(logSpy).toHaveBeenCalledWith('Participants: developer=codex, reviewer-1=claude-code, arbitrator=codex')
@@ -409,6 +499,75 @@ describe('top-level harness CLI command', () => {
     logSpy.mockRestore()
   })
 
+  it('prints a selected graph node for status and inspect', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSessionsDetail()
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 2,
+        pending: 0,
+        ready: 1,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 0,
+        blocked: 0,
+        completed: 1,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'design-api',
+          title: 'Design API',
+          goal: 'Lock the API contract',
+          type: 'feature',
+          dependencies: [],
+          state: 'completed',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: ['design-api'],
+          state: 'ready',
+          conflictScope: 'src/checkout',
+          riskMarkers: ['touches-checkout-ui'],
+          approvalGates: [],
+          statusReason: 'Ready to run.',
+        },
+      ],
+      version: 1,
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'status', 'harness-1', '--node', 'build-ui'],
+      { from: 'node' }
+    )
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'inspect', 'harness-1', '--node', 'build-ui'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('Node: build-ui | ready | Build UI')
+    expect(logSpy).toHaveBeenCalledWith('Node goal: Build checkout screens')
+    expect(logSpy).toHaveBeenCalledWith('Node dependencies: design-api')
+    expect(logSpy).toHaveBeenCalledWith('Node conflict scope: src/checkout')
+    expect(logSpy).toHaveBeenCalledWith('Node risks: touches-checkout-ui')
+    expect(logSpy).toHaveBeenCalledWith('Node reason: Ready to run.')
+    logSpy.mockRestore()
+  })
+
   it('prints a knowledge-focused inspect view for a persisted harness session', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     loadWorkflowSessionsDetail()
@@ -438,6 +597,9 @@ describe('top-level harness CLI command', () => {
         currentStage: 'completed',
         updatedAt: new Date('2026-04-10T10:00:00.000Z'),
         title: 'Checkout',
+        artifacts: {
+          graphPath: '/tmp/harness-2/graph.json',
+        },
       },
       {
         id: 'harness-1',
@@ -445,8 +607,36 @@ describe('top-level harness CLI command', () => {
         currentStage: 'reviewing',
         updatedAt: new Date('2026-04-10T09:00:00.000Z'),
         title: 'Payments',
+        artifacts: {},
       },
     ])
+    loadHarnessGraphArtifact.mockImplementation(async (_cwd, sessionId: string) => {
+      if (sessionId !== 'harness-2') {
+        return null
+      }
+      return {
+        graphId: 'checkout-v2',
+        title: 'Checkout V2',
+        goal: 'Ship checkout v2 as a graph',
+        status: 'active',
+        approvalGates: [],
+        createdAt: '2026-04-13T00:00:00.000Z',
+        updatedAt: '2026-04-13T00:05:00.000Z',
+        rollup: {
+          total: 3,
+          pending: 0,
+          ready: 1,
+          running: 1,
+          waitingRetry: 0,
+          waitingApproval: 0,
+          blocked: 0,
+          completed: 1,
+          failed: 0,
+        },
+        nodes: [],
+        version: 1,
+      }
+    })
 
     const { harnessCommand } = await import('../../src/cli/commands/harness.js')
 
@@ -456,8 +646,321 @@ describe('top-level harness CLI command', () => {
     )
 
     expect(listWorkflowSessions).toHaveBeenCalledWith(process.cwd(), 'harness')
-    expect(logSpy).toHaveBeenCalledWith('harness-2\tcompleted\tcompleted\t2026-04-10T10:00:00.000Z\tCheckout')
+    expect(logSpy).toHaveBeenCalledWith('harness-2\tcompleted\tcompleted\t2026-04-10T10:00:00.000Z\tCheckout\tgraph=checkout-v2:active:ready=1:running=1:waiting_approval=0:blocked=0')
     expect(logSpy).toHaveBeenCalledWith('harness-1\tin_progress\treviewing\t2026-04-10T09:00:00.000Z\tPayments')
+    logSpy.mockRestore()
+  })
+
+  it('fails clearly when a requested graph node is missing', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    process.exitCode = 0
+    loadWorkflowSessionsDetail()
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 1,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 0,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: [],
+          state: 'ready',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+      ],
+      version: 1,
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'status', 'harness-1', '--node', 'missing-node'],
+      { from: 'node' }
+    )
+
+    expect(process.exitCode).toBe(1)
+    expect(errorSpy).toHaveBeenCalledWith('Harness graph node not found: missing-node')
+    errorSpy.mockRestore()
+  })
+
+  it('records an approval decision for a graph node', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-1',
+      capability: 'harness',
+      status: 'queued',
+      currentStage: 'queued',
+      createdAt: new Date('2026-04-13T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-13T00:05:00.000Z'),
+      title: 'Checkout',
+      summary: 'Queued.',
+      artifacts: {
+        graphPath: '/tmp/harness-1/graph.json',
+        eventsPath: '/tmp/harness-1/events.jsonl',
+      },
+    })
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: [],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'pending',
+            },
+          ],
+          statusReason: 'Waiting for node approval: Approve release',
+        },
+      ],
+      version: 1,
+    })
+    recordHarnessGraphApprovalDecision.mockReturnValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:06:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 1,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 0,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: [],
+          state: 'ready',
+          riskMarkers: [],
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'approved',
+              decidedBy: 'operator',
+              note: 'Safe to proceed.',
+            },
+          ],
+          statusReason: 'Ready to run.',
+        },
+      ],
+      version: 1,
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'approve', 'harness-1', '--node', 'release-approval', '--by', 'operator', '--note', 'Safe to proceed.'],
+      { from: 'node' }
+    )
+
+    expect(recordHarnessGraphApprovalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ graphId: 'checkout-v2' }),
+      expect.objectContaining({
+        nodeId: 'release-approval',
+        decision: 'approved',
+        decidedBy: 'operator',
+        note: 'Safe to proceed.',
+      }),
+    )
+    expect(persistHarnessGraphArtifact).toHaveBeenCalledWith(
+      process.cwd(),
+      'harness-1',
+      expect.objectContaining({ graphId: 'checkout-v2' }),
+    )
+    expect(persistWorkflowSession).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-1',
+        summary: 'Approved graph node gate for release-approval.',
+      }),
+    )
+    expect(appendWorkflowEvent).toHaveBeenCalledWith(
+      process.cwd(),
+      'harness',
+      'harness-1',
+      expect.objectContaining({
+        type: 'graph_approval_recorded',
+        summary: 'Approved graph node gate for release-approval.',
+      }),
+    )
+    expect(logSpy).toHaveBeenCalledWith('Decision: approved')
+    expect(logSpy).toHaveBeenCalledWith('Target: node release-approval')
+    expect(logSpy).toHaveBeenCalledWith('Graph: checkout-v2 | active | total=1 ready=1 running=0 waiting_approval=0 blocked=0 completed=0 failed=0')
+    logSpy.mockRestore()
+  })
+
+  it('records a rejection decision for the graph gate', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-1',
+      capability: 'harness',
+      status: 'queued',
+      currentStage: 'queued',
+      createdAt: new Date('2026-04-13T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-13T00:05:00.000Z'),
+      title: 'Checkout',
+      summary: 'Queued.',
+      artifacts: {
+        graphPath: '/tmp/harness-1/graph.json',
+        eventsPath: '/tmp/harness-1/events.jsonl',
+      },
+    })
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [
+        {
+          gateId: 'confirm-graph',
+          label: 'Confirm graph',
+          scope: 'graph_confirmation',
+          status: 'pending',
+        },
+      ],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: [],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for graph approval: Confirm graph',
+        },
+      ],
+      version: 1,
+    })
+    recordHarnessGraphApprovalDecision.mockReturnValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'blocked',
+      approvalGates: [
+        {
+          gateId: 'confirm-graph',
+          label: 'Confirm graph',
+          scope: 'graph_confirmation',
+          status: 'rejected',
+          decidedBy: 'operator',
+          note: 'Need a safer split.',
+        },
+      ],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:06:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 0,
+        blocked: 1,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: [],
+          state: 'blocked',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Graph approval rejected: Confirm graph',
+        },
+      ],
+      version: 1,
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'reject', 'harness-1', '--by', 'operator', '--note', 'Need a safer split.'],
+      { from: 'node' }
+    )
+
+    expect(recordHarnessGraphApprovalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ graphId: 'checkout-v2' }),
+      expect.objectContaining({
+        decision: 'rejected',
+        decidedBy: 'operator',
+        note: 'Need a safer split.',
+      }),
+    )
+    expect(logSpy).toHaveBeenCalledWith('Decision: rejected')
+    expect(logSpy).toHaveBeenCalledWith('Target: graph')
+    expect(logSpy).toHaveBeenCalledWith('Graph: checkout-v2 | blocked | total=1 ready=0 running=0 waiting_approval=0 blocked=1 completed=0 failed=0')
     logSpy.mockRestore()
   })
 

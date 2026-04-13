@@ -83,6 +83,11 @@ export interface SessionCard {
     reviewerSummaries: string[]
     arbitration?: string
     nextStep?: string
+    graphSummary?: string
+    attention?: string[]
+    readyNow?: string
+    recommendedAction?: string
+    recommendedCommand?: string
   }
   status: string
   updatedAt: Date

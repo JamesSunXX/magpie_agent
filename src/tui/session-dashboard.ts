@@ -1,7 +1,13 @@
 import { readFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { getMagpieHomeDir, getRepoMagpieDir, getRepoSessionsDir } from '../platform/paths.js'
-import { buildResumeArgv } from './command-builder.js'
+import {
+  recordHarnessGraphApprovalDecision,
+  type HarnessGraphArtifact,
+  type HarnessGraphApprovalGate,
+  type HarnessGraphNode,
+} from '../capabilities/workflows/harness-server/graph.js'
+import { buildCommandDisplay, buildResumeArgv } from './command-builder.js'
 import { CONTINUABLE_STATUSES } from './types.js'
 import type { DashboardSessions, SessionCard } from './types.js'
 
@@ -40,6 +46,7 @@ interface WorkflowSessionFile {
   capability: SessionCard['capability']
   title: string
   status: string
+  summary?: string
   currentStage?: string
   updatedAt: string
   artifacts?: Record<string, string>
@@ -77,6 +84,11 @@ interface HarnessRoundIndexEntry {
 interface SessionDashboardOptions {
   cwd: string
   magpieHomeDir?: string
+}
+
+interface HarnessGraphInsight {
+  detailSummary?: string
+  selectedDetail?: Pick<NonNullable<SessionCard['selectedDetail']>, 'graphSummary' | 'attention' | 'readyNow' | 'recommendedAction' | 'recommendedCommand'>
 }
 
 function sortByUpdatedAtDesc(a: SessionCard, b: SessionCard): number {
@@ -279,6 +291,18 @@ async function loadHarnessRoundIndex(roleRoundsDir: string | undefined): Promise
   }
 }
 
+async function loadHarnessGraph(graphPath: string | undefined): Promise<HarnessGraphArtifact | null> {
+  if (!graphPath) {
+    return null
+  }
+
+  try {
+    return JSON.parse(await readFile(graphPath, 'utf-8')) as HarnessGraphArtifact
+  } catch {
+    return null
+  }
+}
+
 function severityWeight(severity: string | undefined): number {
   switch (severity) {
     case 'critical':
@@ -466,6 +490,140 @@ function buildHarnessSelectedDetail(summary: HarnessRoleRoundSummary | null): Se
   }
 }
 
+function summarizeReadyNodes(nodes: HarnessGraphNode[]): string {
+  const readyNodes = nodes.filter((node) => node.state === 'ready').map((node) => node.id)
+  return readyNodes.length > 0
+    ? readyNodes.join(', ')
+    : 'No nodes are ready right now.'
+}
+
+function simulateApprovalTargets(
+  graph: HarnessGraphArtifact,
+  currentReadyNodeIds: Set<string>,
+  target: { nodeId?: string; gate: HarnessGraphApprovalGate }
+): string[] {
+  try {
+    const updated = recordHarnessGraphApprovalDecision(graph, {
+      decision: 'approved',
+      ...(target.nodeId ? { nodeId: target.nodeId } : {}),
+      gateId: target.gate.gateId,
+    })
+    return updated.nodes
+      .filter((node) => node.state === 'ready' && !currentReadyNodeIds.has(node.id))
+      .map((node) => node.id)
+  } catch {
+    return []
+  }
+}
+
+function buildApprovalRecommendation(
+  graph: HarnessGraphArtifact,
+  sessionId: string,
+  currentReadyNodeIds: Set<string>
+): { action: string; command: string } | null {
+  const candidates: Array<{
+    nodeId?: string
+    gate: HarnessGraphApprovalGate
+    unlockedNodeIds: string[]
+  }> = []
+
+  for (const gate of graph.approvalGates.filter((entry) => entry.status === 'pending')) {
+    candidates.push({
+      gate,
+      unlockedNodeIds: simulateApprovalTargets(graph, currentReadyNodeIds, { gate }),
+    })
+  }
+
+  for (const node of graph.nodes) {
+    for (const gate of node.approvalGates.filter((entry) => entry.status === 'pending')) {
+      candidates.push({
+        nodeId: node.id,
+        gate,
+        unlockedNodeIds: simulateApprovalTargets(graph, currentReadyNodeIds, { nodeId: node.id, gate }),
+      })
+    }
+  }
+
+  candidates.sort((left, right) => {
+    const unlockDelta = right.unlockedNodeIds.length - left.unlockedNodeIds.length
+    if (unlockDelta !== 0) {
+      return unlockDelta
+    }
+    const leftScope = left.nodeId ? 1 : 0
+    const rightScope = right.nodeId ? 1 : 0
+    if (leftScope !== rightScope) {
+      return rightScope - leftScope
+    }
+    const leftLabel = `${left.nodeId || 'graph'}:${left.gate.gateId}`
+    const rightLabel = `${right.nodeId || 'graph'}:${right.gate.gateId}`
+    return leftLabel.localeCompare(rightLabel)
+  })
+
+  const best = candidates[0]
+  if (!best) {
+    return null
+  }
+
+  const targetLabel = best.nodeId || 'graph'
+  const unlockLabel = best.unlockedNodeIds.length > 0 ? best.unlockedNodeIds.join(', ') : 'no immediate runnable node'
+  const argv = [
+    'harness',
+    'approve',
+    sessionId,
+    ...(best.nodeId ? ['--node', best.nodeId] : []),
+    '--gate',
+    best.gate.gateId,
+  ]
+
+  return {
+    action: `Recommend approving ${targetLabel} first. Immediate unlock: ${unlockLabel}.`,
+    command: buildCommandDisplay(argv),
+  }
+}
+
+function buildHarnessGraphInsight(graph: HarnessGraphArtifact | null, sessionId: string): HarnessGraphInsight | undefined {
+  if (!graph) {
+    return undefined
+  }
+
+  const currentReadyNodeIds = new Set(graph.nodes.filter((node) => node.state === 'ready').map((node) => node.id))
+  const attention: string[] = []
+
+  for (const gate of graph.approvalGates.filter((entry) => entry.status === 'pending')) {
+    attention.push(
+      `Approval needed: graph - ${gate.label}. After approval: ${simulateApprovalTargets(graph, currentReadyNodeIds, { gate })}`
+    )
+  }
+
+  for (const node of graph.nodes) {
+    for (const gate of node.approvalGates.filter((entry) => entry.status === 'pending')) {
+      attention.push(
+        `Approval needed: ${node.id} - ${gate.label}. ${node.statusReason || 'Waiting for approval.'} After approval: ${simulateApprovalTargets(graph, currentReadyNodeIds, { nodeId: node.id, gate })}`
+      )
+    }
+  }
+
+  for (const node of graph.nodes.filter((entry) => entry.state === 'blocked' && entry.statusReason)) {
+    attention.push(`Blocked: ${node.id} - ${node.statusReason}`)
+  }
+
+  const detailSummary = `graph ready=${graph.rollup.ready} waiting=${graph.rollup.waitingApproval} blocked=${graph.rollup.blocked}`
+  const recommendation = buildApprovalRecommendation(graph, sessionId, currentReadyNodeIds)
+
+  return {
+    detailSummary,
+    selectedDetail: {
+      graphSummary: `${graph.graphId} · ${graph.status} · ready ${graph.rollup.ready} · waiting approval ${graph.rollup.waitingApproval} · blocked ${graph.rollup.blocked}`,
+      attention,
+      readyNow: summarizeReadyNodes(graph.nodes),
+      ...(recommendation ? {
+        recommendedAction: recommendation.action,
+        recommendedCommand: recommendation.command,
+      } : {}),
+    },
+  }
+}
+
 async function mapWorkflowSession(session: WorkflowSessionFile): Promise<SessionCard> {
   const latestHarnessRound = session.capability === 'harness'
     ? await loadLatestHarnessRoundSummary(session.artifacts?.roleRoundsDir)
@@ -473,6 +631,15 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
   const harnessRoundIndex = session.capability === 'harness'
     ? await loadHarnessRoundIndex(session.artifacts?.roleRoundsDir)
     : []
+  const harnessGraph = session.capability === 'harness'
+    ? await loadHarnessGraph(session.artifacts?.graphPath)
+    : null
+  const graphInsight = session.capability === 'harness'
+    ? buildHarnessGraphInsight(harnessGraph, session.id)
+    : undefined
+  const harnessSummary = session.capability === 'harness'
+    ? buildHarnessSelectedDetail(latestHarnessRound)
+    : undefined
 
   return withResumeCommand({
     id: session.id,
@@ -484,11 +651,28 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
         harnessRoundIndex.map((round) => `${round.cycle}=${round.finalAction}`).join(', ') || latestHarnessRound.finalAction || 'unknown',
         buildHarnessParticipantSummary(latestHarnessRound),
         buildHarnessReasonSummary(latestHarnessRound),
+        graphInsight?.detailSummary,
         buildHarnessNextStepSummary(latestHarnessRound),
       ].filter((part): part is string => Boolean(part && part.trim())).join(' · ')
+      : graphInsight?.detailSummary
+        ? [
+          session.currentStage || session.status,
+          graphInsight.detailSummary,
+          session.summary,
+        ].filter((part): part is string => Boolean(part && part.trim())).join(' · ')
       : undefined,
     selectedDetail: session.capability === 'harness'
-      ? buildHarnessSelectedDetail(latestHarnessRound)
+      ? {
+        reviewerSummaries: harnessSummary?.reviewerSummaries || [],
+        ...(harnessSummary?.participants ? { participants: harnessSummary.participants } : {}),
+        ...(harnessSummary?.arbitration ? { arbitration: harnessSummary.arbitration } : {}),
+        ...(harnessSummary?.nextStep ? { nextStep: harnessSummary.nextStep } : {}),
+        ...(graphInsight?.selectedDetail?.graphSummary ? { graphSummary: graphInsight.selectedDetail.graphSummary } : {}),
+        ...(graphInsight?.selectedDetail?.attention ? { attention: graphInsight.selectedDetail.attention } : {}),
+        ...(graphInsight?.selectedDetail?.readyNow ? { readyNow: graphInsight.selectedDetail.readyNow } : {}),
+        ...(graphInsight?.selectedDetail?.recommendedAction ? { recommendedAction: graphInsight.selectedDetail.recommendedAction } : {}),
+        ...(graphInsight?.selectedDetail?.recommendedCommand ? { recommendedCommand: graphInsight.selectedDetail.recommendedCommand } : {}),
+      }
       : undefined,
     status: session.status,
     updatedAt: new Date(session.updatedAt),

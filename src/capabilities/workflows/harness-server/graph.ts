@@ -109,6 +109,15 @@ export interface HarnessGraphReadiness {
   readyNodeIds: string[]
 }
 
+export interface HarnessGraphApprovalDecisionInput {
+  nodeId?: string
+  gateId?: string
+  decision: 'approved' | 'rejected'
+  decidedAt?: string
+  decidedBy?: string
+  note?: string
+}
+
 function getHarnessGraphArtifactPath(cwd: string, sessionId: string): string {
   return join(getRepoSessionDir(cwd, 'harness', sessionId), 'graph.json')
 }
@@ -259,13 +268,88 @@ export function createHarnessGraphArtifact(input: HarnessGraphArtifactInput): Ha
   }
 }
 
+function findDecisionGateIndex(gates: HarnessGraphApprovalGate[], gateId?: string): number {
+  if (gates.length === 0) {
+    throw new Error('Harness graph approval target has no gates to decide')
+  }
+
+  if (gateId) {
+    const gateIndex = gates.findIndex((gate) => gate.gateId === gateId)
+    if (gateIndex === -1) {
+      throw new Error(`Harness graph approval gate not found: ${gateId}`)
+    }
+    return gateIndex
+  }
+
+  const pendingGateIndexes = gates
+    .map((gate, index) => ({ gate, index }))
+    .filter(({ gate }) => gate.status === 'pending')
+
+  if (pendingGateIndexes.length === 0) {
+    throw new Error('Harness graph approval target has no pending gates')
+  }
+  if (pendingGateIndexes.length > 1) {
+    throw new Error('Harness graph approval target has multiple pending gates; specify --gate')
+  }
+  return pendingGateIndexes[0]!.index
+}
+
+function applyDecisionToGate(
+  gate: HarnessGraphApprovalGate,
+  input: HarnessGraphApprovalDecisionInput
+): HarnessGraphApprovalGate {
+  if (gate.status !== 'pending') {
+    throw new Error(`Harness graph approval gate is not pending: ${gate.gateId}`)
+  }
+
+  return {
+    ...gate,
+    status: input.decision,
+    decidedAt: input.decidedAt || new Date().toISOString(),
+    ...(input.decidedBy ? { decidedBy: input.decidedBy } : {}),
+    ...(input.note ? { note: input.note } : {}),
+  }
+}
+
+export function recordHarnessGraphApprovalDecision(
+  artifact: HarnessGraphArtifact,
+  input: HarnessGraphApprovalDecisionInput
+): HarnessGraphArtifact {
+  const updatedArtifact: HarnessGraphArtifact = {
+    ...artifact,
+    approvalGates: artifact.approvalGates.map((gate) => ({ ...gate })),
+    nodes: artifact.nodes.map((node) => ({
+      ...node,
+      dependencies: [...node.dependencies],
+      riskMarkers: [...node.riskMarkers],
+      approvalGates: node.approvalGates.map((gate) => ({ ...gate })),
+      ...(node.execution ? { execution: { ...node.execution } } : {}),
+    })),
+  }
+
+  if (input.nodeId) {
+    const node = updatedArtifact.nodes.find((entry) => entry.id === input.nodeId)
+    if (!node) {
+      throw new Error(`Harness graph node not found: ${input.nodeId}`)
+    }
+    const gateIndex = findDecisionGateIndex(node.approvalGates, input.gateId)
+    node.approvalGates[gateIndex] = applyDecisionToGate(node.approvalGates[gateIndex]!, input)
+    return reconcileHarnessGraphArtifact(updatedArtifact)
+  }
+
+  const gateIndex = findDecisionGateIndex(updatedArtifact.approvalGates, input.gateId)
+  updatedArtifact.approvalGates[gateIndex] = applyDecisionToGate(updatedArtifact.approvalGates[gateIndex]!, input)
+  return reconcileHarnessGraphArtifact(updatedArtifact)
+}
+
 function withStatusReason(
   node: HarnessGraphNode,
   state: HarnessGraphNodeState,
   statusReason?: string
 ): HarnessGraphNode {
+  const { statusReason: _previousStatusReason, ...rest } = node
   return {
-    ...node,
+    ...rest,
     state,
     ...(statusReason ? { statusReason } : {}),
   }
