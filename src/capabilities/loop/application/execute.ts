@@ -80,6 +80,8 @@ const DEFAULT_STAGES: LoopStageName[] = [
   'integration_test',
 ]
 
+const LEGACY_DEFAULT_MOCK_TEST_COMMAND = 'npm run test:run -- tests/mock'
+
 interface LoopRuntimeConfig {
   plannerTool?: string
   plannerModel: string
@@ -365,6 +367,31 @@ function runOptionalCommand(
     ...result,
     commandLabel: command,
   }
+}
+
+function runOptionalMockCommand(
+  cwd: string,
+  command: string | undefined,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+): { passed: boolean; output: string; commandLabel: string } {
+  const result = runOptionalCommand(
+    cwd,
+    command,
+    'Skipped: no mock test command configured.',
+    commandSafety
+  )
+
+  if (command?.trim() === LEGACY_DEFAULT_MOCK_TEST_COMMAND
+    && result.passed === false
+    && /No test files found/i.test(result.output)) {
+    return {
+      passed: true,
+      output: 'Skipped: no matching tests for legacy default mock target.',
+      commandLabel: '(skipped: no matching tests)',
+    }
+  }
+
+  return result
 }
 
 function renderPlanSummary(tasks: LoopTask[]): string {
@@ -1112,12 +1139,7 @@ async function runSingleStage(
         safety: commandSafety,
         interactive: process.stdin.isTTY && process.stdout.isTTY,
       })
-      const mock = runOptionalCommand(
-        runCwd,
-        runtime.commands.mockTest,
-        'Skipped: no mock test command configured.',
-        commandSafety
-      )
+      const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
       stageSucceeded = unit.passed && mock.passed
       testOutput = [
         `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
@@ -1272,12 +1294,7 @@ async function runSingleStage(
           safety: commandSafety,
           interactive: process.stdin.isTTY && process.stdout.isTTY,
         })
-        const mock = runOptionalCommand(
-          runCwd,
-          runtime.commands.mockTest,
-          'Skipped: no mock test command configured.',
-          commandSafety
-        )
+        const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
         finalSucceeded = unit.passed && mock.passed
         finalTestOutput = [
           `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
