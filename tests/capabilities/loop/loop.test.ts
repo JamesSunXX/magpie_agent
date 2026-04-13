@@ -960,6 +960,134 @@ describe('loop capability', () => {
     expect(events).toContain('"event":"resume_blocked_invalid_checkpoint"')
   })
 
+  it('continues to the next stage after an approved human confirmation instead of rerunning the approved stage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-approved-human-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review, domain_partition]\n    confidence_threshold: 0\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-approved-human'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const eventsPath = join(sessionDir, 'events.jsonl')
+    const planPath = join(sessionDir, 'plan.json')
+    const stageArtifactPath = join(sessionDir, 'prd_review.md')
+    const humanConfirmationPath = join(dir, 'human_confirmation.md')
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(eventsPath, '', 'utf-8')
+    writeFileSync(planPath, JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(stageArtifactPath, '# Stage Report\n\nAlready approved.\n', 'utf-8')
+    writeFileSync(humanConfirmationPath, `# Human Confirmation Queue\n\n<!-- MAGPIE_HUMAN_CONFIRMATION_START -->\n\n\`\`\`yaml\nid: hc-1\nsession_id: ${sessionId}\nstage: prd_review\nstatus: approved\ndecision: approved\nrationale: Resume without rerunning the approved stage.\nreason: Reviewed manually.\nartifacts:\n  - ${stageArtifactPath}\nnext_action: Continue to the next stage\ncreated_at: 2026-04-12T00:00:00.000Z\nupdated_at: 2026-04-12T00:05:00.000Z\n\`\`\`\n<!-- MAGPIE_HUMAN_CONFIRMATION_END -->\n`, 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Resume after approval',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['prd_review', 'domain_partition'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'prd_review',
+          title: 'Review the PRD',
+          description: 'Review the PRD before implementation',
+          dependencies: [],
+          successCriteria: ['Review notes captured'],
+        },
+        {
+          id: 'task-2',
+          stage: 'domain_partition',
+          title: 'Partition the domain',
+          description: 'Split the work into domain pieces',
+          dependencies: ['task-1'],
+          successCriteria: ['Domain plan written'],
+        },
+      ],
+      stageResults: [
+        {
+          stage: 'prd_review',
+          success: true,
+          confidence: 0.2,
+          summary: 'Reviewed but required manual confirmation.',
+          risks: ['Needs explicit approval to continue.'],
+          retryCount: 0,
+          artifacts: [stageArtifactPath],
+          timestamp: new Date('2026-04-12T00:04:00.000Z'),
+        },
+      ],
+      humanConfirmations: [
+        {
+          id: 'hc-1',
+          sessionId,
+          stage: 'prd_review',
+          status: 'pending',
+          decision: 'pending',
+          rationale: '',
+          reason: 'Reviewed manually.',
+          artifacts: [stageArtifactPath],
+          nextAction: 'Review risk and approve to continue',
+          createdAt: new Date('2026-04-12T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+        },
+      ],
+      lastReliablePoint: 'completed',
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath,
+        planPath,
+        humanConfirmationPath,
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            return '# Stage Report\n\nGenerated domain partition.\n'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const resumedConfirmation = result.result.session?.humanConfirmations[0]
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.currentStageIndex).toBe(2)
+    expect(executorCalls).toBe(1)
+    expect(resumedConfirmation).toMatchObject({
+      status: 'approved',
+      decision: 'approved',
+      rationale: 'Resume without rerunning the approved stage.',
+    })
+    expect(readFileSync(eventsPath, 'utf-8')).toContain('"event":"human_confirmation_applied"')
+  })
+
   it('consumes the execution retry budget before pausing for human help', async () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {

@@ -59,6 +59,10 @@ function mergeEntry(entry: FailureIndexEntry | undefined, record: FailureRecord)
   }
 }
 
+function countsTowardFailureIndex(record: FailureRecord): boolean {
+  return record.metadata.countTowardFailureIndex !== false
+}
+
 async function withIndexLock<T>(lockPath: string, work: () => Promise<T>): Promise<T> {
   const startedAt = Date.now()
 
@@ -118,6 +122,14 @@ export async function appendFailureRecord(input: {
   await mkdir(recordDir, { recursive: true })
   await mkdir(magpieDir, { recursive: true })
   await writeFile(recordPath, `${JSON.stringify(input.record, null, 2)}\n`, 'utf-8')
+
+  if (!countsTowardFailureIndex(input.record)) {
+    return {
+      recordPath,
+      indexPath,
+      index: await readFailureIndex(input.repoRoot),
+    }
+  }
 
   const index = await withIndexLock(lockPath, async () => {
     const current = await readFailureIndex(input.repoRoot)

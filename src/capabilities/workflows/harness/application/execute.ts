@@ -1462,13 +1462,13 @@ export async function executeHarness(
     }
 
     const summary = 'Harness failed during loop development stage.'
-    let relatedFailureSignature: string | undefined
+    let sourceFailureSignature: string | undefined
     let relatedFailurePath: string | undefined
     if (loopResult.result.session?.artifacts?.lastFailurePath) {
       relatedFailurePath = loopResult.result.session.artifacts.lastFailurePath
       try {
         const raw = JSON.parse(await readFile(relatedFailurePath, 'utf-8')) as { signature?: string; reason?: string }
-        relatedFailureSignature = raw.signature
+        sourceFailureSignature = raw.signature
       } catch {
         // Ignore: the inner failure artifact is optional.
       }
@@ -1484,7 +1484,8 @@ export async function executeHarness(
       lastReliablePoint: 'planning_completed',
       metadata: {
         loopSessionId: loopResult.result.session?.id,
-        ...(relatedFailureSignature ? { relatedFailureSignature } : {}),
+        ...(sourceFailureSignature ? { sourceFailureSignature } : {}),
+        ...(sourceFailureSignature ? { countTowardFailureIndex: false } : {}),
       },
     })
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)

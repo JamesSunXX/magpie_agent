@@ -112,4 +112,42 @@ describe('failure ledger', () => {
     const index = await readFailureIndex(cwd)
     expect(index.entries.find((entry) => entry.signature === 'race-signature')?.count).toBe(2)
   })
+
+  it('does not increment the repository index for derived failures that should not count twice', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-failure-ledger-'))
+
+    await appendFailureRecord({
+      repoRoot: cwd,
+      sessionDir: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123'),
+      record: makeRecord({
+        sessionId: 'loop-123',
+        capability: 'loop',
+        signature: 'shared-signature',
+      }),
+    })
+
+    await appendFailureRecord({
+      repoRoot: cwd,
+      sessionDir: join(cwd, '.magpie', 'sessions', 'harness', 'harness-123'),
+      record: makeRecord({
+        sessionId: 'harness-123',
+        capability: 'harness',
+        signature: 'shared-signature',
+        metadata: {
+          sourceFailureSignature: 'shared-signature',
+          countTowardFailureIndex: false,
+        },
+      }),
+    })
+
+    const index = await readFailureIndex(cwd)
+    expect(index.entries).toHaveLength(1)
+    expect(index.entries[0]).toMatchObject({
+      signature: 'shared-signature',
+      count: 1,
+      capabilities: {
+        loop: 1,
+      },
+    })
+  })
 })

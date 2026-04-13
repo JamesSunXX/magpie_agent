@@ -192,13 +192,15 @@ export async function appendWorkflowFailure(
   indexPath: string
 }> {
   const category = classifyFailureCategory(fact)
-  const signature = buildFailureSignature({
-    capability: fact.capability,
-    stage: fact.stage,
-    category,
-    reason: fact.reason,
-    rawError: fact.rawError,
-  })
+  const signature = typeof fact.metadata?.sourceFailureSignature === 'string'
+    ? fact.metadata.sourceFailureSignature
+    : buildFailureSignature({
+      capability: fact.capability,
+      stage: fact.stage,
+      category,
+      reason: fact.reason,
+      rawError: fact.rawError,
+    })
   const occurrenceCount = await getFailureOccurrenceCount(cwd, signature) + 1
   const decision = decideRecovery({
     category,

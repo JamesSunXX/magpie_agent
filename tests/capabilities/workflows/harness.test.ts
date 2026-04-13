@@ -2268,6 +2268,28 @@ describe('reportHarness logging levels', () => {
       signature: 'loop|code_development|workflow_defect|resume-checkpoint',
       reason: 'Cannot safely resume because no reliable checkpoint was recorded.',
     }, null, 2), 'utf-8')
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+    writeFileSync(join(dir, '.magpie', 'failure-index.json'), JSON.stringify({
+      version: 1,
+      updatedAt: '2026-04-12T10:00:00.000Z',
+      entries: [{
+        signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+        category: 'workflow_defect',
+        categories: ['workflow_defect'],
+        count: 1,
+        firstSeenAt: '2026-04-12T10:00:00.000Z',
+        lastSeenAt: '2026-04-12T10:00:00.000Z',
+        lastSessionId: 'loop-failed',
+        recentSessionIds: ['loop-failed'],
+        capabilities: { loop: 1 },
+        latestReason: 'Cannot safely resume because no reliable checkpoint was recorded.',
+        latestEvidencePaths: [loopFailurePath],
+        recentEvidencePaths: [loopFailurePath],
+        selfHealCandidateCount: 1,
+        candidateForSelfRepair: true,
+        lastRecoveryAction: 'spawn_self_repair_candidate',
+      }],
+    }, null, 2), 'utf-8')
 
     const runCapabilityMock = vi.mocked(runCapability)
     runCapabilityMock.mockImplementation(async (module) => {
@@ -2303,9 +2325,25 @@ describe('reportHarness logging levels', () => {
     const failure = JSON.parse(readFileSync(join(result.session!.artifacts.failureLogDir!, failureFiles[0]!), 'utf-8')) as {
       metadata: Record<string, unknown>
     }
+    const failureIndex = JSON.parse(readFileSync(join(dir, '.magpie', 'failure-index.json'), 'utf-8')) as {
+      entries: Array<{
+        signature: string
+        count: number
+        capabilities: Record<string, number>
+      }>
+    }
 
     expect(result.status).toBe('failed')
-    expect(failure.metadata.relatedFailureSignature).toBe('loop|code_development|workflow_defect|resume-checkpoint')
+    expect(failure.metadata.sourceFailureSignature).toBe('loop|code_development|workflow_defect|resume-checkpoint')
+    expect(failure.metadata.countTowardFailureIndex).toBe(false)
+    expect(failureIndex.entries).toHaveLength(1)
+    expect(failureIndex.entries[0]).toMatchObject({
+      signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+      count: 1,
+      capabilities: {
+        loop: 1,
+      },
+    })
   })
 })
 

@@ -163,6 +163,59 @@ describe('workflow shared runtime helpers', () => {
     expect(readFileSync(result.indexPath, 'utf-8')).toContain('"count": 1')
   })
 
+  it('reuses the source failure signature for derived failures without incrementing the index twice', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-derived-failures-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-derived-failures-cwd-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    await appendWorkflowFailure(cwd, {
+      capability: 'loop',
+      sessionId: 'loop-a',
+      stage: 'code_development',
+      reason: 'Loop failed on resume checkpoint',
+      rawError: 'Cannot safely resume because no reliable checkpoint was recorded.',
+      evidencePaths: ['/tmp/loop-events.jsonl'],
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        checkpointMissing: true,
+      },
+    })
+
+    const result = await appendWorkflowFailure(cwd, {
+      capability: 'harness',
+      sessionId: 'harness-a',
+      stage: 'developing',
+      reason: 'Harness failed because the inner loop failed.',
+      rawError: 'Loop failed during code_development.',
+      evidencePaths: ['/tmp/harness-events.jsonl'],
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        sourceFailureSignature: 'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
+        countTowardFailureIndex: false,
+      },
+    })
+
+    const index = JSON.parse(readFileSync(result.indexPath, 'utf-8')) as {
+      entries: Array<{
+        signature: string
+        count: number
+        capabilities: Record<string, number>
+      }>
+    }
+
+    expect(result.record.signature).toBe(
+      'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
+    )
+    expect(index.entries).toHaveLength(1)
+    expect(index.entries[0]).toMatchObject({
+      signature: 'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
+      count: 1,
+      capabilities: {
+        loop: 1,
+      },
+    })
+  })
+
   it('parses shell-safe command arguments and rejects unsafe input', () => {
     expect(parseCommandArgs('npm run test:run -- --grep "harness flow"')).toEqual([
       'npm',

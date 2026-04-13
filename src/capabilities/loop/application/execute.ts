@@ -1085,6 +1085,64 @@ async function waitForHumanDecision(
   return null
 }
 
+async function consumeApprovedHumanConfirmation(
+  session: LoopSession,
+  progressObserver?: LoopProgressObserver,
+): Promise<boolean> {
+  if (session.status !== 'paused_for_human') {
+    return false
+  }
+
+  const stage = session.stages[session.currentStageIndex]
+  if (!stage) {
+    return false
+  }
+
+  const pendingConfirmation = [...session.humanConfirmations].reverse().find(
+    (item) => item.stage === stage && item.decision === 'pending'
+  )
+  if (!pendingConfirmation) {
+    return false
+  }
+
+  const decided = await findHumanConfirmationDecision(session.artifacts.humanConfirmationPath, pendingConfirmation.id)
+  if (!decided || decided.decision !== 'approved') {
+    return false
+  }
+
+  const completedStage = [...session.stageResults].reverse().find((item) => item.stage === stage)
+  if (!completedStage?.success) {
+    return false
+  }
+
+  const codeDevelopmentNeedsVerification = stage === 'code_development'
+    && session.tddEligible === true
+    && session.redTestConfirmed === true
+    && !session.artifacts.greenTestResultPath
+  if (codeDevelopmentNeedsVerification) {
+    return false
+  }
+
+  pendingConfirmation.status = 'approved'
+  pendingConfirmation.decision = 'approved'
+  pendingConfirmation.rationale = decided.rationale
+  pendingConfirmation.updatedAt = decided.updatedAt
+  session.updatedAt = new Date()
+  session.status = 'running'
+  session.currentLoopState = undefined
+  session.lastFailureReason = undefined
+  session.currentStageIndex += 1
+
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+    event: 'human_confirmation_applied',
+    stage,
+    decision: decided.decision,
+    nextStage: session.stages[session.currentStageIndex] || 'completed',
+  }, progressObserver)
+
+  return true
+}
+
 async function runSingleStage(
   stage: LoopStageName,
   session: LoopSession,
@@ -2321,6 +2379,21 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
       status: 'paused',
       summary: resumeCheckpointError,
       session,
+    }
+  }
+
+  if (session.status === 'paused_for_human') {
+    const approvedStage = session.stages[session.currentStageIndex] || 'unknown'
+    if (await consumeApprovedHumanConfirmation(session, progressObserver)) {
+      await updateLoopState(session, {
+        currentStage: session.stages[session.currentStageIndex] || 'completed',
+        lastReliableResult: `Human confirmation approved stage ${approvedStage}.`,
+        nextAction: session.stages[session.currentStageIndex]
+          ? `Start ${session.stages[session.currentStageIndex]}.`
+          : 'Finalize loop output.',
+        currentBlocker: 'None.',
+      }, `Applied human confirmation for ${approvedStage}.`)
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
     }
   }
 
