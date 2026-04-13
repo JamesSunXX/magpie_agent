@@ -42,6 +42,7 @@ const providerMocks = vi.hoisted(() => ({
     actual: typeof import('../../../src/platform/providers/index.js')
   ) => AIProvider),
   autoBranchResponse: 'branch: delivery-flow',
+  autoBranchFactoryError: null as string | null,
 }))
 
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
@@ -74,6 +75,9 @@ vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
     ...actual,
     createConfiguredProvider: vi.fn((input: ProviderBindingInput, config: unknown) => {
       if (input.logicalName === 'capabilities.loop.auto_branch') {
+        if (providerMocks.autoBranchFactoryError) {
+          throw new Error(providerMocks.autoBranchFactoryError)
+        }
         return {
           name: 'mock-auto-branch',
           chat: vi.fn().mockResolvedValue(providerMocks.autoBranchResponse),
@@ -93,6 +97,7 @@ describe('loop capability', () => {
     knowledgeMocks.failPromote = false
     providerMocks.factory = null
     providerMocks.autoBranchResponse = 'branch: delivery-flow'
+    providerMocks.autoBranchFactoryError = null
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -1442,6 +1447,78 @@ process.exit(result.status ?? 1)
     expect(events).toContain('"event":"auto_branch_named"')
     expect(events).toContain('"source":"fallback"')
     expect(events).toContain('"reason":"invalid_slug"')
+  })
+
+  it('falls back to a non-AI semantic branch name when branch naming provider setup fails', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchFactoryError = 'Unknown tool: nope'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-bad-branch-tool-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: nope\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/sample-prd-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_naming_degraded"')
+    expect(events).toContain('"reason":"Unknown tool: nope"')
+    expect(events).toContain('"source":"fallback"')
+  })
+
+  it('uses the legacy timestamp-only branch name when semantic branch naming is disabled', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-branch-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/2026-04-13-05-47-26')
   })
 
   it('reuses the current feature branch for auto-commit when configured', async () => {

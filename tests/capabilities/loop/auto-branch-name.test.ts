@@ -42,4 +42,18 @@ describe('generateAutoBranchName', () => {
       reason: 'invalid_slug',
     })
   })
+
+  it('returns the legacy timestamp-only branch name when semantic fallback is disabled', async () => {
+    await expect(generateAutoBranchName({
+      prefix: 'sch/',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath: '/repo/docs/current/admin_backend/PRD.md',
+      allowSemanticFallback: false,
+      now: new Date('2026-04-13T05:47:26.000Z'),
+    })).resolves.toEqual({
+      branchName: 'sch/2026-04-13-05-47-26',
+      slug: '',
+      source: 'fallback',
+    })
+  })
 })

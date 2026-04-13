@@ -95,6 +95,8 @@ describe('issue-fix workflow', () => {
       model: 'kiro',
       agent: 'dev',
     }, 'architect')).toBe('dev')
+  })
+
   afterEach(() => {
     issueFixPlanningMocks.createPlanContext.mockClear()
     issueFixPlanningMocks.syncPlanArtifact.mockClear()

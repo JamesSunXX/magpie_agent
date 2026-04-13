@@ -199,9 +199,13 @@ export async function generateAutoBranchName(input: {
   provider?: AIProvider
   now?: Date
   cwd?: string
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
 }): Promise<AutoBranchNameResult | null> {
   const now = input.now || new Date()
-  const fallbackSlug = deriveFallbackSlug(input.goal, input.prdPath)
+  const fallbackSlug = input.allowSemanticFallback === false
+    ? ''
+    : deriveFallbackSlug(input.goal, input.prdPath)
 
   if (input.provider) {
     try {
@@ -235,7 +239,11 @@ export async function generateAutoBranchName(input: {
       branchName: fallbackBranchName,
       slug: fallbackSlug,
       source: 'fallback',
-      ...(input.provider ? { reason: 'invalid_slug' } : {}),
+      ...(input.provider
+        ? { reason: 'invalid_slug' }
+        : input.fallbackReason
+          ? { reason: input.fallbackReason }
+          : {}),
     }
     : null
 }

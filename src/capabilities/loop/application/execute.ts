@@ -894,6 +894,8 @@ async function buildBranchName(input: {
   goal: string
   prdPath?: string
   provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
 }): Promise<AutoBranchNameResult | null> {
   return generateAutoBranchName({
     prefix: input.prefix,
@@ -901,6 +903,8 @@ async function buildBranchName(input: {
     prdPath: input.prdPath,
     provider: input.provider,
     cwd: input.cwd,
+    allowSemanticFallback: input.allowSemanticFallback,
+    fallbackReason: input.fallbackReason,
   })
 }
 
@@ -910,6 +914,8 @@ async function ensureBranch(input: {
   goal: string
   prdPath?: string
   provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
 }): Promise<AutoBranchNameResult | null> {
   try {
     execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
@@ -991,6 +997,8 @@ async function ensureWorktree(input: {
   goal: string
   prdPath?: string
   provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
 }): Promise<WorktreeResolution> {
   try {
     execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
@@ -2311,13 +2319,20 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   }), config)
   const shouldPrepareAutoBranchProvider = prepared.dryRun !== true
     && (loopRuntime.autoCommit || (routingDecision?.tier || prepared.complexity) === 'complex')
-  const autoBranchProvider = loopRuntime.branchNamingEnabled && shouldPrepareAutoBranchProvider
-    ? createConfiguredProvider(resolveAutoBranchProviderBinding({
-      tool: loopRuntime.branchNamingTool,
-      model: loopRuntime.branchNamingModel,
-      agent: loopRuntime.branchNamingAgent,
-    }), config)
-    : undefined
+  let autoBranchProvider: AIProvider | undefined
+  let autoBranchProviderError: string | undefined
+  if (loopRuntime.branchNamingEnabled && shouldPrepareAutoBranchProvider) {
+    try {
+      autoBranchProvider = createConfiguredProvider(resolveAutoBranchProviderBinding({
+        tool: loopRuntime.branchNamingTool,
+        model: loopRuntime.branchNamingModel,
+        agent: loopRuntime.branchNamingAgent,
+      }), config)
+    } catch (error) {
+      autoBranchProviderError = error instanceof Error ? error.message : String(error)
+      ctx.logger.warn(`[loop] Auto branch naming degraded: ${autoBranchProviderError}`)
+    }
+  }
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
@@ -2346,6 +2361,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       goal: prepared.goal,
       prdPath: prepared.prdPath,
       provider: autoBranchProvider,
+      allowSemanticFallback: loopRuntime.branchNamingEnabled,
+      fallbackReason: autoBranchProviderError,
     })
     workspaceMode = worktree.workspaceMode
     workspacePath = worktree.workspacePath
@@ -2444,6 +2461,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
         goal: prepared.goal,
         prdPath: prepared.prdPath,
         provider: autoBranchProvider,
+        allowSemanticFallback: loopRuntime.branchNamingEnabled,
+        fallbackReason: autoBranchProviderError,
       }) || undefined
       branchName = branchNameResult?.branchName
     }
@@ -2490,6 +2509,12 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   await appendObservedEvent(eventsPath, session.id, { event: 'loop_started', goal: prepared.goal }, progressObserver)
+  if (autoBranchProviderError) {
+    await appendObservedEvent(eventsPath, session.id, {
+      event: 'auto_branch_naming_degraded',
+      reason: autoBranchProviderError,
+    }, progressObserver)
+  }
   if (workspaceMode === 'worktree') {
     await appendObservedEvent(eventsPath, session.id, {
       event: 'worktree_created',
