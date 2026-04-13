@@ -1,6 +1,8 @@
 import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
+import { readdirSync, statSync, existsSync } from 'fs'
+import { join, relative } from 'path'
 import type { Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
@@ -109,18 +111,26 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           // Get both staged and unstaged changes
           const diff = filterDiff(execSync('git diff HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
           if (!diff.trim()) {
-            // No uncommitted changes, fall back to last commit
-            spinner.text = 'No uncommitted changes, getting last commit...'
-            const lastCommitDiff = filterDiff(execSync('git diff HEAD~1 HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
-            if (!lastCommitDiff.trim()) {
-              spinner.fail('No changes found')
-              console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
-              commandExit(0)
+            // No uncommitted changes in root repo, check nested git repos (submodules / embedded repos)
+            spinner.text = 'Checking nested git repositories...'
+            const nestedDiff = collectNestedGitDiffs(config.defaults.diff_exclude)
+            if (nestedDiff.trim()) {
+              localDiff = nestedDiff
+              spinner.succeed(`Found changes in nested git repositories (${nestedDiff.split('\n').length} lines)`)
+            } else {
+              // No nested changes either, fall back to last commit
+              spinner.text = 'No uncommitted changes, getting last commit...'
+              const lastCommitDiff = filterDiff(execSync('git diff HEAD~1 HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
+              if (!lastCommitDiff.trim()) {
+                spinner.fail('No changes found')
+                console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
+                commandExit(0)
+              }
+              localDiff = lastCommitDiff
+              reviewingLastCommit = true
+              const commitMsg = execSync('git log -1 --pretty=%s', { encoding: 'utf-8' }).trim()
+              spinner.succeed(`Reviewing last commit: "${commitMsg}" (${lastCommitDiff.split('\n').length} lines)`)
             }
-            localDiff = lastCommitDiff
-            reviewingLastCommit = true
-            const commitMsg = execSync('git log -1 --pretty=%s', { encoding: 'utf-8' }).trim()
-            spinner.succeed(`Reviewing last commit: "${commitMsg}" (${lastCommitDiff.split('\n').length} lines)`)
           } else {
             localDiff = diff
             spinner.succeed(`Found local changes (${diff.split('\n').length} lines)`)
@@ -766,4 +776,47 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       process.removeListener('SIGINT', sigintHandler)
     }
   })
+}
+
+/**
+ * Scan for nested git repositories (submodules or embedded repos) and collect
+ * their uncommitted diffs. Each diff section is prefixed with the relative path
+ * so reviewers can tell which sub-repo the changes belong to.
+ */
+function collectNestedGitDiffs(diffExclude?: string[]): string {
+  const rootDir = process.cwd()
+  const nested: string[] = []
+
+  function walk(dir: string, depth: number) {
+    if (depth > 3) return
+    let entries: string[]
+    try { entries = readdirSync(dir) } catch { return }
+    for (const entry of entries) {
+      if (entry === 'node_modules' || entry === 'vendor' || entry === 'dist' || entry === '.git') continue
+      const full = join(dir, entry)
+      let st
+      try { st = statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (existsSync(join(full, '.git'))) {
+        // Found a nested git repo
+        try {
+          const diff = execSync('git diff HEAD', { cwd: full, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 })
+          if (diff.trim()) {
+            const rel = relative(rootDir, full)
+            const filtered = filterDiff(diff, diffExclude)
+            if (filtered.trim()) {
+              // Rewrite paths in diff to include the sub-repo prefix
+              const prefixed = filtered.replace(/^(diff --git a\/)(.+?)( b\/)(.+)/gm, `$1${rel}/$2$3${rel}/$4`)
+              nested.push(`# Nested repo: ${rel}\n${prefixed}`)
+            }
+          }
+        } catch { /* not a valid git repo or no commits */ }
+      } else {
+        walk(full, depth + 1)
+      }
+    }
+  }
+
+  walk(rootDir, 0)
+  return nested.join('\n')
 }
