@@ -7,6 +7,7 @@ import {
   createHarnessGraphArtifact,
   loadHarnessGraphArtifact,
   persistHarnessGraphArtifact,
+  recordHarnessGraphApprovalDecision,
   reconcileHarnessGraphArtifact,
 } from '../../../src/capabilities/workflows/harness-server/graph.js'
 
@@ -256,5 +257,142 @@ describe('harness graph artifact runtime', () => {
       completed: 1,
     })
     expect(graph.status).toBe('active')
+  })
+
+  it('records approval decisions and recomputes graph readiness', () => {
+    const graph = reconcileHarnessGraphArtifact(createHarnessGraphArtifact({
+      graphId: 'approval-graph',
+      title: 'Approval graph',
+      goal: 'Verify approval actions',
+      approvalGates: [
+        {
+          gateId: 'confirm-graph',
+          label: 'Confirm graph',
+          scope: 'graph_confirmation',
+          status: 'pending',
+        },
+      ],
+      nodes: [
+        {
+          id: 'node-a',
+          title: 'Node A',
+          goal: 'Base work',
+          type: 'feature',
+          state: 'pending',
+        },
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: ['node-a'],
+          state: 'pending',
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    }))
+
+    const approvedGraph = recordHarnessGraphApprovalDecision(graph, {
+      decision: 'approved',
+      decidedBy: 'operator',
+      note: 'Graph looks safe to start.',
+    })
+
+    expect(approvedGraph.approvalGates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        gateId: 'confirm-graph',
+        status: 'approved',
+        decidedBy: 'operator',
+        note: 'Graph looks safe to start.',
+      }),
+    ]))
+    expect(approvedGraph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'node-a', state: 'ready' }),
+      expect.objectContaining({ id: 'release-approval', state: 'waiting_approval' }),
+    ]))
+
+    const approvedNode = recordHarnessGraphApprovalDecision({
+      ...approvedGraph,
+      nodes: approvedGraph.nodes.map((node) => node.id === 'node-a'
+        ? { ...node, state: 'completed' }
+        : node),
+    }, {
+      nodeId: 'release-approval',
+      decision: 'approved',
+      decidedBy: 'release-manager',
+      note: 'Ready to ship.',
+    })
+
+    expect(approvedNode.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'release-approval',
+        state: 'ready',
+        approvalGates: expect.arrayContaining([
+          expect.objectContaining({
+            gateId: 'approve-release',
+            status: 'approved',
+            decidedBy: 'release-manager',
+            note: 'Ready to ship.',
+          }),
+        ]),
+      }),
+    ]))
+  })
+
+  it('records rejection decisions and keeps the graph blocked until changed explicitly', () => {
+    const graph = reconcileHarnessGraphArtifact(createHarnessGraphArtifact({
+      graphId: 'rejection-graph',
+      title: 'Rejection graph',
+      goal: 'Verify rejection handling',
+      nodes: [
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          state: 'pending',
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    }))
+
+    const rejected = recordHarnessGraphApprovalDecision(graph, {
+      nodeId: 'release-approval',
+      decision: 'rejected',
+      decidedBy: 'operator',
+      note: 'Rollback plan is missing.',
+    })
+
+    expect(rejected.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'release-approval',
+        state: 'blocked',
+        statusReason: 'Node approval rejected: Approve release',
+        approvalGates: expect.arrayContaining([
+          expect.objectContaining({
+            gateId: 'approve-release',
+            status: 'rejected',
+            decidedBy: 'operator',
+            note: 'Rollback plan is missing.',
+          }),
+        ]),
+      }),
+    ]))
+    expect(rejected.rollup.blocked).toBe(1)
+    expect(rejected.status).toBe('blocked')
   })
 })

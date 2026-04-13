@@ -301,6 +301,118 @@ describe('session dashboard', () => {
     })
   })
 
+  it('surfaces graph approvals, blockers, and likely next runnable nodes for harness sessions', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+    const sessionDir = join(repoDir, '.magpie', 'sessions', 'harness', 'harness-graph-1')
+    const graphPath = join(sessionDir, 'graph.json')
+
+    mkdirSync(sessionDir, { recursive: true })
+
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: 'harness-graph-1',
+      capability: 'harness',
+      title: 'Checkout graph',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'blocked',
+      currentStage: 'reviewing',
+      summary: 'Waiting for release approval.',
+      artifacts: {
+        graphPath,
+      },
+    }), 'utf-8')
+
+    writeFileSync(graphPath, JSON.stringify({
+      version: 1,
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'active',
+      approvalGates: [],
+      rollup: {
+        total: 4,
+        pending: 1,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 1,
+        completed: 1,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'design-api',
+          title: 'Design API',
+          goal: 'Lock the API contract',
+          type: 'feature',
+          dependencies: [],
+          state: 'completed',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: ['design-api'],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'pending',
+            },
+          ],
+          statusReason: 'Waiting for node approval: Approve release',
+        },
+        {
+          id: 'deploy-ui',
+          title: 'Deploy UI',
+          goal: 'Deploy checkout UI',
+          type: 'feature',
+          dependencies: ['release-approval'],
+          state: 'blocked',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Blocked by dependency: release-approval',
+        },
+        {
+          id: 'announce',
+          title: 'Announce rollout',
+          goal: 'Tell the team rollout started',
+          type: 'feature',
+          dependencies: ['deploy-ui'],
+          state: 'pending',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for dependencies: deploy-ui',
+        },
+      ],
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+    const harnessCard = result.continue[0]
+
+    expect(harnessCard.detail).toContain('graph ready=0 waiting=1 blocked=1')
+    expect(harnessCard.selectedDetail).toMatchObject({
+      graphSummary: 'checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1',
+      attention: [
+        'Approval needed: release-approval - Approve release. Waiting for node approval: Approve release After approval: release-approval',
+        'Blocked: deploy-ui - Blocked by dependency: release-approval',
+      ],
+      readyNow: 'No nodes are ready right now.',
+      recommendedAction: 'Recommend approving release-approval first. Immediate unlock: release-approval.',
+      recommendedCommand: 'magpie harness approve harness-graph-1 --node release-approval --gate approve-release',
+    })
+  })
+
   it('loads repo-local sessions when launched from a nested directory', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const nestedDir = join(repoDir, 'packages', 'feature')

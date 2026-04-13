@@ -140,6 +140,14 @@ describe('TUI components', () => {
               ],
               arbitration: 'Decision: revise - Need another cycle after rollback fixes.',
               nextStep: 'Fix rollback handling before rerun.',
+              graphSummary: 'checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1',
+              attention: [
+                'Approval needed: release-approval - Approve release. Waiting for node approval: Approve release. After approval: release-approval',
+                'Blocked: deploy-ui - Blocked by dependency: release-approval',
+              ],
+              readyNow: 'No nodes are ready right now.',
+              recommendedAction: 'Recommend approving release-approval first. Immediate unlock: release-approval.',
+              recommendedCommand: 'magpie harness approve harness-1 --node release-approval --gate approve-release',
             },
             status: 'in_progress',
             updatedAt: new Date('2026-03-19T11:00:00.000Z'),
@@ -157,6 +165,12 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('security: revise - Missing rollback handling.')
     expect(normalizedText(element)).toContain('Decision: revise - Need another cycle after rollback fixes.')
     expect(normalizedText(element)).toContain('Next: Fix rollback handling before rerun.')
+    expect(normalizedText(element)).toContain('Graph: checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1')
+    expect(normalizedText(element)).toContain('Approval needed: release-approval - Approve release. Waiting for node approval: Approve release. After approval: release-approval')
+    expect(normalizedText(element)).toContain('Blocked: deploy-ui - Blocked by dependency: release-approval')
+    expect(normalizedText(element)).toContain('Ready now: No nodes are ready right now.')
+    expect(normalizedText(element)).toContain('Recommend: Recommend approving release-approval first. Immediate unlock: release-approval.')
+    expect(normalizedText(element)).toContain('Command: magpie harness approve harness-1 --node release-approval --gate approve-release')
   })
 
   it('keeps session lists compact while browsing long history', () => {

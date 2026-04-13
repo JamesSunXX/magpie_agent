@@ -201,18 +201,35 @@ export function Dashboard(props: {
       {selectedHarnessDetail ? (
         <Section title="Selected Harness Summary">
           {selectedHarnessDetail.participants ? (
-            <Text>Participants: {truncateText(selectedHarnessDetail.participants, TITLE_MAX_LENGTH + 28)}</Text>
+            <Text>Participants: {selectedHarnessDetail.participants}</Text>
           ) : null}
           {selectedHarnessDetail.reviewerSummaries.map((summary, index) => (
             <Text key={`${selectedCard?.id || 'harness'}-reviewer-${index}`}>
-              {truncateText(summary, TITLE_MAX_LENGTH + 28)}
+              {summary}
             </Text>
           ))}
           {selectedHarnessDetail.arbitration ? (
-            <Text>{truncateText(selectedHarnessDetail.arbitration, TITLE_MAX_LENGTH + 28)}</Text>
+            <Text>{selectedHarnessDetail.arbitration}</Text>
           ) : null}
           {selectedHarnessDetail.nextStep ? (
-            <Text>Next: {truncateText(selectedHarnessDetail.nextStep, TITLE_MAX_LENGTH + 28)}</Text>
+            <Text>Next: {selectedHarnessDetail.nextStep}</Text>
+          ) : null}
+          {selectedHarnessDetail.graphSummary ? (
+            <Text>Graph: {selectedHarnessDetail.graphSummary}</Text>
+          ) : null}
+          {(selectedHarnessDetail.attention || []).map((line, index) => (
+            <Text key={`${selectedCard?.id || 'harness'}-attention-${index}`}>
+              {line}
+            </Text>
+          ))}
+          {selectedHarnessDetail.readyNow ? (
+            <Text>Ready now: {selectedHarnessDetail.readyNow}</Text>
+          ) : null}
+          {selectedHarnessDetail.recommendedAction ? (
+            <Text>Recommend: {selectedHarnessDetail.recommendedAction}</Text>
+          ) : null}
+          {selectedHarnessDetail.recommendedCommand ? (
+            <Text>Command: {selectedHarnessDetail.recommendedCommand}</Text>
           ) : null}
         </Section>
       ) : null}
