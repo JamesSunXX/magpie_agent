@@ -184,8 +184,6 @@ describe('loop capability', () => {
     }
 
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-eval-parse-fail-'))
-  it('applies loop role binding overrides and persists the active role roster', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-role-bindings-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
     const prdPath = join(dir, 'docs', 'sample-prd.md')
@@ -193,17 +191,6 @@ describe('loop capability', () => {
 
     const configPath = join(dir, 'config.yaml')
     writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_tool: kiro\n    planner_model: mock\n    executor_tool: claw\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    role_bindings:\n      architect:\n        tool: codex\n      developer:\n        tool: codex\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
-    providerMocks.factory = (input, config, actual) => {
-      if (input.logicalName === 'capabilities.loop.planner' || input.logicalName === 'capabilities.loop.executor') {
-        return {
-          name: 'mock-executor',
-          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
-          chatStream: vi.fn(async function * () {}),
-        }
-      }
-      return actual.createConfiguredProvider(input, config as never)
-    }
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(loopCapability, {
@@ -223,6 +210,34 @@ describe('loop capability', () => {
     expect(events).not.toContain('"event":"human_confirmation_required"')
     expect(events).not.toContain('"event":"stage_paused"')
     expect(events).toContain('"event":"stage_completed"')
+  })
+
+  it('applies loop role binding overrides and persists the active role roster', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-role-bindings-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_tool: kiro\n    planner_model: mock\n    executor_tool: claw\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    role_bindings:\n      architect:\n        tool: codex\n      developer:\n        tool: codex\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner' || input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
       dryRun: true,
     }, ctx)
 

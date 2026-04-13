@@ -58,6 +58,7 @@ import {
   resolveHarnessArbitrationOutcome,
   type HarnessArbitrationDecision,
 } from './arbitration.js'
+import { isGeminiBinding, isKnownGeminiModelError } from '../../shared/gemini-fallback.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
 const HARNESS_REVIEWER_PROMPTS = [
@@ -719,6 +720,75 @@ function resolveHarnessDefaultReviewers(config: MagpieConfigV2): string[] | null
   return Array.isArray(reviewerIds) && reviewerIds.length > 0 ? [...reviewerIds] : null
 }
 
+function resolveKiroFallbackReviewerAgent(reviewer: {
+  agent?: string
+} | undefined): string {
+  return reviewer?.agent?.trim() || 'code-reviewer'
+}
+
+function applyKiroFallbackReviewers(
+  config: MagpieConfigV2,
+  reviewerIds: string[]
+): { reviewerIds: string[]; applied: boolean } {
+  const reviewers = config.reviewers || {}
+  const nextReviewerIds = [...reviewerIds]
+  let applied = false
+
+  reviewerIds.forEach((reviewerId, index) => {
+    const reviewer = reviewers[reviewerId]
+    if (!reviewer || !isGeminiBinding(reviewer)) {
+      return
+    }
+
+    const fallbackReviewerId = `${reviewerId}-fallback-kiro`
+    reviewers[fallbackReviewerId] = {
+      tool: 'kiro',
+      model: 'kiro',
+      agent: resolveKiroFallbackReviewerAgent(reviewer),
+      prompt: reviewer.prompt,
+    }
+    nextReviewerIds[index] = fallbackReviewerId
+    applied = true
+  })
+
+  config.reviewers = reviewers
+  return { reviewerIds: nextReviewerIds, applied }
+}
+
+async function runCapabilityWithGeminiReviewerFallback(
+  capability: any,
+  buildInput: (reviewers: string) => Record<string, unknown>,
+  cycleCtx: CapabilityContext,
+  config: MagpieConfigV2,
+  configPath: string,
+  reviewerIds: string[],
+  onFallbackApplied?: (reviewerIds: string[]) => Promise<void>,
+): Promise<string[]> {
+  const runWith = async (ids: string[]) => {
+    await runCapability(capability, buildInput(ids.join(',')) as never, cycleCtx)
+  }
+
+  try {
+    await runWith(reviewerIds)
+    return reviewerIds
+  } catch (error) {
+    if (!isKnownGeminiModelError(error)) {
+      throw error
+    }
+
+    const fallback = applyKiroFallbackReviewers(config, reviewerIds)
+    if (!fallback.applied) {
+      throw error
+    }
+
+    alignSummaryRoles(config, fallback.reviewerIds)
+    await writeFile(configPath, YAML.stringify(config), 'utf-8')
+    await onFallbackApplied?.(fallback.reviewerIds)
+    await runWith(fallback.reviewerIds)
+    return fallback.reviewerIds
+  }
+}
+
 function resolveHarnessValidatorBindings(config: MagpieConfigV2): ModelRouteBinding[] {
   const bindings = config.capabilities.harness?.validator_checks
   if (Array.isArray(bindings)) {
@@ -1099,6 +1169,7 @@ async function runValidatorCheck(
   const label = describeBindingLabel(binding)
   const id = `${index + 1}-${slugifyBindingLabel(label)}`
   try {
+    const prompt = formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput)
     const provider = createConfiguredProvider({
       logicalName: `capabilities.harness.validator_checks[${index}]`,
       tool: binding.tool,
@@ -1107,22 +1178,46 @@ async function runValidatorCheck(
     }, config)
     provider.setCwd?.(cwd)
 
-    const raw = await provider.chat([{
-      role: 'user',
-      content: formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput),
-    }])
+    let raw: string
+    let fallbackUsed = false
+
+    try {
+      raw = await provider.chat([{
+        role: 'user',
+        content: prompt,
+      }])
+    } catch (error) {
+      if (!isGeminiBinding(binding) || !isKnownGeminiModelError(error)) {
+        throw error
+      }
+
+      const fallbackProvider = createConfiguredProvider({
+        logicalName: `capabilities.harness.validator_checks[${index}]`,
+        tool: 'kiro',
+        model: 'kiro',
+        agent: 'architect',
+      }, config)
+      fallbackProvider.setCwd?.(cwd)
+      raw = await fallbackProvider.chat([{
+        role: 'user',
+        content: prompt,
+      }])
+      fallbackUsed = true
+    }
+
     const parsed = toValidatorDecision(raw)
     await writeFile(outputPath, JSON.stringify({
       raw,
       parsed,
+      ...(fallbackUsed ? { fallback: { tool: 'kiro', model: 'kiro', agent: 'architect' } } : {}),
     }, null, 2), 'utf-8')
 
     return {
       id,
       label,
-      tool: binding.tool,
-      model: binding.model,
-      agent: binding.agent,
+      tool: fallbackUsed ? 'kiro' : binding.tool,
+      model: fallbackUsed ? 'kiro' : binding.model,
+      agent: fallbackUsed ? 'architect' : binding.agent,
       outputPath,
       decision: parsed?.decision || 'unknown',
       rationale: parsed?.rationale || 'Validator returned no parsable JSON decision.',
@@ -1177,6 +1272,7 @@ async function completeHarnessCycleFromReviewCheckpoint(
     routingDecisionPath: string
     sessionId: string
     roles: RoleInstance[]
+    roleRosterPath: string
     roleMessagesPath: string
     roleRoundsDir: string
     testCommand: string
@@ -1200,19 +1296,30 @@ async function completeHarnessCycleFromReviewCheckpoint(
 
   const adjudicationOutputPath = join(cycleDir, 'adjudication.json')
   const adjudicationTopic = buildAdjudicationTopic(params.cycle, combinedBlockingIssues, validations, testsPassed, testOutput)
-  await runCapability(discussCapability, {
-    topic: adjudicationTopic,
-    options: {
-      config: params.configPath,
-      rounds: '2',
-      format: 'json',
-      converge: true,
-      reviewers: params.reviewerIds.join(','),
-      all: false,
-      interactive: false,
-      output: adjudicationOutputPath,
+  params.reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    discussCapability,
+    (reviewers) => ({
+      topic: adjudicationTopic,
+      options: {
+        config: params.configPath,
+        rounds: '2',
+        format: 'json',
+        converge: true,
+        reviewers,
+        all: false,
+        interactive: false,
+        output: adjudicationOutputPath,
+      },
+    }),
+    cycleCtx,
+    params.config,
+    params.configPath,
+    params.reviewerIds,
+    async (reviewerIds) => {
+      params.roles = buildHarnessRoleRoster(params.config, reviewerIds, resolveHarnessValidatorBindings(params.config))
+      await writeFile(params.roleRosterPath, JSON.stringify(params.roles, null, 2), 'utf-8')
     },
-  }, cycleCtx)
+  )
 
   const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
   const outcome = resolveHarnessArbitrationOutcome({
@@ -1353,6 +1460,7 @@ async function runCycle(
   routingDecisionPath: string,
   sessionId: string,
   roles: RoleInstance[],
+  roleRosterPath: string,
   roleMessagesPath: string,
   roleRoundsDir: string,
   persistPendingReviewCheckpoint?: (checkpoint: PendingHarnessReviewCheckpoint | null, lastReliablePoint?: string) => Promise<void>,
@@ -1371,22 +1479,33 @@ async function runCycle(
     metadata: { format: 'json' },
   })
 
-  await runCapability(reviewCapability, {
-    options: {
-      config: configPath,
-      rounds: String(reviewRounds),
-      format: 'json',
-      converge: true,
-      local: true,
-      reviewers: reviewerIds.join(','),
-      all: false,
-      deep: true,
-      skipContext: true,
-      post: false,
-      interactive: false,
-      output: reviewOutputPath,
+  reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    reviewCapability,
+    (reviewers) => ({
+      options: {
+        config: configPath,
+        rounds: String(reviewRounds),
+        format: 'json',
+        converge: true,
+        local: true,
+        reviewers,
+        all: false,
+        deep: true,
+        skipContext: true,
+        post: false,
+        interactive: false,
+        output: reviewOutputPath,
+      },
+    }),
+    cycleCtx,
+    config,
+    configPath,
+    reviewerIds,
+    async (nextReviewerIds) => {
+      roles = buildHarnessRoleRoster(config, nextReviewerIds, validatorBindings)
+      await writeFile(roleRosterPath, JSON.stringify(roles, null, 2), 'utf-8')
     },
-  }, cycleCtx)
+  )
 
   const reviewData = JSON.parse(await readFile(reviewOutputPath, 'utf-8')) as { parsedIssues?: MergedIssue[] }
   const allIssues = Array.isArray(reviewData.parsedIssues) ? reviewData.parsedIssues : []
@@ -1419,19 +1538,30 @@ async function runCycle(
   const combinedBlockingIssues = [...blockingIssues, ...validatorIssues]
 
   const adjudicationTopic = buildAdjudicationTopic(cycle, combinedBlockingIssues, validations, testsPassed, testOutput)
-  await runCapability(discussCapability, {
-    topic: adjudicationTopic,
-    options: {
-      config: configPath,
-      rounds: '2',
-      format: 'json',
-      converge: true,
-      reviewers: reviewerIds.join(','),
-      all: false,
-      interactive: false,
-      output: adjudicationOutputPath,
+  reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    discussCapability,
+    (reviewers) => ({
+      topic: adjudicationTopic,
+      options: {
+        config: configPath,
+        rounds: '2',
+        format: 'json',
+        converge: true,
+        reviewers,
+        all: false,
+        interactive: false,
+        output: adjudicationOutputPath,
+      },
+    }),
+    cycleCtx,
+    config,
+    configPath,
+    reviewerIds,
+    async (nextReviewerIds) => {
+      roles = buildHarnessRoleRoster(config, nextReviewerIds, validatorBindings)
+      await writeFile(roleRosterPath, JSON.stringify(roles, null, 2), 'utf-8')
     },
-  }, cycleCtx)
+  )
 
   const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
   const outcome = resolveHarnessArbitrationOutcome({
@@ -2262,6 +2392,7 @@ export async function executeHarness(
           routingDecisionPath,
           sessionId,
           roles,
+          roleRosterPath: roleArtifacts.rolesPath,
           roleMessagesPath: roleArtifacts.messagesPath,
           roleRoundsDir: roleArtifacts.roundsDir,
           testCommand,
@@ -2291,6 +2422,7 @@ export async function executeHarness(
         routingDecisionPath,
         sessionId,
         roles,
+        roleArtifacts.rolesPath,
         roleArtifacts.messagesPath,
         roleArtifacts.roundsDir,
         persistPendingReviewCheckpoint,

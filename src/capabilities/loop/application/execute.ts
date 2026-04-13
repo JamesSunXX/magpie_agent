@@ -40,6 +40,7 @@ import {
   appendHumanConfirmationItem,
   findHumanConfirmationDecision,
 } from '../domain/human-confirmation.js'
+import { createLoopMr, type LoopMrAttemptResult } from '../domain/auto-mr.js'
 import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
 import { resolveAutoCommitProviderBinding } from '../domain/auto-commit-provider-binding.js'
 import { generateLoopPlan } from '../domain/planner.js'
@@ -104,6 +105,7 @@ interface LoopRuntimeConfig {
   retriesPerStage: number
   maxIterations: number
   autoCommit: boolean
+  autoMr: boolean
   reuseCurrentBranch: boolean
   autoBranchPrefix: string
   humanConfirmationFile: string
@@ -329,6 +331,7 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     retriesPerStage: config?.retries_per_stage ?? 2,
     maxIterations: config?.max_iterations ?? 30,
     autoCommit: config?.auto_commit !== false,
+    autoMr: config?.mr?.enabled === true,
     reuseCurrentBranch: config?.reuse_current_branch === true,
     autoBranchPrefix: config?.auto_branch_prefix || 'sch/',
     humanConfirmationFile: config?.human_confirmation?.file || 'human_confirmation.md',
@@ -1073,6 +1076,79 @@ async function commitIfChanged(
       reason: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+async function attemptLoopAutoMr(
+  session: LoopSession,
+  runtime: LoopRuntimeConfig,
+  notificationRouter: ReturnType<typeof createNotificationRouter>,
+  progressObserver: LoopProgressObserver | undefined,
+  prepared: LoopPreparedInput,
+  runCwd: string,
+): Promise<LoopMrAttemptResult | null> {
+  if (!runtime.autoMr || prepared.dryRun === true || !session.artifacts.mrResultPath) {
+    return null
+  }
+
+  let result: LoopMrAttemptResult
+
+  if (!session.branchName) {
+    result = {
+      status: 'manual_follow_up',
+      reason: 'No branch available for automatic MR creation.',
+      needsHuman: true,
+    }
+  } else {
+    result = await createLoopMr({
+      cwd: runCwd,
+      branchName: session.branchName,
+      goal: session.goal,
+    })
+  }
+
+  await writeFile(session.artifacts.mrResultPath, JSON.stringify(result, null, 2), 'utf-8')
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+    event: 'loop_auto_mr',
+    status: result.status,
+    ...(result.branchName ? { branch: result.branchName } : {}),
+    ...(result.url ? { url: result.url } : {}),
+    ...(result.reason ? { reason: result.reason } : {}),
+    needsHuman: result.needsHuman,
+  }, progressObserver)
+
+  if (result.status === 'created') {
+    await notificationRouter.dispatch({
+      type: 'loop_auto_mr_created',
+      sessionId: session.id,
+      title: 'Magpie loop MR created',
+      message: `开发已完成，MR 已创建：${result.url}`,
+      severity: 'info',
+      actionUrl: result.url,
+      metadata: {
+        branch: result.branchName,
+        url: result.url,
+      },
+      dedupeKey: `loop-auto-mr-created:${session.id}`,
+    })
+    return result
+  }
+
+  if (result.needsHuman) {
+    await notificationRouter.dispatch({
+      type: 'loop_auto_mr_manual_follow_up',
+      sessionId: session.id,
+      title: 'Magpie loop MR needs manual follow-up',
+      message: `开发已完成，但 MR 需要人工补做。原因：${result.reason || 'unknown'}`,
+      severity: 'warning',
+      metadata: {
+        branch: result.branchName,
+        reason: result.reason,
+      },
+      dedupeKey: `loop-auto-mr-manual:${session.id}`,
+    })
+  }
+
+  return result
 }
 
 async function markSessionFailed(
@@ -2107,17 +2183,40 @@ async function continueSession(
   session.updatedAt = new Date()
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_completed' }, progressObserver)
+  const mrResult = await attemptLoopAutoMr(
+    session,
+    runtime,
+    notificationRouter,
+    progressObserver,
+    prepared,
+    runCwd,
+  )
+
+  const finalSummaryLines = [
+    '# Final Summary',
+    '',
+    `Loop completed successfully for ${session.goal}.`,
+    '',
+    `Stages completed: ${session.stages.join(', ')}`,
+  ]
+  let finalReliableResult = `Loop completed successfully for ${session.goal}.`
+  let returnSummary = `Loop completed successfully. Session: ${session.id}`
+
+  if (mrResult?.status === 'created') {
+    finalSummaryLines.push('', `MR created: ${mrResult.url}`)
+    finalReliableResult = `Loop completed successfully for ${session.goal}. MR created: ${mrResult.url}`
+    returnSummary = `Loop completed successfully. MR created: ${mrResult.url}`
+  } else if (mrResult?.needsHuman) {
+    finalSummaryLines.push('', `MR needs manual follow-up: ${mrResult.reason || 'unknown reason'}`)
+    finalReliableResult = `Loop completed successfully for ${session.goal}. MR needs manual follow-up.`
+    returnSummary = 'Loop completed successfully. MR 需要人工补做。'
+  }
+
   await finalizeLoopKnowledge(
     session,
     true,
-    [
-      '# Final Summary',
-      '',
-      `Loop completed successfully for ${session.goal}.`,
-      '',
-      `Stages completed: ${session.stages.join(', ')}`,
-    ].join('\n'),
-    `Loop completed successfully for ${session.goal}.`,
+    finalSummaryLines.join('\n'),
+    finalReliableResult,
     session.artifacts.planPath,
     'Loop completed successfully.'
   )
@@ -2133,7 +2232,7 @@ async function continueSession(
 
   return {
     status: 'completed',
-    summary: `Loop completed successfully. Session: ${session.id}`,
+    summary: returnSummary,
     session,
   }
 }
@@ -2202,6 +2301,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
+  const mrResultPath = join(sessionDir, 'mr-result.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
   const roleArtifacts = getRoleArtifactPaths(sessionDir)
   const roleRoster = buildLoopRoleRoster(loopRuntime)
@@ -2337,6 +2437,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       eventsPath,
       planPath,
       humanConfirmationPath,
+      mrResultPath,
       documentPlanPath,
       roleRosterPath: roleArtifacts.rolesPath,
       roleMessagesPath: roleArtifacts.messagesPath,

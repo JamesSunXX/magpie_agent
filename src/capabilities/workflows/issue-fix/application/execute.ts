@@ -16,6 +16,7 @@ import {
   runSafeCommand,
   sessionDirFor,
 } from '../../shared/runtime.js'
+import { isGeminiBinding, isKnownGeminiModelError } from '../../shared/gemini-fallback.js'
 import type { IssueFixPreparedInput, IssueFixResult } from '../types.js'
 
 export async function executeIssueFix(
@@ -59,20 +60,36 @@ export async function executeIssueFix(
   const plannerModel = routingDecision?.planning.model || routingDecision?.planning.tool || runtime.planner_model || config.analyzer.model
   const executorModel = routingDecision?.execution.model || routingDecision?.execution.tool || runtime.executor_model || 'codex'
   log.debug(`[issue-fix] planner=${plannerModel} executor=${executorModel}`)
-  const planner = createConfiguredProvider({
-    logicalName: 'capabilities.issue_fix.planner',
-    tool: plannerTool,
-    model: plannerModel,
-    agent: routingDecision?.planning.agent || runtime.planner_agent,
-  }, config)
-  const executor = createConfiguredProvider({
-    logicalName: 'capabilities.issue_fix.executor',
-    tool: executorTool,
-    model: executorModel,
-    agent: routingDecision?.execution.agent || runtime.executor_agent,
-  }, config)
-  planner.setCwd?.(ctx.cwd)
-  executor.setCwd?.(ctx.cwd)
+  const chatWithGeminiFallback = async (
+    logicalName: string,
+    binding: { tool?: string; model?: string; agent?: string },
+    prompt: string,
+  ): Promise<string> => {
+    const provider = createConfiguredProvider({
+      logicalName,
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+    }, config)
+    provider.setCwd?.(ctx.cwd)
+
+    try {
+      return await provider.chat([{ role: 'user', content: prompt }])
+    } catch (error) {
+      if (!isGeminiBinding(binding) || !isKnownGeminiModelError(error)) {
+        throw error
+      }
+
+      log.warn(`[issue-fix] ${logicalName} gemini failed; retrying with kiro fallback`)
+      const fallback = createConfiguredProvider({
+        logicalName,
+        tool: 'kiro',
+        model: 'kiro',
+      }, config)
+      fallback.setCwd?.(ctx.cwd)
+      return fallback.chat([{ role: 'user', content: prompt }])
+    }
+  }
 
   log.debug('[issue-fix] fetching planning context...')
   const planningContext = await planningRouter.createPlanContext({
@@ -95,7 +112,11 @@ export async function executeIssueFix(
     '',
     'Create a concise execution plan with risks, likely files, and verification steps.',
   ].join('\n')
-  const plan = await planner.chat([{ role: 'user', content: planPrompt }])
+  const plan = await chatWithGeminiFallback('capabilities.issue_fix.planner', {
+    tool: plannerTool,
+    model: plannerModel,
+    agent: routingDecision?.planning.agent || runtime.planner_agent,
+  }, planPrompt)
   await writeFile(planPath, plan, 'utf-8')
   log.debug(`[issue-fix] plan saved to ${planPath} (${plan.length} chars)`)
 
@@ -103,7 +124,11 @@ export async function executeIssueFix(
   const executionPrompt = prepared.apply === false
     ? `Do not mutate files. Describe the exact code and test changes you would make for this issue.\n\nIssue:\n${prepared.issue}\n\nPlan:\n${plan}`
     : `Apply the minimum safe fix for this issue in the current repository, then summarize exactly what changed.\n\nIssue:\n${prepared.issue}\n\nPlan:\n${plan}`
-  const execution = await executor.chat([{ role: 'user', content: executionPrompt }])
+  const execution = await chatWithGeminiFallback('capabilities.issue_fix.executor', {
+    tool: executorTool,
+    model: executorModel,
+    agent: routingDecision?.execution.agent || runtime.executor_agent,
+  }, executionPrompt)
   await writeFile(executionPath, execution, 'utf-8')
   log.debug(`[issue-fix] execution saved to ${executionPath} (${execution.length} chars)`)
 

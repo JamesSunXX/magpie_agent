@@ -238,6 +238,7 @@ export interface LoopSession {
     repairOpenIssuesPath?: string
     repairEvidencePath?: string
     nextRoundInputPath?: string
+    mrResultPath?: string
     knowledgeSchemaPath?: string
     knowledgeIndexPath?: string
     knowledgeLogPath?: string
