@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { issueFixCapability } from '../../../src/capabilities/workflows/issue-fix/index.js'
+import { resolveIssueFixAgent } from '../../../src/capabilities/workflows/issue-fix/application/execute.js'
 
 const issueFixPlanningMocks = vi.hoisted(() => ({
   createPlanContext: vi.fn().mockResolvedValue({
@@ -23,6 +24,31 @@ vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
 }))
 
 describe('issue-fix workflow', () => {
+  it('drops kiro-only agent metadata when routing picks a non-kiro provider', () => {
+    expect(resolveIssueFixAgent({
+      tool: 'codex',
+      model: 'codex',
+    }, 'architect')).toBeUndefined()
+
+    expect(resolveIssueFixAgent({
+      tool: 'gemini',
+      model: 'gemini-cli',
+    }, 'dev')).toBeUndefined()
+  })
+
+  it('keeps runtime agents only for kiro bindings', () => {
+    expect(resolveIssueFixAgent({
+      tool: 'kiro',
+      model: 'kiro',
+    }, 'architect')).toBe('architect')
+
+    expect(resolveIssueFixAgent({
+      tool: 'kiro',
+      model: 'kiro',
+      agent: 'dev',
+    }, 'architect')).toBe('dev')
+  })
+
   it('stores workflow artifacts under the repo-local .magpie sessions directory', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-issue-fix-home-'))
     const magpieHome = join(dir, '.magpie-test-home')

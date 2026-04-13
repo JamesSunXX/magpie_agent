@@ -9,6 +9,7 @@ import {
   extractPlanningItemKey,
 } from '../../../../platform/integrations/planning/index.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
+import { getProviderForModel, getProviderForTool } from '../../../../providers/factory.js'
 import {
   buildCommandSafetyConfig,
   generateWorkflowId,
@@ -17,6 +18,23 @@ import {
   sessionDirFor,
 } from '../../shared/runtime.js'
 import type { IssueFixPreparedInput, IssueFixResult } from '../types.js'
+
+export function resolveIssueFixAgent(
+  binding: { tool?: string; model?: string; agent?: string } | undefined,
+  runtimeAgent?: string
+): string | undefined {
+  if (binding?.agent) {
+    return binding.agent
+  }
+
+  const providerName = binding?.tool
+    ? getProviderForTool(binding.tool)
+    : binding?.model
+      ? getProviderForModel(binding.model)
+      : undefined
+
+  return providerName === 'kiro' ? runtimeAgent : undefined
+}
 
 export async function executeIssueFix(
   prepared: IssueFixPreparedInput,
@@ -58,18 +76,28 @@ export async function executeIssueFix(
   const executorTool = routingDecision?.execution.tool || runtime.executor_tool
   const plannerModel = routingDecision?.planning.model || routingDecision?.planning.tool || runtime.planner_model || config.analyzer.model
   const executorModel = routingDecision?.execution.model || routingDecision?.execution.tool || runtime.executor_model || 'codex'
+  const plannerAgent = resolveIssueFixAgent({
+    tool: plannerTool,
+    model: plannerModel,
+    agent: routingDecision?.planning.agent,
+  }, runtime.planner_agent)
+  const executorAgent = resolveIssueFixAgent({
+    tool: executorTool,
+    model: executorModel,
+    agent: routingDecision?.execution.agent,
+  }, runtime.executor_agent)
   log.debug(`[issue-fix] planner=${plannerModel} executor=${executorModel}`)
   const planner = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.planner',
     tool: plannerTool,
     model: plannerModel,
-    agent: routingDecision?.planning.agent || runtime.planner_agent,
+    agent: plannerAgent,
   }, config)
   const executor = createConfiguredProvider({
     logicalName: 'capabilities.issue_fix.executor',
     tool: executorTool,
     model: executorModel,
-    agent: routingDecision?.execution.agent || runtime.executor_agent,
+    agent: executorAgent,
   }, config)
   planner.setCwd?.(ctx.cwd)
   executor.setCwd?.(ctx.cwd)
