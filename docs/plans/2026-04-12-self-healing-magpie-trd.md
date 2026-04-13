@@ -63,6 +63,37 @@
 - `reason` 必须能单独读懂，不能只写“execution failed”这类空话。
 - `evidencePaths` 必须只引用已经存在或当前调用栈即将写出的文件。
 
+第一版保留以下 `metadata` 约定键，后续实现不要各自改名：
+
+| key | 使用位置 | 说明 |
+| --- | --- | --- |
+| `failureKind` | `loop` 测试失败 | 标记红灯失败、绿灯失败或命令前置失败 |
+| `attemptNumber` | `loop` 测试失败 / 重试 | 标记当前是第几次修复或重试 |
+| `sourceFailureSignature` | `harness` 派生失败 | 指向内层 `loop` 已经落盘的原始失败签名 |
+| `countTowardFailureIndex` | `harness` 派生失败 | 固定为 `false`，避免同一根因被聚合两次 |
+| `relatedSessionId` | `harness-server` 服务级失败 | 服务级失败后来定位到具体 session 时补关联，不回写旧记录 |
+
+最小样例：
+
+```json
+{
+  "sessionId": "loop-123",
+  "capability": "loop",
+  "stage": "code_development",
+  "reason": "Green test still failing after repair attempt 2.",
+  "rawError": "npm run test:run -- tests/capabilities/loop/loop.test.ts",
+  "retryableHint": true,
+  "lastReliablePoint": "planning_completed",
+  "evidencePaths": [
+    ".magpie/sessions/loop/loop-123/green-test-result.json"
+  ],
+  "metadata": {
+    "failureKind": "green_test_failed",
+    "attemptNumber": 2
+  }
+}
+```
+
 ### 2. Domain A 返回给 Domain C 的固定结果
 
 统一失败核心域对外只返回两类结果：
@@ -81,6 +112,52 @@
 | `candidateForSelfRepair` | 是否具备升级为自修候选的最低条件 |
 | `reason` | 给接入层和后续文档看的决策原因 |
 | `diagnosticChecks` | 当动作是 `run_diagnostics` 时要执行的检查项 |
+
+第一版 `FailureRecord` 至少固定以下字段，字段名与落盘 JSON 保持一致：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 单条失败记录 id |
+| `sessionId` | 关联会话 id；服务级失败允许为空 |
+| `capability` | 失败来源 capability |
+| `stage` | 失败阶段或服务动作名 |
+| `timestamp` | 记录创建时间 |
+| `signature` | 稳定失败签名 |
+| `category` | 标准化失败分类 |
+| `reason` | 人可读失败摘要 |
+| `retryable` | 是否允许自动继续 |
+| `selfHealCandidate` | 是否满足升级为自修候选的最低条件 |
+| `lastReliablePoint` | 最后可靠点 |
+| `evidencePaths` | 证据文件路径列表 |
+| `metadata` | 补充上下文 |
+| `recoveryAction` | 本次决策动作 |
+
+派生失败样例：
+
+```json
+{
+  "id": "f0e1d2c3b4a5",
+  "sessionId": "harness-456",
+  "capability": "harness",
+  "stage": "code_development",
+  "timestamp": "2026-04-12T10:00:00.000Z",
+  "signature": "harness|code_development|workflow_defect|loop_failed",
+  "category": "workflow_defect",
+  "reason": "Loop failed during code_development and requires manual follow-up.",
+  "retryable": false,
+  "selfHealCandidate": true,
+  "lastReliablePoint": "planning_completed",
+  "evidencePaths": [
+    ".magpie/sessions/harness/harness-456/events.jsonl"
+  ],
+  "metadata": {
+    "sourceFailureSignature": "loop|code_development|quality|green_test_failed",
+    "countTowardFailureIndex": false,
+    "loopSessionId": "loop-123"
+  },
+  "recoveryAction": "block_for_human"
+}
+```
 
 约束：
 
@@ -104,6 +181,15 @@
 - 会话目录路径由现有 session runtime 提供，不能在每个能力里重复拼字符串。
 - 仓库级索引必须按 `signature` 聚合，而不是按 `failureId` 聚合。
 - 相同签名跨 capability 也要落在同一聚合主题下，但要保留 capability 计数明细。
+
+路径归属示例：
+
+| 场景 | failure record 路径 | index 路径 |
+| --- | --- | --- |
+| `loop` session 失败 | `.magpie/sessions/loop/<sessionId>/failures/<failureId>.json` | `.magpie/failure-index.json` |
+| `harness` session 失败 | `.magpie/sessions/harness/<sessionId>/failures/<failureId>.json` | `.magpie/failure-index.json` |
+| `harness-server` 绑定 `harness` session 的失败 | `.magpie/sessions/harness/<sessionId>/failures/<failureId>.json` | `.magpie/failure-index.json` |
+| `harness-server` 无法绑定 session 的服务级失败 | `.magpie/harness-server/failures/<failureId>.json` | `.magpie/failure-index.json` |
 
 ## 三条主路径接入契约
 
@@ -138,7 +224,7 @@
 `harness` 额外要求：
 
 - 如果内层 `loop` 是 `paused_for_human`，外层只能维持 `blocked`，不能新增失败记录。
-- 如果外层失败是由内层同一签名引发，允许复用内层 `signature` 作为 `relatedFailureSignature`，但不能覆盖原记录。
+- 如果外层失败是由内层同一签名引发，必须在 `metadata.sourceFailureSignature` 里保留原签名，并显式写 `countTowardFailureIndex=false`，但不能覆盖原记录。
 - `HarnessResult` 必须暴露 failure artifact 路径，供 `inspect` 和后续知识提炼复用。
 
 ### `harness-server`
@@ -205,11 +291,63 @@
 | `latestEvidencePaths` | 最近一次证据路径 |
 | `selfHealCandidateCount` | 被标成自修候选的次数 |
 
+第一版额外固定以下字段，避免知识层和后续 inspect 再猜：
+
+| 字段 | 说明 |
+| --- | --- |
+| `categories` | 这个签名历史上出现过的分类列表 |
+| `firstSeenAt` | 第一次出现时间 |
+| `lastSessionId` | 最近一次命中的 session id |
+| `recentSessionIds` | 最近三次命中的 session id |
+| `recentEvidencePaths` | 最近三次 evidence 路径 |
+| `candidateForSelfRepair` | 当前是否满足自修候选条件 |
+| `lastRecoveryAction` | 最近一次恢复动作 |
+
 约束：
 
 - 并发写入时以“读最新、改内存、原子回写”为最低保证。
 - 允许保留最近一次原因摘要，但不能覆盖累计次数。
 - 知识层只消费这个索引，不直接扫每个 session 的失败目录做聚合。
+
+索引样例：
+
+```json
+{
+  "version": 1,
+  "updatedAt": "2026-04-12T10:00:00.000Z",
+  "entries": [
+    {
+      "signature": "workflow_defect|resume-checkpoint",
+      "category": "workflow_defect",
+      "categories": [
+        "workflow_defect"
+      ],
+      "count": 2,
+      "firstSeenAt": "2026-04-12T09:10:00.000Z",
+      "lastSeenAt": "2026-04-12T10:00:00.000Z",
+      "lastSessionId": "loop-b",
+      "recentSessionIds": [
+        "loop-a",
+        "loop-b"
+      ],
+      "capabilities": {
+        "loop": 2
+      },
+      "latestReason": "Cannot safely resume because no reliable checkpoint was recorded.",
+      "latestEvidencePaths": [
+        ".magpie/sessions/loop/loop-b/events.jsonl"
+      ],
+      "recentEvidencePaths": [
+        ".magpie/sessions/loop/loop-a/events.jsonl",
+        ".magpie/sessions/loop/loop-b/events.jsonl"
+      ],
+      "selfHealCandidateCount": 1,
+      "candidateForSelfRepair": true,
+      "lastRecoveryAction": "run_diagnostics"
+    }
+  ]
+}
+```
 
 ## 知识升级接口
 
@@ -226,6 +364,26 @@
 - 最近三次会话 id
 - 最近三次 evidence 路径
 - 最近一次决策动作
+
+## 计划对照与开工检查
+
+下面这张表只做一件事：让后续执行者不用翻两份文档猜“计划里的哪一段已经被 TRD 定死了”。
+
+| 实施计划里的交接点 | 这份 TRD 的固定位置 | 开工前必须确认什么 |
+| --- | --- | --- |
+| Domain A 与 Domain C 的接口细化 | “固定契约” + “三条主路径接入契约” | 事实输入、标准记录、恢复决策的字段名和责任边界已经固定 |
+| 写盘约束 | “账本写入职责” + “仓库级索引结构” | session 级、repo 级、服务级三条路径没有重复写入口 |
+| 三条主路径接入边界 | “`loop` / `harness` / `harness-server`” 三节 | 每个失败入口都能回指唯一上报时机 |
+| 知识升级输入 | “知识升级接口” | `knowledge/runtime.ts` 只依赖索引，不反扫 session 目录 |
+| 开发顺序 | “开发顺序” | 不跨过 Domain A / B 先在接入层散改字段 |
+
+进入 `code_development` 前，执行者应逐条复核下面 5 项：
+
+1. 已确认 `sourceFailureSignature`、`countTowardFailureIndex`、`relatedSessionId` 这三个跨层字段名不再变化。
+2. 已确认 `.magpie/failure-index.json` 需要额外稳定 `recentSessionIds`、`recentEvidencePaths`、`lastRecoveryAction`。
+3. 已确认 `paused_for_human`、正常恢复、真正失败三类情况只落各自语义，不会重复记账。
+4. 已确认 `harness-server` 的 `waiting_retry` / `failed` 切换只看恢复决策，不再保留第二套字符串判断。
+5. 如果要新增文件或字段，先回补实施计划里的“文件与验收归属表”，再开始写代码。
 
 ## 开发顺序
 
