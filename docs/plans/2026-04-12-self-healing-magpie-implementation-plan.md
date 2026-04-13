@@ -155,14 +155,14 @@
 1. 先落 Domain A 里的类型、分类器和恢复决策，固定失败模型、签名和动作语义
 2. 再落 Domain B，把统一 artifact、路径约定和暴露类型接到现有 session 结构
 3. 然后按 `loop` -> `harness` -> `harness-server` 的顺序接 Domain C，先让三条主路径都只走同一套事实上报和决策消费
-4. `ledger` 的索引结构、锁和原子写盘约束在前面阶段定死，但最终聚合字段要跟着 Domain C 联调一起收口，避免先做一版不完整索引再返工
+4. `ledger` 的索引结构、锁和原子写盘约束在 TRD 阶段先定死；正文里的开发任务按“先接 Domain C、再收口账本”的顺序排，避免先做一版不完整索引再返工
 5. 最后再做 Domain D，把重复失败升级和文档说明补齐
 
 ### 阶段交接约束
 
 - `trd_generation` 阶段产物固定为 [`2026-04-12-self-healing-magpie-trd.md`](./2026-04-12-self-healing-magpie-trd.md)，重点细化 Domain A 与 Domain C 之间的接口，不要重新拆域
 - `code_development` 阶段按域推进，允许同阶段内跨文件实现，但不要跳过依赖顺序
-- 本文 Phase 编号用于分组，不单独作为开发落地顺序；真正执行顺序以“依赖顺序”和文末“交付顺序建议”为准
+- 下方正文已经按建议交付顺序排布；如果后续实现要插补字段，仍以“依赖顺序”和文末“交付顺序建议”为准
 - 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
 
 ## Phase 1：统一失败结构
@@ -247,55 +247,7 @@
 - [ ] 运行：
   - `npm run test:run -- tests/core/failures/classifier.test.ts tests/capabilities/loop/test-execution.test.ts`
 
-## Phase 3：失败账本
-
-### Task 3：实现会话级失败落盘和仓库级聚合
-
-**Files:**
-- Create: `src/core/failures/ledger.ts`
-- Modify: `src/capabilities/workflows/shared/runtime.ts`
-- Test: `tests/core/failures/ledger.test.ts`
-
-- [ ] 先写失败账本测试，覆盖：
-  - 单条失败能落到 session 目录
-  - 同一仓库的失败能更新 `.magpie/failure-index.json`
-  - 重复签名会累加计数而不是重复建独立主题
-  - 不同 capability 的相同签名也能聚合
-  - 并发两次写入不会破坏 `.magpie/failure-index.json`
-- [ ] 统一第一版落盘位置：
-  - session 级：`<sessionDir>/failures/<failureId>.json`
-  - repo 级：`.magpie/failure-index.json`
-  - server 无 session 级：`.magpie/harness-server/failures/<failureId>.json`
-- [ ] 为仓库级索引增加最小聚合字段：
-  - 顶层固定：
-    - `version`
-    - `updatedAt`
-    - `entries`
-  - 每个 entry 至少包含：
-    - `signature`
-    - `category`
-    - `categories`
-    - `count`
-    - `firstSeenAt`
-    - `lastSeenAt`
-    - `lastSessionId`
-    - `recentSessionIds`
-    - `capabilities`
-    - `latestReason`
-    - `latestEvidencePaths`
-    - `recentEvidencePaths`
-    - `selfHealCandidateCount`
-    - `candidateForSelfRepair`
-    - `lastRecoveryAction`
-- [ ] 仓库级索引写入必须走单一辅助入口，并使用“仓库级锁文件 + 原子覆盖”组合：
-  - 锁文件固定为 `.magpie/failure-index.lock`
-  - 进入锁后再读最新索引、合并计数、写临时文件并替换
-  - 验证目标不只是 JSON 不损坏，还要保证并发两次写入后计数不丢
-- [ ] 为 `appendWorkflowEvent` 所在路径补一个失败写入辅助函数，避免 `loop`、`harness`、`harness-server` 各自拼路径
-- [ ] 运行：
-  - `npm run test:run -- tests/core/failures/ledger.test.ts`
-
-## Phase 4：把 loop 接到统一失败账本
+## Phase 3：把 loop 接到统一失败账本
 
 ### Task 4：给 loop 的主要失败点统一写失败记录
 
@@ -316,7 +268,7 @@
 - [ ] 运行：
   - `npm run test:run -- tests/capabilities/loop/loop.test.ts`
 
-## Phase 5：把 harness 接到统一失败账本
+## Phase 4：把 harness 接到统一失败账本
 
 ### Task 5：让 harness 能区分“loop 失败”和“harness 自己失败”
 
@@ -333,7 +285,7 @@
 - [ ] 运行：
   - `npm run test:run -- tests/capabilities/workflows/harness.test.ts`
 
-## Phase 6：把 harness-server 接到统一失败账本
+## Phase 5：把 harness-server 接到统一失败账本
 
 ### Task 6：补 server 级失败聚合与服务级恢复决策
 
@@ -378,6 +330,55 @@
 - [ ] 当恢复决策给出 `spawn_self_repair_candidate` 时，第一版只落一条候选记录到索引，不直接开修复任务
 - [ ] 运行：
   - `npm run test:run -- tests/core/failures/recovery-policy.test.ts tests/capabilities/workflows/harness-server.test.ts`
+
+## Phase 6：失败账本收口
+
+### Task 3：实现会话级失败落盘和仓库级聚合（在三条主路径接入后收口）
+
+**Files:**
+- Create: `src/core/failures/ledger.ts`
+- Modify: `src/capabilities/workflows/shared/runtime.ts`
+- Test: `tests/core/failures/ledger.test.ts`
+
+- [ ] 先写失败账本测试，覆盖：
+  - 单条失败能落到 session 目录
+  - 同一仓库的失败能更新 `.magpie/failure-index.json`
+  - 重复签名会累加计数而不是重复建独立主题
+  - 不同 capability 的相同签名也能聚合
+  - 并发两次写入不会破坏 `.magpie/failure-index.json`
+- [ ] 统一第一版落盘位置：
+  - session 级：`<sessionDir>/failures/<failureId>.json`
+  - repo 级：`.magpie/failure-index.json`
+  - server 无 session 级：`.magpie/harness-server/failures/<failureId>.json`
+- [ ] 为仓库级索引增加最小聚合字段：
+  - 顶层固定：
+    - `version`
+    - `updatedAt`
+    - `entries`
+  - 每个 entry 至少包含：
+    - `signature`
+    - `category`
+    - `categories`
+    - `count`
+    - `firstSeenAt`
+    - `lastSeenAt`
+    - `lastSessionId`
+    - `recentSessionIds`
+    - `capabilities`
+    - `latestReason`
+    - `latestEvidencePaths`
+    - `recentEvidencePaths`
+    - `selfHealCandidateCount`
+    - `candidateForSelfRepair`
+    - `lastRecoveryAction`
+- [ ] 仓库级索引写入必须走单一辅助入口，并使用“仓库级锁文件 + 原子覆盖”组合：
+  - 锁文件固定为 `.magpie/failure-index.lock`
+  - 进入锁后再读最新索引、合并计数、写临时文件并替换
+  - 验证目标不只是 JSON 不损坏，还要保证并发两次写入后计数不丢
+- [ ] 为 `appendWorkflowEvent` 所在路径补一个失败写入辅助函数，避免 `loop`、`harness`、`harness-server` 各自拼路径
+- [ ] 这一块放在三条主路径接入之后收口；TRD 已经提前固定结构，但这里才做最终写盘实现和聚合字段联调
+- [ ] 运行：
+  - `npm run test:run -- tests/core/failures/ledger.test.ts`
 
 ## Phase 7：长期失败模式升级
 
