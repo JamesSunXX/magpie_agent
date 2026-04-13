@@ -136,6 +136,16 @@ interface LoopActivitySnapshot {
   stage?: string
 }
 
+interface LoopMrSnapshot {
+  line: string
+}
+
+interface LoopSessionSnapshot {
+  status: string
+  summary: string
+  mr?: LoopMrSnapshot
+}
+
 async function loadLatestLoopActivity(loopEventsPath: string | undefined): Promise<LoopActivitySnapshot | null> {
   if (!loopEventsPath) {
     return null
@@ -184,6 +194,53 @@ async function loadLatestLoopActivity(loopEventsPath: string | undefined): Promi
   }
 
   return null
+}
+
+async function loadLoopMrSnapshot(mrResultPath: string | undefined): Promise<LoopMrSnapshot | null> {
+  if (!mrResultPath) {
+    return null
+  }
+
+  try {
+    const raw = await readFile(mrResultPath, 'utf-8')
+    const parsed = JSON.parse(raw) as {
+      status?: string
+      url?: string
+      reason?: string
+      needsHuman?: boolean
+    }
+
+    if (parsed.status === 'created' && parsed.url) {
+      return { line: `created ${parsed.url}` }
+    }
+
+    if (parsed.needsHuman) {
+      return { line: `needs manual follow-up${parsed.reason ? ` (${parsed.reason})` : ''}` }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+async function loadLoopSessionSnapshot(loopSessionId: string | undefined): Promise<LoopSessionSnapshot | null> {
+  if (!loopSessionId) {
+    return null
+  }
+
+  const session = await loadWorkflowSession(process.cwd(), 'loop', loopSessionId)
+  if (!session) {
+    return null
+  }
+
+  const mr = await loadLoopMrSnapshot((session.artifacts as { mrResultPath?: string }).mrResultPath)
+
+  return {
+    status: session.status,
+    summary: session.summary,
+    ...(mr ? { mr } : {}),
+  }
 }
 
 async function loadHarnessRoundSummary(
@@ -371,6 +428,14 @@ async function runHarnessWithSession(
     console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
     if (output.details.artifacts.loopSessionId) {
       console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
+      const loopSnapshot = await loadLoopSessionSnapshot(output.details.artifacts.loopSessionId)
+      if (loopSnapshot) {
+        console.log(`Loop status: ${loopSnapshot.status}`)
+        console.log(`Loop summary: ${loopSnapshot.summary}`)
+        if (loopSnapshot.mr) {
+          console.log(`Loop MR: ${loopSnapshot.mr.line}`)
+        }
+      }
     }
   }
 
@@ -518,6 +583,14 @@ harnessCommand
       console.log(`Events: ${session.artifacts.eventsPath}`)
     }
     await printDocumentPlanSummary(session.artifacts.documentPlanPath)
+    const loopSnapshot = await loadLoopSessionSnapshot(session.artifacts.loopSessionId)
+    if (loopSnapshot) {
+      console.log(`Loop status: ${loopSnapshot.status}`)
+      console.log(`Loop summary: ${loopSnapshot.summary}`)
+      if (loopSnapshot.mr) {
+        console.log(`Loop MR: ${loopSnapshot.mr.line}`)
+      }
+    }
     const latestLoopActivity = await loadLatestLoopActivity(session.artifacts.loopEventsPath)
     if (latestLoopActivity) {
       if (latestLoopActivity.stage) {

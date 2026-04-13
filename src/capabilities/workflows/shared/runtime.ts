@@ -6,6 +6,7 @@ import { getRepoCapabilitySessionsDir, getRepoSessionDir } from '../../../platfo
 import type { SafetyConfig } from '../../../platform/config/types.js'
 
 export type WorkflowCapability =
+  | 'loop'
   | 'issue-fix'
   | 'docs-sync'
   | 'post-merge-regression'

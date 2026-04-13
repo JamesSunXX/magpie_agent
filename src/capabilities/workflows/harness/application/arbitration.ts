@@ -20,6 +20,42 @@ const DEFAULT_REVISE_BRIEF = 'Address blocking review findings and rerun the che
 const DEFAULT_BLOCKED_BRIEF = 'Adjudication did not produce an actionable next step.'
 const DEFAULT_RATIONALE = 'No parsable decision returned by discuss final conclusion.'
 
+function normalizeHarnessDecision(
+  value: unknown
+): HarnessArbitrationDecision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const record = value as {
+    decision?: unknown
+    rationale?: unknown
+    requiredActions?: unknown
+  }
+  const normalizedDecision = typeof record.decision === 'string'
+    ? record.decision.trim().toLowerCase()
+    : ''
+
+  if (normalizedDecision !== 'approved' && normalizedDecision !== 'revise') {
+    return null
+  }
+
+  const requiredActions = Array.isArray(record.requiredActions)
+    ? record.requiredActions
+      .filter((item): item is string => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(Boolean)
+    : null
+
+  return {
+    decision: normalizedDecision,
+    ...(typeof record.rationale === 'string' && record.rationale.trim()
+      ? { rationale: record.rationale.trim() }
+      : {}),
+    ...(requiredActions ? { requiredActions } : {}),
+  }
+}
+
 function parseNarrativeAction(line: string): string | null {
   const actionMatch = line.match(/^(?:[-*]|\d+\.)\s*(.+)$/)
   if (actionMatch?.[1]) {
@@ -101,7 +137,7 @@ export function resolveHarnessArbitrationOutcome(params: {
     ...(params.fallbackTexts || []),
   ]
   const decision = candidates
-    .map((text) => extractJsonBlock<HarnessArbitrationDecision>(text) || inferDecisionFromNarrative(text))
+    .map((text) => normalizeHarnessDecision(extractJsonBlock<unknown>(text)) || inferDecisionFromNarrative(text))
     .find((candidate): candidate is HarnessArbitrationDecision => candidate !== null)
     || null
   const approved = params.blockingIssueCount === 0

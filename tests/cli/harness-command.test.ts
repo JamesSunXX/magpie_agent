@@ -382,6 +382,9 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
     expect(logSpy).toHaveBeenCalledWith('Document mode: project_docs')
     expect(logSpy).toHaveBeenCalledWith('Formal docs root: /tmp/repo/docs/v2/checkout')
+    expect(logSpy).toHaveBeenCalledWith('Loop status: completed')
+    expect(logSpy).toHaveBeenCalledWith('Loop summary: Loop completed successfully. MR created: https://gitlab.example.com/team/project/-/merge_requests/42')
+    expect(logSpy).toHaveBeenCalledWith('Loop MR: created https://gitlab.example.com/team/project/-/merge_requests/42')
     expect(logSpy).toHaveBeenCalledWith('Loop stage: code_development')
     expect(logSpy).toHaveBeenCalledWith('Last activity: 2026-04-11T00:00:07.000Z')
     expect(logSpy).toHaveBeenCalledWith('Loop activity: 2026-04-11T00:00:07.000Z stage=code_development Codex 正在执行命令。')
@@ -661,6 +664,8 @@ function loadWorkflowSessionsDetail(): void {
   const summaryDir = join(knowledgeDir, 'summaries')
   const loopEventsPath = join(knowledgeDir, 'loop-events.jsonl')
   const documentPlanPath = join(knowledgeDir, 'document-plan.json')
+  const loopSessionDir = mkdtempSync(join(tmpdir(), 'magpie-loop-session-'))
+  const loopMrResultPath = join(loopSessionDir, 'mr-result.json')
   const roleRoundsDir = join(knowledgeDir, 'role-rounds')
   mkdirSync(summaryDir, { recursive: true })
   mkdirSync(roleRoundsDir, { recursive: true })
@@ -728,38 +733,66 @@ function loadWorkflowSessionsDetail(): void {
       status: 'candidate',
     },
   ], null, 2), 'utf-8')
+  writeFileSync(loopMrResultPath, JSON.stringify({
+    status: 'created',
+    url: 'https://gitlab.example.com/team/project/-/merge_requests/42',
+    branchName: 'sch/harness-1',
+    needsHuman: false,
+  }, null, 2), 'utf-8')
 
-  loadWorkflowSession.mockResolvedValue({
-    id: 'harness-1',
-    capability: 'harness',
-    title: 'Ship checkout v2',
-    createdAt: new Date('2026-04-10T08:00:00.000Z'),
-    updatedAt: new Date('2026-04-10T09:30:00.000Z'),
-    status: 'in_progress',
-    currentStage: 'reviewing',
-    summary: 'Running review cycle 1.',
-    artifacts: {
-      harnessConfigPath: '/tmp/harness.config.yaml',
-      roundsPath: '/tmp/rounds.json',
-      providerSelectionPath: '/tmp/provider-selection.json',
-      routingDecisionPath: '/tmp/routing-decision.json',
-      eventsPath: '/tmp/events.jsonl',
-      workspaceMode: 'worktree',
-      workspacePath: '/tmp/.worktrees/sch/harness-1',
-      executionHost: 'tmux',
-      tmuxSession: 'magpie-harness-1',
-      tmuxWindow: '@1',
-      tmuxPane: '%1',
-      knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
-      knowledgeIndexPath: join(knowledgeDir, 'index.md'),
-      knowledgeLogPath: join(knowledgeDir, 'log.md'),
-      knowledgeStatePath: join(knowledgeDir, 'state.json'),
-      knowledgeSummaryDir: summaryDir,
-      knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
-      documentPlanPath,
-      loopSessionId: 'loop-1',
-      loopEventsPath,
-      roleRoundsDir,
-    },
+  loadWorkflowSession.mockImplementation(async (_cwd, capability, sessionId) => {
+    if (capability === 'loop' && sessionId === 'loop-1') {
+      return {
+        id: 'loop-1',
+        capability: 'loop',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:20:00.000Z'),
+        status: 'completed',
+        summary: 'Loop completed successfully. MR created: https://gitlab.example.com/team/project/-/merge_requests/42',
+        artifacts: {
+          eventsPath: loopEventsPath,
+          mrResultPath: loopMrResultPath,
+        },
+      }
+    }
+
+    if (capability !== 'harness' || sessionId !== 'harness-1') {
+      return null
+    }
+
+    return {
+      id: 'harness-1',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+      status: 'in_progress',
+      currentStage: 'reviewing',
+      summary: 'Running review cycle 1.',
+      artifacts: {
+        harnessConfigPath: '/tmp/harness.config.yaml',
+        roundsPath: '/tmp/rounds.json',
+        providerSelectionPath: '/tmp/provider-selection.json',
+        routingDecisionPath: '/tmp/routing-decision.json',
+        eventsPath: '/tmp/events.jsonl',
+        workspaceMode: 'worktree',
+        workspacePath: '/tmp/.worktrees/sch/harness-1',
+        executionHost: 'tmux',
+        tmuxSession: 'magpie-harness-1',
+        tmuxWindow: '@1',
+        tmuxPane: '%1',
+        knowledgeSchemaPath: join(knowledgeDir, 'SCHEMA.md'),
+        knowledgeIndexPath: join(knowledgeDir, 'index.md'),
+        knowledgeLogPath: join(knowledgeDir, 'log.md'),
+        knowledgeStatePath: join(knowledgeDir, 'state.json'),
+        knowledgeSummaryDir: summaryDir,
+        knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+        documentPlanPath,
+        loopSessionId: 'loop-1',
+        loopEventsPath,
+        roleRoundsDir,
+      },
+    }
   })
 }

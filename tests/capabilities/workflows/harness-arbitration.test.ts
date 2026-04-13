@@ -75,4 +75,26 @@ describe('resolveHarnessArbitrationOutcome', () => {
       requiredActions: [],
     })
   })
+
+  it('ignores unrelated JSON snippets in fallback text and keeps searching for a valid decision object', () => {
+    const outcome = resolveHarnessArbitrationOutcome({
+      finalConclusion: '## 讨论总结\n\n请参考附加材料。',
+      fallbackTexts: [
+        'Reading file completed.\n[1.1]',
+        '```json\n[1.1]\n```',
+        '```json\n{"decision":"revise","rationale":"Need a real staged-content verification.","requiredActions":["Verify staged content instead of the working tree."]}\n```',
+      ],
+      blockingIssueCount: 1,
+      testsPassed: true,
+    })
+
+    expect(outcome.approved).toBe(false)
+    expect(outcome.finalAction).toBe('revise')
+    expect(outcome.nextRoundBrief).toBe('Verify staged content instead of the working tree.')
+    expect(outcome.decision).toEqual({
+      decision: 'revise',
+      rationale: 'Need a real staged-content verification.',
+      requiredActions: ['Verify staged content instead of the working tree.'],
+    })
+  })
 })

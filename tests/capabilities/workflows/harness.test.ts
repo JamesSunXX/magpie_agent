@@ -1435,6 +1435,117 @@ integrations:
     }
   })
 
+  it('records a revise decision even when adjudication fallbacks include unrelated JSON snippets first', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-noisy-adjudication-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-noisy' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({
+          parsedIssues: [{
+            severity: 'high',
+            category: 'logic',
+            file: 'src/core.ts',
+            title: 'Blocking issue',
+            description: 'Must fix before release',
+            raisedBy: ['harness-1'],
+            descriptions: ['Must fix before release'],
+          }],
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '## 讨论总结\n\n请参考附加材料。',
+          analysis: 'Reading file completed.\n[1.1]',
+          messages: [
+            { content: '```json\n[1.1]\n```' },
+            { content: '```json\n{"decision":"revise","rationale":"Need a real staged-content verification.","requiredActions":["Verify staged content instead of the working tree."]}\n```' },
+          ],
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'issue-fix') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'issue-fix-noisy' } },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        maxCycles: 1,
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      const rounds = JSON.parse(readFileSync(result.session!.artifacts.roundsPath, 'utf-8')) as Array<{
+        modelDecision: string
+        modelRationale: string
+        nextRoundBrief: string
+      }>
+      expect(rounds[0]).toMatchObject({
+        modelDecision: 'revise',
+        modelRationale: 'Need a real staged-content verification.',
+        nextRoundBrief: 'Verify staged content instead of the working tree.',
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('falls back to kiro when claude auth is not usable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-auth-fallback-'))
     const magpieHome = join(dir, '.magpie-home')
