@@ -813,6 +813,9 @@ capabilities:
     auto_commit: true
     reuse_current_branch: false
     auto_branch_prefix: "sch/"
+    branch_naming:
+      enabled: true
+      tool: claw
     mr:
       enabled: false
     human_confirmation:

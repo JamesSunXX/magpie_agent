@@ -41,6 +41,7 @@ const providerMocks = vi.hoisted(() => ({
     config: unknown,
     actual: typeof import('../../../src/platform/providers/index.js')
   ) => AIProvider),
+  autoBranchResponse: 'branch: delivery-flow',
 }))
 
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
@@ -72,6 +73,13 @@ vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
   return {
     ...actual,
     createConfiguredProvider: vi.fn((input: ProviderBindingInput, config: unknown) => {
+      if (input.logicalName === 'capabilities.loop.auto_branch') {
+        return {
+          name: 'mock-auto-branch',
+          chat: vi.fn().mockResolvedValue(providerMocks.autoBranchResponse),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
       if (providerMocks.factory) {
         return providerMocks.factory(input, config, actual)
       }
@@ -84,8 +92,10 @@ describe('loop capability', () => {
   afterEach(() => {
     knowledgeMocks.failPromote = false
     providerMocks.factory = null
+    providerMocks.autoBranchResponse = 'branch: delivery-flow'
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('dispatches stage-aware notifications for entered and completed stages', async () => {
@@ -1355,6 +1365,85 @@ process.exit(result.status ?? 1)
     expect(currentBranch).toBe(result.result.session?.branchName)
   })
 
+  it('uses the AI-generated branch slug and keeps the timestamp suffix', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchResponse = 'branch: admin-cancel-audit-sync'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-ai-branch-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: claw\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/admin-cancel-audit-sync-2026-04-13-05-47-26')
+    expect(currentBranch).toBe('sch/admin-cancel-audit-sync-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_named"')
+    expect(events).toContain('"source":"ai"')
+  })
+
+  it('falls back to a rule-based branch slug when the AI branch name is unusable', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchResponse = '这里不是分支名'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-fallback-branch-'))
+    mkdirSync(join(dir, 'docs', 'current', 'admin_backend'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'current', 'admin_backend', 'PRD.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: claw\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/admin-backend-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_named"')
+    expect(events).toContain('"source":"fallback"')
+    expect(events).toContain('"reason":"invalid_slug"')
+  })
+
   it('reuses the current feature branch for auto-commit when configured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-reuse-branch-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -1478,6 +1567,34 @@ process.exit(result.status ?? 1)
     expect(afterBranch).toBe(beforeBranch)
     expect(status).toContain('pending-change.txt')
     expect(events).toContain('"event":"auto_commit_disabled"')
+  })
+
+  it('disables auto-commit when the workspace is not a git repository', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-no-git-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(join(dir, 'pending-change.txt'), 'should stay uncommitted\n', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBeUndefined()
+    expect(events).toContain('"event":"auto_commit_disabled"')
+    expect(events).toContain('"reason":"branch_creation_failed"')
   })
 
   it('rejects shell metacharacters in configured test commands', async () => {

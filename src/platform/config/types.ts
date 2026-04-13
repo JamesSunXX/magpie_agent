@@ -152,6 +152,13 @@ export interface LoopMrConfig {
   enabled?: boolean
 }
 
+export interface LoopBranchNamingConfig {
+  enabled?: boolean
+  tool?: string
+  model?: string
+  agent?: string
+}
+
 export interface LoopConfig {
   enabled?: boolean
   planner_tool?: string
@@ -172,6 +179,7 @@ export interface LoopConfig {
   auto_commit?: boolean
   reuse_current_branch?: boolean
   auto_branch_prefix?: string
+  branch_naming?: LoopBranchNamingConfig
   mr?: LoopMrConfig
   human_confirmation?: LoopHumanConfirmationConfig
   commands?: LoopCommandsConfig

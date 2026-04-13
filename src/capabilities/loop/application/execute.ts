@@ -42,7 +42,9 @@ import {
 } from '../domain/human-confirmation.js'
 import { createLoopMr, type LoopMrAttemptResult } from '../domain/auto-mr.js'
 import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
+import { generateAutoBranchName, type AutoBranchNameResult } from '../domain/auto-branch-name.js'
 import { resolveAutoCommitProviderBinding } from '../domain/auto-commit-provider-binding.js'
+import { resolveAutoBranchProviderBinding } from '../domain/auto-branch-provider-binding.js'
 import { generateLoopPlan } from '../domain/planner.js'
 import {
   createConstraintsSnapshot,
@@ -108,6 +110,10 @@ interface LoopRuntimeConfig {
   autoMr: boolean
   reuseCurrentBranch: boolean
   autoBranchPrefix: string
+  branchNamingEnabled: boolean
+  branchNamingTool?: string
+  branchNamingModel?: string
+  branchNamingAgent?: string
   humanConfirmationFile: string
   pollIntervalSec: number
   gatePolicy: 'exception_or_low_confidence' | 'always' | 'manual_only'
@@ -190,6 +196,7 @@ interface WorktreeResolution {
   workspaceMode: 'current' | 'worktree'
   workspacePath: string
   worktreeBranch?: string
+  branchNameResult?: AutoBranchNameResult
   failureReason?: string
 }
 
@@ -334,6 +341,10 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     autoMr: config?.mr?.enabled === true,
     reuseCurrentBranch: config?.reuse_current_branch === true,
     autoBranchPrefix: config?.auto_branch_prefix || 'sch/',
+    branchNamingEnabled: config?.branch_naming?.enabled !== false,
+    branchNamingTool: config?.branch_naming?.tool?.trim() || 'claw',
+    branchNamingModel: config?.branch_naming?.model?.trim() || undefined,
+    branchNamingAgent: config?.branch_naming?.agent?.trim() || undefined,
     humanConfirmationFile: config?.human_confirmation?.file || 'human_confirmation.md',
     pollIntervalSec: config?.human_confirmation?.poll_interval_sec || 8,
     gatePolicy: config?.human_confirmation?.gate_policy || 'exception_or_low_confidence',
@@ -877,44 +888,43 @@ async function saveLoopSessionWithObserver(
   observer?.onSessionUpdate?.(session)
 }
 
-function buildBranchName(prefix: string, cwd: string): string | null {
-  const normalizedPrefix = prefix.startsWith('sch/') ? prefix : `sch/${prefix.replace(/^\/+/, '')}`
-  const sanitizedPrefix = normalizedPrefix
-    .replace(/[^a-zA-Z0-9/_\-.]/g, '-')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^-+/, '')
-    .replace(/\/-+/g, '/')
-  const safePrefix = sanitizedPrefix.length > 0 ? sanitizedPrefix : 'sch'
-  const finalPrefix = safePrefix.endsWith('/') ? safePrefix : `${safePrefix}/`
-  const branchName = `${finalPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
-  if (!/^[a-zA-Z0-9/_\-.]+$/.test(branchName) || branchName.length > 100) {
-    return null
-  }
-
-  try {
-    execFileSync('git', ['check-ref-format', '--branch', branchName], { stdio: 'pipe', cwd })
-  } catch {
-    return null
-  }
-
-  return branchName
+async function buildBranchName(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+}): Promise<AutoBranchNameResult | null> {
+  return generateAutoBranchName({
+    prefix: input.prefix,
+    goal: input.goal,
+    prdPath: input.prdPath,
+    provider: input.provider,
+    cwd: input.cwd,
+  })
 }
 
-function ensureBranch(prefix: string, cwd: string): string | null {
+async function ensureBranch(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+}): Promise<AutoBranchNameResult | null> {
   try {
-    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
   } catch {
     return null
   }
 
-  const branchName = buildBranchName(prefix, cwd)
-  if (!branchName) {
+  const branchNameResult = await buildBranchName(input)
+  if (!branchNameResult) {
     return null
   }
 
   try {
-    execFileSync('git', ['checkout', '-b', branchName], { stdio: 'pipe', cwd })
-    return branchName
+    execFileSync('git', ['checkout', '-b', branchNameResult.branchName], { stdio: 'pipe', cwd: input.cwd })
+    return branchNameResult
   } catch {
     return null
   }
@@ -975,55 +985,62 @@ function isIgnoredPath(cwd: string, relativePath: string): boolean {
   return false
 }
 
-function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
+async function ensureWorktree(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+}): Promise<WorktreeResolution> {
   try {
-    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
   } catch {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: 'worktree requires a git repository',
     }
   }
 
-  const directory = resolveWorktreeDirectory(cwd)
+  const directory = resolveWorktreeDirectory(input.cwd)
   if (!directory) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: 'No worktree directory found. Create .worktrees/ or worktrees/ first.',
     }
   }
 
-  if (!isIgnoredPath(cwd, directory)) {
+  if (!isIgnoredPath(input.cwd, directory)) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: `Worktree directory ${directory} is not ignored by git.`,
     }
   }
 
-  const branchName = buildBranchName(prefix, cwd)
-  if (!branchName) {
+  const branchNameResult = await buildBranchName(input)
+  if (!branchNameResult) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: 'Failed to generate a valid worktree branch name.',
     }
   }
 
-  const workspacePath = join(cwd, directory, branchName)
+  const workspacePath = join(input.cwd, directory, branchNameResult.branchName)
   try {
-    execFileSync('git', ['worktree', 'add', workspacePath, '-b', branchName], { cwd, stdio: 'pipe' })
+    execFileSync('git', ['worktree', 'add', workspacePath, '-b', branchNameResult.branchName], { cwd: input.cwd, stdio: 'pipe' })
     return {
       workspaceMode: 'worktree',
       workspacePath,
-      worktreeBranch: branchName,
+      worktreeBranch: branchNameResult.branchName,
+      branchNameResult,
     }
   } catch (error) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: error instanceof Error ? error.message : String(error),
     }
   }
@@ -2292,6 +2309,15 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     executorModel: loopRuntime.executorModel,
     executorAgent: loopRuntime.executorAgent,
   }), config)
+  const shouldPrepareAutoBranchProvider = prepared.dryRun !== true
+    && (loopRuntime.autoCommit || (routingDecision?.tier || prepared.complexity) === 'complex')
+  const autoBranchProvider = loopRuntime.branchNamingEnabled && shouldPrepareAutoBranchProvider
+    ? createConfiguredProvider(resolveAutoBranchProviderBinding({
+      tool: loopRuntime.branchNamingTool,
+      model: loopRuntime.branchNamingModel,
+      agent: loopRuntime.branchNamingAgent,
+    }), config)
+    : undefined
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
@@ -2308,15 +2334,23 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await mkdir(sessionDir, { recursive: true })
   let branchName: string | undefined
+  let branchNameResult: AutoBranchNameResult | undefined
   let workspaceMode: 'current' | 'worktree' = 'current'
   let workspacePath = ctx.cwd
   let worktreeFailureReason: string | undefined
   const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
   if (shouldUseWorktree) {
-    const worktree = ensureWorktree(loopRuntime.autoBranchPrefix, ctx.cwd)
+    const worktree = await ensureWorktree({
+      prefix: loopRuntime.autoBranchPrefix,
+      cwd: ctx.cwd,
+      goal: prepared.goal,
+      prdPath: prepared.prdPath,
+      provider: autoBranchProvider,
+    })
     workspaceMode = worktree.workspaceMode
     workspacePath = worktree.workspacePath
     branchName = worktree.worktreeBranch
+    branchNameResult = worktree.branchNameResult
     worktreeFailureReason = worktree.failureReason
   }
   const seededDocumentPlan = ctx.metadata?.documentPlan as DocumentPlan | undefined
@@ -2404,7 +2438,14 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       branchName = currentBranch
       reusedCurrentBranch = true
     } else {
-      branchName = ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined
+      branchNameResult = await ensureBranch({
+        prefix: loopRuntime.autoBranchPrefix,
+        cwd: ctx.cwd,
+        goal: prepared.goal,
+        prdPath: prepared.prdPath,
+        provider: autoBranchProvider,
+      }) || undefined
+      branchName = branchNameResult?.branchName
     }
   }
   const humanConfirmationPath = resolve(workspacePath, loopRuntime.humanConfirmationFile)
@@ -2454,6 +2495,8 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       event: 'worktree_created',
       workspacePath,
       branch: branchName,
+      ...(branchNameResult?.source ? { source: branchNameResult.source } : {}),
+      ...(branchNameResult?.slug ? { slug: branchNameResult.slug } : {}),
     }, progressObserver)
   }
   if (worktreeFailureReason) {
@@ -2477,6 +2520,14 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     await appendObservedEvent(eventsPath, session.id, {
       event: 'auto_commit_branch_reused',
       branch: branchName,
+    }, progressObserver)
+  } else if (branchNameResult) {
+    await appendObservedEvent(eventsPath, session.id, {
+      event: 'auto_branch_named',
+      branch: branchNameResult.branchName,
+      source: branchNameResult.source,
+      slug: branchNameResult.slug,
+      ...(branchNameResult.reason ? { reason: branchNameResult.reason } : {}),
     }, progressObserver)
   }
   if (loopRuntime.autoCommit && prepared.dryRun !== true && !branchName) {
