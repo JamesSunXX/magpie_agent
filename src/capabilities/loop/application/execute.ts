@@ -81,6 +81,7 @@ const DEFAULT_STAGES: LoopStageName[] = [
 ]
 
 const LEGACY_DEFAULT_MOCK_TEST_COMMAND = 'npm run test:run -- tests/mock'
+const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 
 interface LoopRuntimeConfig {
   plannerTool?: string
@@ -283,7 +284,7 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     commands: {
       unitTest: config?.commands?.unit_test || 'npm run test:run',
       mockTest: config?.commands?.mock_test?.trim() || undefined,
-      integrationTest: config?.commands?.integration_test || 'npm run test:run -- tests/integration',
+      integrationTest: config?.commands?.integration_test || DEFAULT_INTEGRATION_TEST_COMMAND,
     },
     executionTimeout: {
       defaultMs: config?.execution_timeout?.default_ms ?? 15 * 60 * 1000,

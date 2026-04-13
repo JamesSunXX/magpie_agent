@@ -40,6 +40,7 @@ describe('Config Init', () => {
     expect(content).toContain('fallback_chain:')
     expect(content).toContain('harness:')
     expect(content).toContain('validator_checks:')
+    expect(content).toContain('integration_test: "npm run test:run -- tests/e2e"')
     expect(content).not.toContain('auto_commit_model:')
     expect(content).not.toContain('image_reader:')
   })
