@@ -163,6 +163,28 @@
   - 知识层不回写运行时状态，只消费失败索引做提炼
   - 文档只讲职责分工和排查入口，不重复埋实现细节
 
+### 文件与验收归属表
+
+| Domain | 唯一职责归属 | 直接验收 |
+| --- | --- | --- |
+| Domain A | `src/core/failures/types.ts`、`src/core/failures/classifier.ts`、`src/core/failures/ledger.ts`、`src/core/failures/recovery-policy.ts`、`src/core/failures/diagnostics.ts` | `tests/core/failures/classifier.test.ts`、`tests/core/failures/ledger.test.ts`、`tests/core/failures/recovery-policy.test.ts` |
+| Domain B | `src/state/types.ts`、`src/capabilities/workflows/shared/runtime.ts`、`src/capabilities/workflows/harness/types.ts` | `tests/state/state-manager.test.ts`，以及 `tests/capabilities/workflows/harness.test.ts` / `tests/capabilities/workflows/harness-server.test.ts` 里对 artifact 暴露和路径约定的断言 |
+| Domain C | `src/capabilities/loop/application/execute.ts`、`src/capabilities/workflows/harness/application/execute.ts`、`src/capabilities/workflows/harness-server/runtime.ts`、`src/capabilities/loop/domain/test-execution.ts` | `tests/capabilities/loop/test-execution.test.ts`、`tests/capabilities/loop/loop.test.ts`、`tests/capabilities/workflows/harness.test.ts`、`tests/capabilities/workflows/harness-server.test.ts` |
+| Domain D | `src/knowledge/runtime.ts`、`README.md`、`docs/references/capabilities.md` | `tests/knowledge/runtime.test.ts`、`npm run check:docs` |
+
+约束：
+
+- 上表里的运行时文件只能有一个主归属域；后续实现允许跨域联调，但不能把同一职责拆成两套入口。
+- 测试归属按“谁的行为被证明”计算，不按 import 路径计算；跨域联调测试仍要能回指到唯一主归属域。
+- 如果后续实现新增文件，必须先补到这张表，再进入 `code_development`，避免把域边界做散。
+
+### 架构与 TRD 对齐结果
+
+- Domain A 完全落在 `src/core/`，符合 [`ARCHITECTURE.md`](../ARCHITECTURE.md) 里“核心层不反向依赖具体能力”的约束；它只消费事实输入并返回分类、账本结果和恢复决策，对齐 TRD 的“固定契约”和“账本写入职责”。
+- Domain B 只承担状态字段和共享路径接缝，虽然落点跨 `src/state/` 与 workflow shared runtime，但不新增业务判断；这和架构里“能力层组织流程、核心层提供积木”的分层不冲突，也对齐 TRD 的路径所有权约束。
+- Domain C 全部落在 `src/capabilities/`，只做“上报事实 + 消费决策”，不维护第二套分类或聚合逻辑；这与架构里的能力层职责一致，并直接对应 TRD 的“三条主路径接入契约”。
+- Domain D 只消费 `.magpie/failure-index.json` 做知识提炼和对外说明，符合架构里的“知识与记忆层负责持续信息、文档层负责稳定说明”，也对齐 TRD 的“知识升级接口”。
+
 ### 依赖顺序
 
 1. 先落 Domain A 里的类型、分类器和恢复决策，固定失败模型、签名和动作语义
@@ -178,6 +200,15 @@
 - 下方正文已经按建议交付顺序排布；如果后续实现要插补字段，仍以“依赖顺序”和文末“交付顺序建议”为准
 - 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
 - 对已有 session 和已有 `.magpie/failure-index.json` 保持兼容；缺失新字段时按默认空值处理，不要求一次性迁移旧数据
+
+### `domain_partition` 阶段完成判定
+
+以下条件同时满足，才算这一阶段完成，可进入 `trd_generation`：
+
+1. 四个 Domain 的主归属文件和直接验收项都已经落到上面的“文件与验收归属表”里，不存在未归属文件或一份文件归属两域的情况。
+2. 每个 Domain 都能在“架构与 TRD 对齐结果”里找到对应约束，说明后续实现不会违反仓库分层，也不会重拆 TRD 已经固定的接口。
+3. `loop`、`harness`、`harness-server` 的失败接入点都已经被 Domain C 覆盖，且账本、分类、恢复决策仍分别收敛到 Domain A / B，不留“失败但没人负责”的空档。
+4. 下一个阶段只允许细化接口和写盘约束，不允许再改四域划分、文件归属和依赖顺序；如果要新增文件，必须先回补本节。
 
 ## Phase 1：统一失败结构
 

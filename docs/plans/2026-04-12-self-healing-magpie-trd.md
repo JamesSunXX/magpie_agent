@@ -29,6 +29,15 @@
   - [`src/capabilities/workflows/shared/runtime.ts`](/Users/sunchenhui/.codex/worktrees/193a/magpie/src/capabilities/workflows/shared/runtime.ts)
   - [`src/state/types.ts`](/Users/sunchenhui/.codex/worktrees/193a/magpie/src/state/types.ts)
 
+## Domain Partition 交接锁定
+
+`domain_partition` 阶段已经在实施计划里固定两件事：
+
+1. 四个 Domain 的主归属文件和直接验收项，以实施计划中“文件与验收归属表”为准。
+2. 四个 Domain 与仓库分层、TRD 契约的关系，以实施计划中“架构与 TRD 对齐结果”为准。
+
+这份 TRD 只继续细化接口、写盘职责和接入时机，不重新拆分 Domain A / B / C / D，也不改写文件归属。
+
 ## 固定契约
 
 ### 1. Domain C 上报给 Domain A 的最小事实
