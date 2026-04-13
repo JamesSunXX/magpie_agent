@@ -17,6 +17,7 @@
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | 总体结构、边界和改动落点 |
 | [`./references/capabilities.md`](./references/capabilities.md) | 核心能力与代码位置对照 |
 | [`./plans/`](./plans/) | 设计和计划历史 |
+| [`./plans/2026-04-13-multi-model-engine-progress-audit.md`](./plans/2026-04-13-multi-model-engine-progress-audit.md) | 当前“多模型工程协作流引擎”进展盘点 |
 | [`./channels/`](./channels/) | 渠道或集成的专项说明 |
 | [`./superpowers/`](./superpowers/) | 更细的内部设计资料 |
 
