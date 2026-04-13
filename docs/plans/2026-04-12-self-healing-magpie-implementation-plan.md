@@ -12,6 +12,18 @@
 
 ---
 
+## 实施完成标准
+
+- 三条主路径 `loop`、`harness`、`harness-server` 都接入同一套失败事实、失败账本和恢复决策，不再各自维护第二套分类或聚合逻辑
+- `paused_for_human`、正常中断恢复、真正失败三类语义有测试覆盖，且恢复流程不会额外累积失败计数
+- 历史 session 缺失新字段、旧版或不存在的 `.magpie/failure-index.json` 都能兼容运行，不要求一次性迁移旧数据
+- 开发阶段完成前，至少运行并通过：
+  - `npm run test:run`
+  - `npm run test:coverage`
+  - `npm run build`
+  - `npm run check:boundaries`
+  - `npm run check:docs`
+
 ## 目标边界
 
 - 只实现统一失败事件、失败账本、失败分类和基础恢复决策
@@ -135,6 +147,7 @@
 - `harness-server` 负责消费恢复决策，把服务级异常和中断恢复问题落到统一结构，但不中断正常恢复事件
 - 边界要求：
   - `loop` / `harness` / `harness-server` 只负责“上报事实 + 消费决策”，不各自维护第二套分类和聚合逻辑
+  - `harness` 如果只是转述内层 `loop` 已经落盘的失败，必须显式标记“派生失败”，仓库级索引不能把同一次根因重复累计成两次失败
   - `harness-server` 的 session 状态映射必须完全由恢复动作驱动，不能继续混用零散字符串判断
 
 ### Domain D：知识沉淀与对外说明域
@@ -164,6 +177,7 @@
 - `code_development` 阶段按域推进，允许同阶段内跨文件实现，但不要跳过依赖顺序
 - 下方正文已经按建议交付顺序排布；如果后续实现要插补字段，仍以“依赖顺序”和文末“交付顺序建议”为准
 - 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
+- 对已有 session 和已有 `.magpie/failure-index.json` 保持兼容；缺失新字段时按默认空值处理，不要求一次性迁移旧数据
 
 ## Phase 1：统一失败结构
 
@@ -207,9 +221,13 @@
   - `artifacts.failureLogDir`
   - `artifacts.failureIndexPath`
 - [ ] 给 `WorkflowSession.artifacts` 增加同类字段，定义落在 `src/capabilities/workflows/shared/runtime.ts`，并同步更新 `src/capabilities/workflows/harness/types.ts` 的暴露类型
+- [ ] 固定“派生失败”metadata 约定：
+  - 当 `harness` 只是转述某条 `loop` 失败时，必须带 `sourceFailureSignature`
+  - 同时显式标记 `countTowardFailureIndex=false`，避免仓库级聚合把同一次根因重复累计
 - [ ] 明确 server 级失败记录分两类路径：
   - 绑定具体 `harness` session 的失败：`<sessionDir>/failures/<failureId>.json`
   - 没有可用 sessionId 的服务级失败：`.magpie/harness-server/failures/<failureId>.json`
+- [ ] 兼容旧 session：读到缺失 `failureLogDir` / `failureIndexPath` 的历史会话时，运行时要按默认路径补齐，不要求迁移旧文件
 - [ ] 运行：
   - `npm run test:run -- tests/state/state-manager.test.ts`
 
@@ -282,6 +300,10 @@
 - [ ] review cycle 抛错时，记一条 `workflow_defect` 或 `unknown` 失败
 - [ ] 最终多轮未获批准时，记一条 `quality` 失败，而不是只给最终摘要
 - [ ] 如果 `harness` 是因为 `loop` 连续相同签名失败而失败，保留源签名到 metadata，方便仓库级聚合
+- [ ] 为前台中断恢复补测试，至少覆盖：
+  - `harness submit` 前台执行被 `SIGINT` / `SIGTERM` 打断后，会话仍能进入可恢复状态
+  - 随后 `harness resume` 会从最后可靠点继续，而不是重头开始
+  - 上述恢复过程不会额外累积失败计数
 - [ ] 运行：
   - `npm run test:run -- tests/capabilities/workflows/harness.test.ts`
 
@@ -303,6 +325,8 @@
   - `prompt_or_parse` 首次出现 -> `block_for_human`
   - `prompt_or_parse` 重复出现 -> `spawn_self_repair_candidate`
   - `workflow_defect` -> `spawn_self_repair_candidate`
+  - `unknown` -> `block_for_human`
+- [ ] 固定 `retry_same_step` 的第一版边界：保留在类型里，但本阶段默认不主动产出；只有后续明确证明“同输入、同进程、无额外持久化副作用”的同步重试场景，才允许单独接入
 - [ ] 在 `runHarnessServerOnce` 的异常分支里，不再只靠 `isRetryableHarnessError`
 - [ ] 对服务级错误先走统一分类，再由恢复决策决定：
   - `waiting_retry`
@@ -319,6 +343,10 @@
   - 配置是否存在
   - 会话输入元数据是否存在
   - 当前 repo 的关键路径是否还在
+- [ ] 固定诊断结果产物路径：
+  - 有 session 时写到 `<sessionDir>/diagnostics/<failureId>.json`
+  - 无 session 的服务级诊断写到 `.magpie/harness-server/diagnostics/<failureId>.json`
+  - 对应路径必须回填到 failure evidence，保证后续可验收
 - [ ] 为中断恢复补测试，至少覆盖：
   - `in_progress` 的 session 在 server 重启后被改成 `waiting_next_cycle`
   - 上述重排队不会额外累积失败计数
@@ -345,6 +373,8 @@
   - 同一仓库的失败能更新 `.magpie/failure-index.json`
   - 重复签名会累加计数而不是重复建独立主题
   - 不同 capability 的相同签名也能聚合
+  - `harness` 对 `loop` 的派生失败不会把同一次根因重复累计
+  - 从不存在或旧版本索引启动时，能兼容生成当前 `version=1` 结构
   - 并发两次写入不会破坏 `.magpie/failure-index.json`
 - [ ] 统一第一版落盘位置：
   - session 级：`<sessionDir>/failures/<failureId>.json`
@@ -420,8 +450,10 @@
 1. `npm run test:run -- tests/core/failures/classifier.test.ts tests/core/failures/ledger.test.ts tests/core/failures/recovery-policy.test.ts`
 2. `npm run test:run -- tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness.test.ts tests/capabilities/workflows/harness-server.test.ts`
 3. `npm run test:run -- tests/knowledge/runtime.test.ts tests/state/state-manager.test.ts`
-4. `npm run build`
-5. `npm run check:docs`
+4. `npm run test:coverage`
+5. `npm run build`
+6. `npm run check:boundaries`
+7. `npm run check:docs`
 
 ## 交付顺序建议
 
