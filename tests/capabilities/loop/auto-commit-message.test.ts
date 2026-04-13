@@ -106,6 +106,34 @@ describe('auto commit message generator', () => {
     expect(result.reason).toBe('invalid_message')
   })
 
+  it('accepts a commit title when the AI wraps it with a short prefix line', async () => {
+    const cwd = createRepoWithStagedChange()
+    const provider = new StubProvider(async () => '提交信息：\nfix(loop):修正自动提交文案')
+
+    const result = await generateAutoCommitMessage({
+      cwd,
+      stage: 'code_development',
+      provider,
+    })
+
+    expect(result.message).toBe('fix(loop):修正自动提交文案')
+    expect(result.source).toBe('ai')
+  })
+
+  it('normalizes a full-width colon in the AI-generated title', async () => {
+    const cwd = createRepoWithStagedChange()
+    const provider = new StubProvider(async () => 'fix(loop)：修正自动提交文案')
+
+    const result = await generateAutoCommitMessage({
+      cwd,
+      stage: 'code_development',
+      provider,
+    })
+
+    expect(result.message).toBe('fix(loop):修正自动提交文案')
+    expect(result.source).toBe('ai')
+  })
+
   it('falls back when the AI title exceeds the configured 50-character limit', async () => {
     const cwd = createRepoWithStagedChange()
     const provider = new StubProvider(async () => 'fix(loop):abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk')
