@@ -19,6 +19,7 @@
 | [`./plans/`](./plans/) | 设计和计划历史 |
 | [`./plans/2026-04-13-multi-model-engine-progress-audit.md`](./plans/2026-04-13-multi-model-engine-progress-audit.md) | 当前“多模型工程协作流引擎”进展盘点 |
 | [`./plans/2026-04-14-harness-loop-failure-recovery.md`](./plans/2026-04-14-harness-loop-failure-recovery.md) | 失败后继续开发与 provider 会话续跑方案，明确恢复规则、自动接回和遗留现场处理 |
+| [`./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md`](./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md) | 这次失败恢复需求的总实施计划，先写阶段文档，再生成真实任务图，再按阶段实现 |
 | [`./plans/2026-04-14-panoramic-workbench-continuation-plan.md`](./plans/2026-04-14-panoramic-workbench-continuation-plan.md) | 全景工作台现状、缺口和后续推进顺序 |
 | [`./plans/2026-04-14-panoramic-workbench-interaction-spec.md`](./plans/2026-04-14-panoramic-workbench-interaction-spec.md) | 全景工作台交互规格，锁定浏览、详情、动作和事件区规则 |
 | [`./plans/2026-04-14-panoramic-workbench-implementation-plan.md`](./plans/2026-04-14-panoramic-workbench-implementation-plan.md) | 全景工作台具体落地计划，按阶段拆到可执行任务和验证命令 |
