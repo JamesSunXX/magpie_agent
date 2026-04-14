@@ -255,6 +255,15 @@ function buildDefaultLoopMrConfig() {
   }
 }
 
+function buildDefaultLoopHumanConfirmationConfig() {
+  return {
+    file: 'human_confirmation.md',
+    gate_policy: 'multi_model',
+    poll_interval_sec: 8,
+    max_model_revisions: 1,
+  }
+}
+
 function indentBlock(text: string, spaces = 6): string {
   const prefix = ' '.repeat(spaces)
   return text.split('\n').map(line => `${prefix}${line}`).join('\n')
@@ -504,10 +513,16 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   const capabilities = isObjectRecord(upgraded.capabilities) ? upgraded.capabilities : {}
   upgraded.capabilities = capabilities
   const nonRouteReviewerIds = Object.keys(reviewers).filter(id => !id.startsWith('route-'))
-  const upgradeHarnessDefaults = buildDefaultHarnessConfig(
+  const fallbackReviewerIds = nonRouteReviewerIds.length > 0
+    ? nonRouteReviewerIds
+    : Object.keys(reviewers).slice(0, 2)
+  const upgradeDefaultReviewerIds = (
     Array.isArray(capabilities.review?.reviewers) && capabilities.review.reviewers.length > 0
-      ? capabilities.review.reviewers
-      : nonRouteReviewerIds.slice(0, 2)
+      ? [...capabilities.review.reviewers]
+      : fallbackReviewerIds.slice(0, 2)
+  )
+  const upgradeHarnessDefaults = buildDefaultHarnessConfig(
+    upgradeDefaultReviewerIds
   )
 
   const integrations = isObjectRecord(upgraded.integrations) ? upgraded.integrations : {}
@@ -525,6 +540,18 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   } else if (deepMergeMissing(capabilities.routing, buildDefaultRoutingConfig())) {
     changes.push('Filled missing capabilities.routing defaults.')
   }
+  const upgradeDiscussDefaults = {
+    enabled: true,
+    max_rounds: 5,
+    check_convergence: true,
+    reviewers: upgradeDefaultReviewerIds,
+  }
+  if (!isObjectRecord(capabilities.discuss)) {
+    capabilities.discuss = upgradeDiscussDefaults
+    changes.push('Added capabilities.discuss defaults.')
+  } else if (deepMergeMissing(capabilities.discuss, upgradeDiscussDefaults)) {
+    changes.push('Filled missing capabilities.discuss defaults.')
+  }
   if (!isObjectRecord(capabilities.harness)) {
     capabilities.harness = upgradeHarnessDefaults
     changes.push('Added capabilities.harness defaults.')
@@ -535,15 +562,20 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     capabilities.loop = {
       execution_timeout: buildDefaultLoopExecutionTimeoutConfig(),
       mr: buildDefaultLoopMrConfig(),
+      human_confirmation: buildDefaultLoopHumanConfirmationConfig(),
     }
     changes.push('Added capabilities.loop execution timeout defaults.')
     changes.push('Added capabilities.loop MR defaults.')
+    changes.push('Added capabilities.loop human confirmation defaults.')
   } else {
     if (deepMergeMissing(capabilities.loop, { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() })) {
       changes.push('Filled missing capabilities.loop execution timeout defaults.')
     }
     if (deepMergeMissing(capabilities.loop, { mr: buildDefaultLoopMrConfig() })) {
       changes.push('Added capabilities.loop MR defaults.')
+    }
+    if (deepMergeMissing(capabilities.loop, { human_confirmation: buildDefaultLoopHumanConfirmationConfig() })) {
+      changes.push('Added capabilities.loop human confirmation defaults.')
     }
   }
   upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
@@ -601,7 +633,6 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const analyzerBinding = bindingFromModel(analyzerModel)
   const defaultReviewers = selectedReviewers.slice(0, 2).map(r => r.id)
   if (defaultReviewers.length === 0) defaultReviewers.push('claude-code', 'codex')
-  if (defaultReviewers.length === 1) defaultReviewers.push(defaultReviewers[0])
   const harnessDefaults = buildDefaultHarnessConfig(defaultReviewers)
 
   const notifications = resolveNotificationsOptions(options)
@@ -820,8 +851,9 @@ capabilities:
       enabled: false
     human_confirmation:
       file: "human_confirmation.md"
-      gate_policy: "exception_or_low_confidence"
+      gate_policy: "multi_model"
       poll_interval_sec: 8
+      max_model_revisions: 1
     commands:
       unit_test: "npm run test:run"
       integration_test: "npm run test:run -- tests/e2e"

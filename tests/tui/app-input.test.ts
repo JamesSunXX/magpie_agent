@@ -100,9 +100,14 @@ describe('app input', () => {
             title: 'Checkout V2',
             status: 'active',
             rollup: {
+              total: 2,
               ready: 0,
+              running: 0,
               waitingApproval: 1,
+              waitingRetry: 0,
               blocked: 1,
+              completed: 0,
+              failed: 0,
             },
           },
           nodes: [
@@ -258,6 +263,7 @@ describe('app input', () => {
             state: 'waiting_approval',
             dependencies: [],
             approvalPending: true,
+            reviewerSummaries: [],
             unresolvedIssues: [],
           },
           actions: [
@@ -330,6 +336,7 @@ describe('app input', () => {
     expect(runWorkbenchAction).not.toHaveBeenCalled()
     let next = setState.mock.calls[0][0](rejectState) as AppState
     expect(next.graphWorkbench?.pendingConfirmationActionId).toBe('reject:release')
+    expect(next.graphWorkbench?.message).toBe('Press Enter again to confirm reject release.')
 
     setState.mockClear()
     const confirmedRejectState: AppState = {
@@ -351,6 +358,22 @@ describe('app input', () => {
 
     expect(handled).toBe(true)
     expect(runWorkbenchAction).toHaveBeenCalledWith(confirmedRejectState.graphWorkbench?.data?.actions[1])
+
+    setState.mockClear()
+    handled = handleGraphWorkbenchInput({
+      input: '',
+      key: { downArrow: true },
+      state: confirmedRejectState,
+      refreshWorkbench: vi.fn(),
+      openCommandPreview,
+      runWorkbenchAction,
+      setState,
+    })
+
+    expect(handled).toBe(true)
+    next = setState.mock.calls[0][0](confirmedRejectState) as AppState
+    expect(next.graphWorkbench?.selectedActionIndex).toBe(2)
+    expect(next.graphWorkbench?.pendingConfirmationActionId).toBeUndefined()
 
     const jumpState: AppState = {
       ...baseState,

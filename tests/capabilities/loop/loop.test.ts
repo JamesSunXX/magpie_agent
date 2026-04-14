@@ -2323,6 +2323,299 @@ process.exit(result.status ?? 1)
     expect(failure.reason).toContain('stage executor crashed hard')
   })
 
+  it('uses multi-model confirmation instead of human confirmation for low-confidence stages', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.2,"risks":["Need review"],"requireHumanConfirmation":false,"summary":"Needs confirmation."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted with some risk.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'reviewers.reviewer-a' || input.logicalName === 'reviewers.reviewer-b') {
+        return {
+          name: String(input.logicalName),
+          chat: vi.fn().mockResolvedValue('{"decision":"approved","rationale":"Looks safe.","required_actions":[]}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-model-gate-approve-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const sessionDir = result.result.session!.artifacts.sessionDir
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    expect(result.result.status).toBe('completed')
+    expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(false)
+    expect(existsSync(join(sessionDir, 'model_gate_prd_review_1.json'))).toBe(true)
+    expect(events).toContain('"event":"model_confirmation_started"')
+    expect(events).toContain('"event":"model_confirmation_completed"')
+    expect(events).not.toContain('"event":"human_confirmation_required"')
+  })
+
+  it('re-runs the stage with model revision guidance without consuming execution retries', async () => {
+    const executorPrompts: string[] = []
+    const reviewerCallCounts = new Map<string, number>()
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        const responses = [
+          '{"confidence":0.2,"risks":["Need review"],"requireHumanConfirmation":false,"summary":"Needs confirmation."}',
+          '{"confidence":0.2,"risks":["Need review"],"requireHumanConfirmation":false,"summary":"Needs confirmation after revision."}',
+        ]
+        let index = 0
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockImplementation(async () => responses[Math.min(index++, responses.length - 1)]),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockImplementation(async (messages) => {
+            executorPrompts.push(String(messages.at(-1)?.content ?? ''))
+            return '# Stage Report\n\nCompleted with some risk.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'reviewers.reviewer-a' || input.logicalName === 'reviewers.reviewer-b') {
+        return {
+          name: String(input.logicalName),
+          chat: vi.fn().mockImplementation(async () => {
+            const key = String(input.logicalName)
+            const calls = (reviewerCallCounts.get(key) || 0) + 1
+            reviewerCallCounts.set(key, calls)
+            if (calls === 1) {
+              return '{"decision":"revise","rationale":"Need a clearer rollback note.","required_actions":["Add a rollback note."]}'
+            }
+            return '{"decision":"approved","rationale":"Rollback note is present.","required_actions":[]}'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-model-gate-revise-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const gateArtifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'model_gate_prd_review_2.json'), 'utf-8')
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.stageResults[0]?.retryCount).toBe(0)
+    expect(executorPrompts).toHaveLength(2)
+    expect(executorPrompts[1]).toContain('Add a rollback note.')
+    expect(gateArtifact).toContain('"decision": "approved"')
+  })
+
+  it('uses the arbitrator for conflicting model decisions and escalates to human when required', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.2,"risks":["Need review"],"requireHumanConfirmation":false,"summary":"Needs confirmation."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted with some risk.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'reviewers.reviewer-a') {
+        return {
+          name: 'reviewers.reviewer-a',
+          chat: vi.fn().mockResolvedValue('{"decision":"approved","rationale":"Looks safe.","required_actions":[]}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'reviewers.reviewer-b') {
+        return {
+          name: 'reviewers.reviewer-b',
+          chat: vi.fn().mockResolvedValue('{"decision":"revise","rationale":"Not enough rollback detail.","required_actions":["Add rollback detail."]}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'summarizer') {
+        return {
+          name: 'summarizer',
+          chat: vi.fn().mockResolvedValue('{"decision":"human_required","rationale":"Risk is too high for auto-approval.","required_actions":["Get a human to confirm."]}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-model-gate-arbitrator-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 1\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const gateArtifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'model_gate_prd_review_1.json'), 'utf-8')
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(true)
+    expect(gateArtifact).toContain('"arbitrator"')
+    expect(events).toContain('"event":"model_confirmation_escalated_to_human"')
+    expect(events).toContain('"event":"human_confirmation_required"')
+  })
+
+  it('still requires human confirmation when stage evaluation explicitly demands it under multi-model policy', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":["Needs human"],"requireHumanConfirmation":true,"summary":"Explicit human confirmation required."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName.startsWith('reviewers.')) {
+        throw new Error('model reviewers should not run when evaluation requires human confirmation')
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-model-gate-human-override-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 1\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+    expect(result.result.status).toBe('paused')
+    expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(true)
+    expect(events).toContain('"event":"human_confirmation_required"')
+    expect(events).not.toContain('"event":"model_confirmation_started"')
+  })
+
+  it('continues to the next stage when model confirmation approves a failed stage', async () => {
+    const executedStages: string[] = []
+    let executionCount = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        const responses = [
+          '{"confidence":0.2,"risks":["Test command failed"],"requireHumanConfirmation":false,"summary":"Tests failed but may be acceptable."}',
+          '{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage completed cleanly."}',
+        ]
+        let index = 0
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockImplementation(async () => responses[Math.min(index++, responses.length - 1)]),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockImplementation(async () => {
+            executionCount += 1
+            if (executionCount === 1) {
+              executedStages.push('unit_mock_test')
+              return '# Stage Report\n\nUnit test stage ran.\n\n## Artifacts\n- /tmp/unit.txt'
+            }
+            executedStages.push('prd_review')
+            return '# Stage Report\n\nPRD review stage ran.\n\n## Artifacts\n- /tmp/prd.txt'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'reviewers.reviewer-a' || input.logicalName === 'reviewers.reviewer-b') {
+        return {
+          name: String(input.logicalName),
+          chat: vi.fn().mockResolvedValue('{"decision":"approved","rationale":"Failure is acceptable for autonomous continuation.","required_actions":[]}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-model-gate-failed-stage-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [unit_mock_test, prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(executedStages).toEqual(['unit_mock_test', 'prd_review'])
+    expect(result.result.session?.stageResults.map((stageResult) => stageResult.stage)).toEqual(['unit_mock_test', 'prd_review'])
+  })
+
   it('lists saved loop sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-list-'))
     const stateManager = new StateManager(dir)

@@ -4,6 +4,19 @@ import type { GraphWorkbenchData, GraphWorkbenchState } from '../types.js'
 import { buildCommandDisplay } from '../command-builder.js'
 import { Section } from './common.js'
 
+function renderPanelTitle(title: string, focused: boolean) {
+  return focused ? `${title} [focus]` : title
+}
+
+function formatEventTimestamp(timestamp: string) {
+  const match = timestamp.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
+  if (!match) {
+    return timestamp
+  }
+
+  return `${match[1]} ${match[2]}`
+}
+
 function renderNodeLine(
   node: GraphWorkbenchData['nodes'][number],
   selectedNodeId: string | undefined,
@@ -28,11 +41,12 @@ export function GraphWorkbench(props: {
   workbench: GraphWorkbenchData
   focusedPanel: GraphWorkbenchState['focusedPanel']
   selectedActionIndex: number
+  pendingConfirmationActionId?: string
   message?: string
 }) {
   const selectedNode = props.workbench.selectedNode
   const overviewSection = Section({
-    title: 'Graph Overview',
+    title: renderPanelTitle('Graph Overview', props.focusedPanel === 'overview'),
     children: (
       <>
         <Text>
@@ -40,7 +54,14 @@ export function GraphWorkbench(props: {
           <Text color="gray">  {props.workbench.graph.graphId} · {props.workbench.graph.status}</Text>
         </Text>
         <Text color="gray">
-          ready {props.workbench.graph.rollup.ready} · waiting approval {props.workbench.graph.rollup.waitingApproval} · blocked {props.workbench.graph.rollup.blocked}
+          total {props.workbench.graph.rollup.total}
+          {' · '}ready {props.workbench.graph.rollup.ready}
+          {' · '}running {props.workbench.graph.rollup.running}
+          {' · '}waiting approval {props.workbench.graph.rollup.waitingApproval}
+          {' · '}retry {props.workbench.graph.rollup.waitingRetry}
+          {' · '}blocked {props.workbench.graph.rollup.blocked}
+          {' · '}completed {props.workbench.graph.rollup.completed}
+          {' · '}failed {props.workbench.graph.rollup.failed}
         </Text>
         {props.workbench.error ? <Text color="red">{props.workbench.error}</Text> : null}
         {props.workbench.nodes.map((node) => renderNodeLine(node, props.workbench.selectedNodeId, props.focusedPanel))}
@@ -60,6 +81,10 @@ export function GraphWorkbench(props: {
         <Text>Approval pending: {selectedNode.approvalPending ? 'yes' : 'no'}</Text>
         {selectedNode.latestSummary ? <Text>Latest summary: {selectedNode.latestSummary}</Text> : null}
         {selectedNode.nextStep ? <Text>Next: {selectedNode.nextStep}</Text> : null}
+        {selectedNode.reviewerSummaries.length > 0
+          ? selectedNode.reviewerSummaries.map((summary) => <Text key={summary}>Review: {summary}</Text>)
+          : <Text color="gray">No review summary yet.</Text>}
+        {selectedNode.arbitrationSummary ? <Text>Arbitration: {selectedNode.arbitrationSummary}</Text> : null}
         {selectedNode.linkedExecution ? (
           <>
             <Text>
@@ -77,17 +102,19 @@ export function GraphWorkbench(props: {
     ),
   })
   const actionsSection = Section({
-    title: 'Actions',
+    title: renderPanelTitle('Actions', props.focusedPanel === 'actions'),
     children: props.workbench.actions.length > 0 ? props.workbench.actions.map((action, index) => {
       const selected = index === props.selectedActionIndex
       const prefix = selected ? '› ' : '  '
       const color = selected && props.focusedPanel === 'actions' ? 'greenBright' : undefined
+      const confirmationHint = action.id === props.pendingConfirmationActionId ? ' [press Enter again]' : ''
 
       return (
         <Box key={action.id} flexDirection="column">
           <Text color={color}>
             {prefix}
             {action.label}
+            {confirmationHint}
             <Text color="gray">  {action.kind}</Text>
           </Text>
           <Text color="gray">
@@ -98,7 +125,7 @@ export function GraphWorkbench(props: {
     }) : <Text color="gray">No direct actions for the selected node.</Text>,
   })
   const attentionSection = Section({
-    title: 'Attention and Events',
+    title: renderPanelTitle('Attention and Events', props.focusedPanel === 'events'),
     children: (
       <>
         {props.workbench.attention.length > 0 ? props.workbench.attention.map((item) => (
@@ -106,7 +133,7 @@ export function GraphWorkbench(props: {
         )) : <Text color="gray">No active attention items.</Text>}
         {props.workbench.events.length > 0 ? props.workbench.events.map((event) => (
           <Text key={event.id} color="gray">
-            {event.timestamp}  {event.summary}
+            {formatEventTimestamp(event.timestamp)}  {event.summary}
           </Text>
         )) : <Text color="gray">No recent events.</Text>}
       </>

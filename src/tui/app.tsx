@@ -332,6 +332,7 @@ export function App(props: AppProps) {
         workbench={state.graphWorkbench.data}
         focusedPanel={state.graphWorkbench.focusedPanel}
         selectedActionIndex={state.graphWorkbench.selectedActionIndex}
+        pendingConfirmationActionId={state.graphWorkbench.pendingConfirmationActionId}
         message={state.graphWorkbench.message}
       />
     )

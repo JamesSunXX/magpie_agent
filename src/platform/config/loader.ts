@@ -18,7 +18,7 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 12
+export const CURRENT_CONFIG_VERSION = 13
 
 export interface ConfigVersionStatus {
   path: string
@@ -304,11 +304,44 @@ function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Re
   }
 }
 
-function validateLoopConfig(loop: LoopConfig | undefined): void {
-  if (!loop?.role_bindings) return
+function validateLoopConfig(
+  loop: LoopConfig | undefined,
+  reviewers: Record<string, ReviewerConfig>,
+  discussReviewers: string[] | undefined
+): void {
+  if (loop?.role_bindings) {
+    validateBinding('capabilities.loop.role_bindings.architect', loop.role_bindings.architect)
+    validateBinding('capabilities.loop.role_bindings.developer', loop.role_bindings.developer)
+  }
 
-  validateBinding('capabilities.loop.role_bindings.architect', loop.role_bindings.architect)
-  validateBinding('capabilities.loop.role_bindings.developer', loop.role_bindings.developer)
+  const humanConfirmation = loop?.human_confirmation
+  if (!humanConfirmation) {
+    return
+  }
+
+  validateReviewerIdArray(
+    'capabilities.loop.human_confirmation.reviewer_ids',
+    humanConfirmation.reviewer_ids,
+    reviewers
+  )
+
+  if (humanConfirmation.max_model_revisions !== undefined) {
+    if (!Number.isInteger(humanConfirmation.max_model_revisions) || humanConfirmation.max_model_revisions < 0) {
+      throw new Error('Config error: capabilities.loop.human_confirmation.max_model_revisions must be a non-negative integer')
+    }
+  }
+
+  if (humanConfirmation.gate_policy !== 'multi_model') {
+    return
+  }
+
+  const reviewerIds = humanConfirmation.reviewer_ids ?? discussReviewers
+  const distinctReviewerIds = Array.isArray(reviewerIds)
+    ? Array.from(new Set(reviewerIds))
+    : []
+  if (distinctReviewerIds.length < 2) {
+    throw new Error('Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy')
+  }
 }
 
 function validatePositiveNumber(name: string, value: number | undefined): void {
@@ -406,7 +439,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   }
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
-  validateLoopConfig(config.capabilities.loop)
+  validateLoopConfig(config.capabilities.loop, config.reviewers, config.capabilities.discuss?.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
   validateLoopExecutionTimeout(config.capabilities.loop?.execution_timeout)
 }

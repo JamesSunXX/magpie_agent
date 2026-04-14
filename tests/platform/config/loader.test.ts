@@ -179,4 +179,42 @@ describe('platform config loader', () => {
       'Config error: reviewers.claude.agent is only supported when tool/model resolves to kiro'
     )
   })
+
+  it('rejects multi-model loop confirmation when fewer than two reviewers are available', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      human_confirmation: {
+        gate_policy: 'multi_model',
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy'
+    )
+  })
+
+  it('rejects multi-model loop confirmation when reviewer ids are duplicated', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude', 'claude'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      human_confirmation: {
+        gate_policy: 'multi_model',
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy'
+    )
+  })
 })
