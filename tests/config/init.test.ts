@@ -447,4 +447,20 @@ integrations:
     expect(content).toContain('- business logic and edge cases')
     expect(content).toContain('- architecture and trade-offs')
   })
+
+  it('generates multi-model loop confirmation defaults for new configs', () => {
+    const content = generateConfig(['gemini-cli', 'codex', 'kiro'])
+
+    expect(content).toContain('gate_policy: "multi_model"')
+    expect(content).toContain('max_model_revisions: 1')
+  })
+
+  it('does not duplicate a single reviewer into loop multi-model defaults', () => {
+    const content = generateConfig(['codex'])
+
+    expect(content).toContain('capabilities:')
+    expect(content).toContain('  discuss:')
+    expect(content).toContain('    reviewers: [codex]')
+    expect(content).not.toContain('    reviewers: [codex, codex]')
+  })
 })

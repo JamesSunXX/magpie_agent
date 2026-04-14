@@ -40,6 +40,10 @@ import {
   appendHumanConfirmationItem,
   findHumanConfirmationDecision,
 } from '../domain/human-confirmation.js'
+import {
+  runLoopModelConfirmation,
+  type LoopModelConfirmationResult,
+} from '../domain/model-confirmation.js'
 import { createLoopMr, type LoopMrAttemptResult } from '../domain/auto-mr.js'
 import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
 import { generateAutoBranchName, type AutoBranchNameResult } from '../domain/auto-branch-name.js'
@@ -116,7 +120,9 @@ interface LoopRuntimeConfig {
   branchNamingAgent?: string
   humanConfirmationFile: string
   pollIntervalSec: number
-  gatePolicy: 'exception_or_low_confidence' | 'always' | 'manual_only'
+  gatePolicy: 'exception_or_low_confidence' | 'always' | 'manual_only' | 'multi_model'
+  modelReviewerIds: string[]
+  maxModelRevisions: number
   commands: {
     unitTest: string
     mockTest?: string
@@ -146,6 +152,14 @@ interface StageRunResult {
   stageReport: string
   testOutput: string
 }
+
+interface StageExecutionAttemptResult {
+  stageReport: string
+  stageSucceeded: boolean
+  testOutput: string
+}
+
+type GateStrategy = 'none' | 'model' | 'human'
 
 function toRoleBinding(input: { tool?: string; model?: string; agent?: string }): { tool?: string; model?: string; agent?: string } | undefined {
   if (!input.tool && !input.model) return undefined
@@ -324,7 +338,7 @@ function generateId(): string {
   return randomBytes(6).toString('hex')
 }
 
-function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
+function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: string[] | undefined): LoopRuntimeConfig {
   return {
     plannerTool: config?.planner_tool,
     plannerModel: config?.planner_model || 'claude-code',
@@ -348,6 +362,8 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     humanConfirmationFile: config?.human_confirmation?.file || 'human_confirmation.md',
     pollIntervalSec: config?.human_confirmation?.poll_interval_sec || 8,
     gatePolicy: config?.human_confirmation?.gate_policy || 'exception_or_low_confidence',
+    modelReviewerIds: config?.human_confirmation?.reviewer_ids || discussReviewerIds || [],
+    maxModelRevisions: config?.human_confirmation?.max_model_revisions ?? 1,
     commands: {
       unitTest: config?.commands?.unit_test || 'npm run test:run',
       mockTest: config?.commands?.mock_test?.trim() || undefined,
@@ -826,7 +842,7 @@ JSON schema:
   }
 }
 
-function shouldGateHuman(
+function shouldGate(
   runtime: LoopRuntimeConfig,
   stageSucceeded: boolean,
   evaluation: StageEvaluation
@@ -837,6 +853,47 @@ function shouldGateHuman(
   if (runtime.gatePolicy === 'manual_only') return false
   if (!stageSucceeded) return true
   return evaluation.confidence < runtime.confidenceThreshold
+}
+
+function shouldEscalateToHumanForDangerousSignals(stageReport: string, testOutput: string): boolean {
+  const combined = `${stageReport}\n${testOutput}`.toLowerCase()
+  return combined.includes('dangerous command blocked')
+}
+
+function resolveGateStrategy(
+  runtime: LoopRuntimeConfig,
+  stageSucceeded: boolean,
+  evaluation: StageEvaluation,
+  forceHuman: boolean
+): GateStrategy {
+  if (!shouldGate(runtime, stageSucceeded, evaluation)) {
+    return 'none'
+  }
+
+  if (evaluation.requireHumanConfirmation || forceHuman) {
+    return 'human'
+  }
+
+  if (runtime.gatePolicy === 'multi_model') {
+    return 'model'
+  }
+
+  return 'human'
+}
+
+function buildModelGateArtifactPath(sessionDir: string, stage: LoopStageName, sequence: number): string {
+  return join(sessionDir, `model_gate_${stage}_${sequence}.json`)
+}
+
+function buildModelRevisionGuidance(result: LoopModelConfirmationResult): string {
+  return [
+    'Model confirmation requested another autonomous revision.',
+    '',
+    `Rationale: ${result.rationale}`,
+    '',
+    'Required actions:',
+    ...(result.requiredActions.length > 0 ? result.requiredActions.map((item) => `- ${item}`) : ['- None provided.']),
+  ].join('\n')
 }
 
 function buildActionUrl(filePath: string, line: number, clickTarget: 'vscode' | 'file'): string {
@@ -1337,11 +1394,285 @@ async function waitForHumanDecision(
   return null
 }
 
+async function executeStageAttempt(
+  stage: LoopStageName,
+  session: LoopSession,
+  tasks: LoopTask[],
+  documentPlan: DocumentPlan,
+  executor: AIProvider,
+  dryRun: boolean,
+  runCwd: string,
+  runtime: LoopRuntimeConfig,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  knowledgeContext: string,
+  progressObserver?: LoopProgressObserver,
+  additionalGuidance?: string,
+): Promise<StageExecutionAttemptResult> {
+  if (dryRun) {
+    return {
+      stageReport: `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`,
+      stageSucceeded: true,
+      testOutput: '',
+    }
+  }
+
+  const stagePrompt = buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)
+  const prompt = additionalGuidance
+    ? `${stagePrompt}\n\nAdditional guidance:\n${additionalGuidance}`
+    : stagePrompt
+
+  const progressWrites: Array<Promise<void>> = []
+  const response = await executor.chat([{ role: 'user', content: prompt }], undefined, {
+    onProgress: (event) => {
+      progressWrites.push(appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'provider_progress',
+        stage,
+        provider: event.provider,
+        progressType: event.kind,
+        ...(event.summary ? { summary: event.summary } : {}),
+        ...(event.details ? { details: event.details } : {}),
+      }, progressObserver))
+    },
+  })
+  await Promise.all(progressWrites)
+
+  let stageSucceeded = true
+  let testOutput = ''
+
+  if (stage === 'unit_mock_test') {
+    const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
+      safety: commandSafety,
+      interactive: process.stdin.isTTY && process.stdout.isTTY,
+    })
+    const mock = runOptionalCommand(
+      runCwd,
+      runtime.commands.mockTest,
+      'Skipped: no mock test command configured.',
+      commandSafety
+    )
+    stageSucceeded = unit.passed && mock.passed
+    testOutput = [
+      `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
+      `## Mock Test (${mock.commandLabel})\n${mock.output}`,
+    ].join('\n\n')
+  } else if (stage === 'integration_test') {
+    const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
+      safety: commandSafety,
+      interactive: process.stdin.isTTY && process.stdout.isTTY,
+    })
+    stageSucceeded = integration.passed
+    testOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
+  }
+
+  return {
+    stageReport: mergeStageReportWithVerification(response, testOutput),
+    stageSucceeded,
+    testOutput,
+  }
+}
+
+async function requestHumanConfirmation(input: {
+  stage: LoopStageName
+  session: LoopSession
+  router: ReturnType<typeof createNotificationRouter>
+  waitHuman: boolean
+  runtime: LoopRuntimeConfig
+  planner: AIProvider
+  executor: AIProvider
+  tasks: LoopTask[]
+  documentPlan: DocumentPlan
+  dryRun: boolean
+  runCwd: string
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+  knowledgeContext: string
+  notificationsConfig: unknown
+  stageSucceeded: boolean
+  stageResult: LoopStageResult
+  stageReport: string
+  testOutput: string
+  reason: string
+  nextAction: string
+  progressObserver?: LoopProgressObserver
+}): Promise<StageRunResult> {
+  const confirmationItem: HumanConfirmationItem = {
+    id: generateId(),
+    sessionId: input.session.id,
+    stage: input.stage,
+    status: 'pending',
+    decision: 'pending',
+    rationale: '',
+    reason: input.reason,
+    artifacts: input.stageResult.artifacts,
+    nextAction: input.nextAction,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+
+  const clickTarget = resolveClickTarget('vscode', input.notificationsConfig)
+  const lineNumber = await appendHumanConfirmationItem(input.session.artifacts.humanConfirmationPath, confirmationItem)
+  const actionUrl = buildActionUrl(input.session.artifacts.humanConfirmationPath, lineNumber, clickTarget)
+
+  input.session.humanConfirmations.push(confirmationItem)
+
+  const event: NotificationEvent = {
+    type: 'human_confirmation_required',
+    sessionId: input.session.id,
+    title: `Magpie Loop需要人工确认 (${input.stage})`,
+    message: confirmationItem.reason,
+    severity: 'warning',
+    actionUrl,
+    dedupeKey: `${input.session.id}:${confirmationItem.id}`,
+    metadata: {
+      stage: input.stage,
+      file: input.session.artifacts.humanConfirmationPath,
+      line: lineNumber,
+    },
+  }
+
+  const dispatch = await input.router.dispatch(event)
+  await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+    event: event.type,
+    stage: input.stage,
+    actionUrl,
+    delivered: dispatch.delivered,
+    attempted: dispatch.attempted,
+  }, input.progressObserver)
+
+  if (!input.waitHuman) {
+    return {
+      stageResult: input.stageResult,
+      paused: true,
+      failed: false,
+      stageReport: input.stageReport,
+      testOutput: input.testOutput,
+    }
+  }
+
+  const decided = await waitForHumanDecision(
+    input.session.artifacts.humanConfirmationPath,
+    confirmationItem.id,
+    input.runtime.pollIntervalSec,
+    input.runtime.maxIterations
+  )
+
+  if (!decided) {
+    return {
+      stageResult: input.stageResult,
+      paused: true,
+      failed: false,
+      stageReport: input.stageReport,
+      testOutput: input.testOutput,
+    }
+  }
+
+  confirmationItem.decision = decided.decision
+  confirmationItem.status = decided.decision === 'approved' ? 'approved' : decided.decision
+  confirmationItem.rationale = decided.rationale
+  confirmationItem.updatedAt = new Date()
+
+  if (decided.decision === 'approved') {
+    return {
+      stageResult: input.stageResult,
+      paused: false,
+      failed: !input.stageSucceeded,
+      stageReport: input.stageReport,
+      testOutput: input.testOutput,
+    }
+  }
+
+  if (decided.decision === 'rejected' || decided.decision === 'revise') {
+    const stageArtifactPath = join(input.session.artifacts.sessionDir, `${input.stage}.md`)
+    if (!existsSync(stageArtifactPath)) {
+      await mkdir(dirname(stageArtifactPath), { recursive: true })
+      await writeFile(stageArtifactPath, input.stageReport || `# Stage ${input.stage}`, 'utf-8')
+    }
+
+    let finalEval: StageEvaluation = {
+      confidence: input.stageResult.confidence,
+      risks: input.stageResult.risks,
+      requireHumanConfirmation: false,
+      summary: input.stageResult.summary,
+    }
+    let finalSucceeded = input.stageSucceeded
+    let finalTestOutput = input.testOutput
+    let finalStageReport = input.stageReport
+    const maxRetries = Math.max(0, input.runtime.retriesPerStage)
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const replanPrompt = `Human rejected stage ${input.stage}. Retry ${attempt}/${maxRetries}. Rerun this stage with this rationale:\n${decided.rationale || '(none provided)'}\n\nGoal: ${input.session.goal}`
+      const replanOutput = await input.planner.chat([{ role: 'user', content: replanPrompt }])
+      await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
+
+      const retried = await executeStageAttempt(
+        input.stage,
+        input.session,
+        input.tasks,
+        input.documentPlan,
+        input.executor,
+        input.dryRun,
+        input.runCwd,
+        input.runtime,
+        input.commandSafety,
+        input.knowledgeContext,
+        input.progressObserver,
+        replanOutput,
+      )
+
+      finalSucceeded = retried.stageSucceeded
+      finalTestOutput = retried.testOutput
+      finalStageReport = retried.stageReport
+      await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${finalStageReport}\n`, 'utf-8')
+
+      finalEval = await evaluateStage(input.planner, input.stage, finalStageReport, finalTestOutput)
+      input.stageResult.retryCount = attempt
+      input.stageResult.confidence = finalEval.confidence
+      input.stageResult.summary = finalEval.summary
+      input.stageResult.risks = finalEval.risks
+      input.stageResult.success = finalSucceeded
+
+      const passed = finalSucceeded
+        && finalEval.confidence >= input.runtime.confidenceThreshold
+        && !finalEval.requireHumanConfirmation
+      if (passed) {
+        return {
+          stageResult: input.stageResult,
+          paused: false,
+          failed: false,
+          stageReport: finalStageReport,
+          testOutput: finalTestOutput,
+        }
+      }
+    }
+
+    input.stageResult.confidence = finalEval.confidence
+    input.stageResult.summary = finalEval.summary
+    input.stageResult.risks = finalEval.risks
+    input.stageResult.success = false
+
+    return {
+      stageResult: input.stageResult,
+      paused: false,
+      failed: true,
+      stageReport: finalStageReport,
+      testOutput: finalTestOutput,
+    }
+  }
+
+  return {
+    stageResult: input.stageResult,
+    paused: true,
+    failed: false,
+    stageReport: input.stageReport,
+    testOutput: input.testOutput,
+  }
+}
+
 async function runSingleStage(
   stage: LoopStageName,
   session: LoopSession,
   tasks: LoopTask[],
   documentPlan: DocumentPlan,
+  config: MagpieConfig,
   runtime: LoopRuntimeConfig,
   planner: AIProvider,
   executor: AIProvider,
@@ -1354,9 +1685,6 @@ async function runSingleStage(
   progressObserver?: LoopProgressObserver,
 ): Promise<StageRunResult> {
   const stageArtifactPath = join(session.artifacts.sessionDir, `${stage}.md`)
-  let stageReport = ''
-  let stageSucceeded = true
-  let testOutput = ''
   const knowledgeContext = session.artifacts.knowledgeSummaryDir && session.artifacts.knowledgeSchemaPath
     ? await renderKnowledgeContext({
       knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath,
@@ -1367,61 +1695,44 @@ async function runSingleStage(
       knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'candidates.json'),
     }, runCwd)
     : ''
+  let stageReport = ''
+  let stageSucceeded = true
+  let testOutput = ''
+  let evaluation: StageEvaluation
+  let gateStrategy: GateStrategy
+  let modelGateSequence = 0
+  let modelRevisionCount = 0
+  let humanGateReason: string | undefined
 
-  if (dryRun) {
-    stageReport = `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`
-  } else {
-    const stagePrompt = buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)
-    const progressWrites: Array<Promise<void>> = []
-    const response = await executor.chat([{ role: 'user', content: stagePrompt }], undefined, {
-      onProgress: (event) => {
-        progressWrites.push(appendObservedEvent(session.artifacts.eventsPath, session.id, {
-          event: 'provider_progress',
-          stage,
-          provider: event.provider,
-          progressType: event.kind,
-          ...(event.summary ? { summary: event.summary } : {}),
-          ...(event.details ? { details: event.details } : {}),
-        }, progressObserver))
-      },
-    })
-    await Promise.all(progressWrites)
-    stageReport = response
+  const initialAttempt = await executeStageAttempt(
+    stage,
+    session,
+    tasks,
+    documentPlan,
+    executor,
+    dryRun,
+    runCwd,
+    runtime,
+    commandSafety,
+    knowledgeContext,
+    progressObserver,
+  )
 
-    if (stage === 'unit_mock_test') {
-      const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
-        safety: commandSafety,
-        interactive: process.stdin.isTTY && process.stdout.isTTY,
-      })
-      const mock = runOptionalCommand(
-        runCwd,
-        runtime.commands.mockTest,
-        'Skipped: no mock test command configured.',
-        commandSafety
-      )
-      stageSucceeded = unit.passed && mock.passed
-      testOutput = [
-        `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-        `## Mock Test (${mock.commandLabel})\n${mock.output}`,
-      ].join('\n\n')
-    }
-
-    if (stage === 'integration_test') {
-      const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
-        safety: commandSafety,
-        interactive: process.stdin.isTTY && process.stdout.isTTY,
-      })
-      stageSucceeded = integration.passed
-      testOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
-    }
-
-    stageReport = mergeStageReportWithVerification(stageReport, testOutput)
+  stageReport = initialAttempt.stageReport
+  stageSucceeded = initialAttempt.stageSucceeded
+  testOutput = initialAttempt.testOutput
+  if (!dryRun) {
     await mkdir(dirname(stageArtifactPath), { recursive: true })
     await writeFile(stageArtifactPath, stageReport, 'utf-8')
   }
 
-  const evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
-  const gateHuman = shouldGateHuman(runtime, stageSucceeded, evaluation)
+  evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
+  gateStrategy = resolveGateStrategy(
+    runtime,
+    stageSucceeded,
+    evaluation,
+    shouldEscalateToHumanForDangerousSignals(stageReport, testOutput)
+  )
 
   const stageResult: LoopStageResult = {
     stage,
@@ -1434,7 +1745,7 @@ async function runSingleStage(
     timestamp: new Date(),
   }
 
-  if (!gateHuman) {
+  if (gateStrategy === 'none') {
     return {
       stageResult,
       paused: false,
@@ -1444,185 +1755,172 @@ async function runSingleStage(
     }
   }
 
-  const confirmationItem: HumanConfirmationItem = {
-    id: generateId(),
-    sessionId: session.id,
-    stage,
-    status: 'pending',
-    decision: 'pending',
-    rationale: '',
-    reason: evaluation.risks.join('; ') || 'Low confidence or failed stage execution',
-    artifacts: stageResult.artifacts,
-    nextAction: stageSucceeded ? 'Review risk and approve to continue' : 'Fix stage and approve rerun',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  }
-
-  const clickTarget = resolveClickTarget('vscode', notificationsConfig)
-  const lineNumber = await appendHumanConfirmationItem(session.artifacts.humanConfirmationPath, confirmationItem)
-  const actionUrl = buildActionUrl(session.artifacts.humanConfirmationPath, lineNumber, clickTarget)
-
-  session.humanConfirmations.push(confirmationItem)
-
-  const event: NotificationEvent = {
-    type: 'human_confirmation_required',
-    sessionId: session.id,
-    title: `Magpie Loop需要人工确认 (${stage})`,
-    message: confirmationItem.reason,
-    severity: 'warning',
-    actionUrl,
-    dedupeKey: `${session.id}:${confirmationItem.id}`,
-    metadata: {
+  while (gateStrategy === 'model') {
+    modelGateSequence += 1
+    const triggerReason = evaluation.risks.join('; ') || 'Low confidence or failed stage execution'
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'model_confirmation_started',
       stage,
-      file: session.artifacts.humanConfirmationPath,
-      line: lineNumber,
-    },
-  }
+      sequence: modelGateSequence,
+      reason: triggerReason,
+      reviewers: runtime.modelReviewerIds,
+    }, progressObserver)
 
-  const dispatch = await router.dispatch(event)
-  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
-    event: event.type,
-    stage,
-    actionUrl,
-    delivered: dispatch.delivered,
-    attempted: dispatch.attempted,
-  }, progressObserver)
-
-  if (!waitHuman) {
-    return {
-      stageResult,
-      paused: true,
-      failed: false,
-      stageReport,
-      testOutput,
+    let confirmation: LoopModelConfirmationResult
+    try {
+      confirmation = await runLoopModelConfirmation({
+        stage,
+        goal: session.goal,
+        stageReport,
+        testOutput,
+        risks: evaluation.risks,
+        reviewerIds: runtime.modelReviewerIds,
+        config,
+        cwd: runCwd,
+      })
+    } catch (error) {
+      humanGateReason = error instanceof Error ? error.message : String(error)
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'model_confirmation_escalated_to_human',
+        stage,
+        sequence: modelGateSequence,
+        reason: humanGateReason,
+      }, progressObserver)
+      gateStrategy = 'human'
+      break
     }
-  }
 
-  const decided = await waitForHumanDecision(
-    session.artifacts.humanConfirmationPath,
-    confirmationItem.id,
-    runtime.pollIntervalSec,
-    runtime.maxIterations
-  )
-
-  if (!decided) {
-    return {
-      stageResult,
-      paused: true,
-      failed: false,
-      stageReport,
-      testOutput,
+    const artifactPath = buildModelGateArtifactPath(session.artifacts.sessionDir, stage, modelGateSequence)
+    await writeFile(artifactPath, `${JSON.stringify({
+      triggerReason,
+      reviewers: confirmation.reviewers,
+      arbitrator: confirmation.arbitrator,
+      required_actions: confirmation.requiredActions,
+      decision: confirmation.decision,
+      rationale: confirmation.rationale,
+    }, null, 2)}\n`, 'utf-8')
+    if (!stageResult.artifacts.includes(artifactPath)) {
+      stageResult.artifacts.push(artifactPath)
     }
-  }
 
-  confirmationItem.decision = decided.decision
-  confirmationItem.status = decided.decision === 'approved' ? 'approved' : decided.decision
-  confirmationItem.rationale = decided.rationale
-  confirmationItem.updatedAt = new Date()
+    await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+      event: 'model_confirmation_completed',
+      stage,
+      sequence: modelGateSequence,
+      artifactPath,
+      decision: confirmation.decision,
+    }, progressObserver)
 
-  if (decided.decision === 'approved') {
-    return {
-      stageResult,
-      paused: false,
-      failed: !stageSucceeded,
-      stageReport,
-      testOutput,
+    if (confirmation.decision === 'approved') {
+      return {
+        stageResult,
+        paused: false,
+        failed: false,
+        stageReport,
+        testOutput,
+      }
     }
-  }
 
-  if (decided.decision === 'rejected' || decided.decision === 'revise') {
+    if (confirmation.decision === 'human_required') {
+      humanGateReason = confirmation.rationale || triggerReason
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'model_confirmation_escalated_to_human',
+        stage,
+        sequence: modelGateSequence,
+        reason: humanGateReason,
+      }, progressObserver)
+      gateStrategy = 'human'
+      break
+    }
+
+    if (modelRevisionCount >= runtime.maxModelRevisions) {
+      stageResult.success = false
+      stageResult.summary = confirmation.rationale || 'Model confirmation requested more revisions than allowed.'
+      stageResult.risks = confirmation.requiredActions.length > 0
+        ? confirmation.requiredActions
+        : ['Model confirmation exceeded max revision attempts.']
+      return {
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport,
+        testOutput,
+      }
+    }
+
+    modelRevisionCount += 1
+    const revisionGuidance = buildModelRevisionGuidance(confirmation)
     if (!existsSync(stageArtifactPath)) {
       await mkdir(dirname(stageArtifactPath), { recursive: true })
       await writeFile(stageArtifactPath, stageReport || `# Stage ${stage}`, 'utf-8')
     }
+    await appendFile(stageArtifactPath, `\n\n## Model Revision Guidance (${modelRevisionCount})\n${revisionGuidance}\n`, 'utf-8')
 
-    let finalEval = evaluation
-    let finalSucceeded = stageSucceeded
-    let finalTestOutput = testOutput
-    const maxRetries = Math.max(0, runtime.retriesPerStage)
+    const revisedAttempt = await executeStageAttempt(
+      stage,
+      session,
+      tasks,
+      documentPlan,
+      executor,
+      dryRun,
+      runCwd,
+      runtime,
+      commandSafety,
+      knowledgeContext,
+      progressObserver,
+      revisionGuidance,
+    )
+    stageReport = revisedAttempt.stageReport
+    stageSucceeded = revisedAttempt.stageSucceeded
+    testOutput = revisedAttempt.testOutput
+    await appendFile(stageArtifactPath, `\n\n## Model Revision Execution (${modelRevisionCount})\n${stageReport}\n`, 'utf-8')
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const replanPrompt = `Human rejected stage ${stage}. Retry ${attempt}/${maxRetries}. Rerun this stage with this rationale:\n${decided.rationale || '(none provided)'}\n\nGoal: ${session.goal}`
-      const replanOutput = await planner.chat([{ role: 'user', content: replanPrompt }])
-      await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
+    evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
+    stageResult.success = stageSucceeded
+    stageResult.confidence = evaluation.confidence
+    stageResult.summary = evaluation.summary
+    stageResult.risks = evaluation.risks
+    gateStrategy = resolveGateStrategy(
+      runtime,
+      stageSucceeded,
+      evaluation,
+      shouldEscalateToHumanForDangerousSignals(stageReport, testOutput)
+    )
 
-      const retried = await executor.chat([{
-        role: 'user',
-        content: `${buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)}\n\nAdditional guidance:\n${replanOutput}`,
-      }])
-
-      if (stage === 'unit_mock_test') {
-        const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
-          safety: commandSafety,
-          interactive: process.stdin.isTTY && process.stdout.isTTY,
-        })
-        const mock = runOptionalCommand(
-          runCwd,
-          runtime.commands.mockTest,
-          'Skipped: no mock test command configured.',
-          commandSafety
-        )
-        finalSucceeded = unit.passed && mock.passed
-        finalTestOutput = [
-          `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-          `## Mock Test (${mock.commandLabel})\n${mock.output}`,
-        ].join('\n\n')
-      } else if (stage === 'integration_test') {
-        const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
-          safety: commandSafety,
-          interactive: process.stdin.isTTY && process.stdout.isTTY,
-        })
-        finalSucceeded = integration.passed
-        finalTestOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
-      } else {
-        finalSucceeded = true
+    if (gateStrategy === 'none') {
+      return {
+        stageResult,
+        paused: false,
+        failed: !stageSucceeded,
+        stageReport,
+        testOutput,
       }
-
-      stageReport = mergeStageReportWithVerification(retried, finalTestOutput)
-      await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${stageReport}\n`, 'utf-8')
-
-      finalEval = await evaluateStage(planner, stage, stageReport, finalTestOutput)
-      stageResult.retryCount = attempt
-      stageResult.confidence = finalEval.confidence
-      stageResult.summary = finalEval.summary
-      stageResult.risks = finalEval.risks
-      stageResult.success = finalSucceeded
-
-      const passed = finalSucceeded
-        && finalEval.confidence >= runtime.confidenceThreshold
-        && !finalEval.requireHumanConfirmation
-      if (passed) {
-        return {
-          stageResult,
-          paused: false,
-          failed: false,
-          stageReport,
-          testOutput: finalTestOutput,
-        }
-      }
-    }
-
-    stageResult.confidence = finalEval.confidence
-    stageResult.summary = finalEval.summary
-    stageResult.risks = finalEval.risks
-    stageResult.success = false
-
-    return {
-      stageResult,
-      paused: false,
-      failed: true,
-      stageReport,
-      testOutput: finalTestOutput,
     }
   }
 
-  return {
+  return requestHumanConfirmation({
+    stage,
+    session,
+    router,
+    waitHuman,
+    runtime,
+    planner,
+    executor,
+    tasks,
+    documentPlan,
+    dryRun,
+    runCwd,
+    commandSafety,
+    knowledgeContext,
+    notificationsConfig,
+    stageSucceeded,
     stageResult,
-    paused: true,
-    failed: false,
     stageReport,
     testOutput,
-  }
+    reason: humanGateReason || evaluation.risks.join('; ') || 'Low confidence or failed stage execution',
+    nextAction: stageSucceeded ? 'Review risk and approve to continue' : 'Fix stage and approve rerun',
+    progressObserver,
+  })
 }
 
 async function continueSession(
@@ -1909,6 +2207,7 @@ async function continueSession(
           session,
           session.plan,
           documentPlan,
+          config,
           runtime,
           planner,
           executor,
@@ -2271,7 +2570,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   }
 
   const config = loadConfig(ctx.configPath)
-  const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers)
   const executionHost = resolveExecutionHost(prepared)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
@@ -2620,7 +2919,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   }
 
   const config = loadConfig(ctx.configPath)
-  const loopRuntime = resolveLoopConfig(config.capabilities.loop)
+  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const resumeComplexity = resolveSessionComplexityTier(session, prepared.complexity)
   const routingDecision = isRoutingEnabled(config)

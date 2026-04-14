@@ -144,8 +144,10 @@ export interface LoopExecutionTimeoutConfig {
 
 export interface LoopHumanConfirmationConfig {
   file?: string
-  gate_policy?: 'exception_or_low_confidence' | 'always' | 'manual_only'
+  gate_policy?: 'exception_or_low_confidence' | 'always' | 'manual_only' | 'multi_model'
   poll_interval_sec?: number
+  reviewer_ids?: string[]
+  max_model_revisions?: number
 }
 
 export interface LoopMrConfig {
