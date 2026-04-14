@@ -32,13 +32,21 @@ import {
   runSafeCommand,
   resolveWorkflowFailureArtifacts,
 } from '../../workflows/shared/runtime.js'
+import {
+  generateDocumentPlan,
+  renderDocumentPlanForStage,
+  type DocumentPlan,
+} from '../../../core/project-documents/document-plan.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
   appendHumanConfirmationItem,
   findHumanConfirmationDecision,
 } from '../domain/human-confirmation.js'
+import { createLoopMr, type LoopMrAttemptResult } from '../domain/auto-mr.js'
 import { generateAutoCommitMessage } from '../domain/auto-commit-message.js'
+import { generateAutoBranchName, type AutoBranchNameResult } from '../domain/auto-branch-name.js'
 import { resolveAutoCommitProviderBinding } from '../domain/auto-commit-provider-binding.js'
+import { resolveAutoBranchProviderBinding } from '../domain/auto-branch-provider-binding.js'
 import { generateLoopPlan } from '../domain/planner.js'
 import {
   createConstraintsSnapshot,
@@ -58,6 +66,14 @@ import {
   advanceRepairState,
   writeRepairArtifacts,
 } from '../domain/repair.js'
+import {
+  buildRoleRoster,
+  createRoleRoundResult,
+  createRoleMessage,
+  getRoleArtifactPaths,
+  resolveRoleBindings,
+  serializeRoleMessage,
+} from '../../../core/roles/index.js'
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
 import {
   createTaskKnowledge,
@@ -96,8 +112,13 @@ interface LoopRuntimeConfig {
   retriesPerStage: number
   maxIterations: number
   autoCommit: boolean
+  autoMr: boolean
   reuseCurrentBranch: boolean
   autoBranchPrefix: string
+  branchNamingEnabled: boolean
+  branchNamingTool?: string
+  branchNamingModel?: string
+  branchNamingAgent?: string
   humanConfirmationFile: string
   pollIntervalSec: number
   gatePolicy: 'exception_or_low_confidence' | 'always' | 'manual_only'
@@ -131,10 +152,56 @@ interface StageRunResult {
   testOutput: string
 }
 
+function toRoleBinding(input: { tool?: string; model?: string; agent?: string }): { tool?: string; model?: string; agent?: string } | undefined {
+  if (!input.tool && !input.model) return undefined
+  return {
+    ...(input.tool ? { tool: input.tool } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.agent ? { agent: input.agent } : {}),
+  }
+}
+
+function applyLoopRoleBindingOverrides(config: LoopConfig | undefined, runtime: LoopRuntimeConfig): void {
+  const architect = config?.role_bindings?.architect
+  if (architect) {
+    runtime.plannerTool = architect.tool
+    runtime.plannerModel = architect.model || architect.tool || runtime.plannerModel
+    runtime.plannerAgent = architect.agent
+  }
+
+  const developer = config?.role_bindings?.developer
+  if (developer) {
+    runtime.executorTool = developer.tool
+    runtime.executorModel = developer.model || developer.tool || runtime.executorModel
+    runtime.executorAgent = developer.agent
+  }
+}
+
+function buildLoopRoleRoster(runtime: LoopRuntimeConfig) {
+  return buildRoleRoster(resolveRoleBindings(undefined, {
+    architect: toRoleBinding({
+      tool: runtime.plannerTool,
+      model: runtime.plannerModel,
+      agent: runtime.plannerAgent,
+    }),
+    developer: toRoleBinding({
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
+      agent: runtime.executorAgent,
+    }),
+    tester: toRoleBinding({
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
+      agent: runtime.executorAgent,
+    }),
+  }))
+}
+
 interface WorktreeResolution {
   workspaceMode: 'current' | 'worktree'
   workspacePath: string
   worktreeBranch?: string
+  branchNameResult?: AutoBranchNameResult
   failureReason?: string
 }
 
@@ -276,8 +343,13 @@ function resolveLoopConfig(config: LoopConfig | undefined): LoopRuntimeConfig {
     retriesPerStage: config?.retries_per_stage ?? 2,
     maxIterations: config?.max_iterations ?? 30,
     autoCommit: config?.auto_commit !== false,
+    autoMr: config?.mr?.enabled === true,
     reuseCurrentBranch: config?.reuse_current_branch === true,
     autoBranchPrefix: config?.auto_branch_prefix || 'sch/',
+    branchNamingEnabled: config?.branch_naming?.enabled !== false,
+    branchNamingTool: config?.branch_naming?.tool?.trim() || 'claw',
+    branchNamingModel: config?.branch_naming?.model?.trim() || undefined,
+    branchNamingAgent: config?.branch_naming?.agent?.trim() || undefined,
     humanConfirmationFile: config?.human_confirmation?.file || 'human_confirmation.md',
     pollIntervalSec: config?.human_confirmation?.poll_interval_sec || 8,
     gatePolicy: config?.human_confirmation?.gate_policy || 'exception_or_low_confidence',
@@ -468,6 +540,204 @@ function mergeStageReportWithVerification(stageReport: string, testOutput: strin
   ].join('\n')
 }
 
+function buildLoopRoleOpenIssuesMarkdown(issues: Array<{
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  title: string
+  requiredAction: string
+}>): string {
+  if (issues.length === 0) {
+    return '# Open Issues\n\n- None.\n'
+  }
+
+  return [
+    '# Open Issues',
+    '',
+    ...issues.map((issue) => `- [${issue.severity}] ${issue.title}: ${issue.requiredAction}`),
+  ].join('\n')
+}
+
+function buildLoopNextRoundBrief(
+  session: LoopSession,
+  stage: LoopStageName,
+  reason: string,
+  finalAction: 'revise' | 'requeue_or_blocked'
+): string {
+  const lead = finalAction === 'revise'
+    ? `继续 ${stage} 阶段，先解决当前失败，再重跑现有测试命令。`
+    : `继续 ${stage} 阶段前，先处理当前阻塞，再决定是否重试。`
+
+  const refs = [
+    session.artifacts.repairOpenIssuesPath ? `问题清单：${session.artifacts.repairOpenIssuesPath}` : undefined,
+    session.artifacts.repairEvidencePath ? `失败证据：${session.artifacts.repairEvidencePath}` : undefined,
+    session.artifacts.tddTargetPath ? `TDD 目标：${session.artifacts.tddTargetPath}` : undefined,
+    session.artifacts.constraintsSnapshotPath ? `约束快照：${session.artifacts.constraintsSnapshotPath}` : undefined,
+  ].filter(Boolean)
+
+  return [
+    lead,
+    `原因：${reason}`,
+    refs.length > 0 ? `最少输入：${refs.join('；')}` : '最少输入：当前失败原因和现有会话产物。',
+  ].join(' ')
+}
+
+function buildLoopNextRoundMarkdown(input: {
+  session: LoopSession
+  stage: LoopStageName
+  reason: string
+  nextRoundBrief: string
+  finalAction: 'revise' | 'requeue_or_blocked'
+}): string {
+  const minimumInputs = [
+    `- Goal: ${input.session.goal}`,
+    `- Stage: ${input.stage}`,
+    `- Reliable point: ${input.session.lastReliablePoint || 'unknown'}`,
+    `- Reason: ${input.reason}`,
+    input.session.artifacts.repairOpenIssuesPath ? `- Open issues: ${input.session.artifacts.repairOpenIssuesPath}` : undefined,
+    input.session.artifacts.repairEvidencePath ? `- Evidence: ${input.session.artifacts.repairEvidencePath}` : undefined,
+    input.session.artifacts.tddTargetPath ? `- TDD target: ${input.session.artifacts.tddTargetPath}` : undefined,
+    input.session.artifacts.constraintsSnapshotPath ? `- Constraints snapshot: ${input.session.artifacts.constraintsSnapshotPath}` : undefined,
+  ].filter(Boolean)
+
+  return [
+    '# Next Round Input',
+    '',
+    `Final action: ${input.finalAction}`,
+    `Goal: ${input.session.goal}`,
+    `Stage: ${input.stage}`,
+    '',
+    'Minimum input:',
+    ...minimumInputs,
+    '',
+    'Next step:',
+    input.nextRoundBrief,
+  ].join('\n')
+}
+
+async function persistLoopNextRoundInput(input: {
+  session: LoopSession
+  stage: LoopStageName
+  stageIndex: number
+  reason: string
+  finalAction: 'revise' | 'requeue_or_blocked'
+  fromRole: 'architect' | 'developer' | 'tester'
+  toRole?: 'architect' | 'developer'
+  progressObserver?: LoopProgressObserver
+}): Promise<void> {
+  const roleArtifacts = getRoleArtifactPaths(input.session.artifacts.sessionDir)
+  const roundId = `round-${input.stageIndex + 1}`
+  const roleRoundPath = join(roleArtifacts.roundsDir, `${roundId}.json`)
+  const roleOpenIssuesPath = join(roleArtifacts.roundsDir, `${roundId}-open-issues.md`)
+  const roleNextRoundPath = join(roleArtifacts.roundsDir, `${roundId}-next.md`)
+  const nextRoundBrief = buildLoopNextRoundBrief(
+    input.session,
+    input.stage,
+    input.reason,
+    input.finalAction
+  )
+  const evidencePath = input.session.artifacts.repairEvidencePath
+    || input.session.artifacts.greenTestResultPath
+    || input.session.artifacts.redTestResultPath
+    || input.session.artifacts.constraintsSnapshotPath
+    || input.session.artifacts.planPath
+  const openIssues = [{
+    id: `${roundId}-${input.stage}`,
+    title: input.reason,
+    severity: input.finalAction === 'revise' ? 'high' as const : 'medium' as const,
+    sourceRole: input.fromRole,
+    category: input.finalAction === 'revise' ? 'quality' : 'blocked',
+    evidencePath: evidencePath || input.session.artifacts.planPath,
+    requiredAction: nextRoundBrief,
+    status: input.finalAction === 'revise' ? 'open' as const : 'blocked' as const,
+  }]
+  const artifactRefs = [
+    { path: roleNextRoundPath, label: 'next-round-input' },
+    input.session.artifacts.repairOpenIssuesPath ? { path: input.session.artifacts.repairOpenIssuesPath, label: 'open-issues' } : undefined,
+    input.session.artifacts.repairEvidencePath ? { path: input.session.artifacts.repairEvidencePath, label: 'repair-evidence' } : undefined,
+    input.session.artifacts.greenTestResultPath ? { path: input.session.artifacts.greenTestResultPath, label: 'green-test-result' } : undefined,
+    input.session.artifacts.redTestResultPath ? { path: input.session.artifacts.redTestResultPath, label: 'red-test-result' } : undefined,
+    input.session.artifacts.constraintsSnapshotPath ? { path: input.session.artifacts.constraintsSnapshotPath, label: 'constraints-snapshot' } : undefined,
+  ].filter(Boolean) as Array<{ path: string; label: string }>
+  const roundResult = createRoleRoundResult({
+    roundId,
+    roles: input.session.roles || [],
+    developmentResult: input.session.stageResults.length > 0
+      ? {
+        summary: input.session.stageResults[input.session.stageResults.length - 1].summary,
+        artifactRefs: input.session.stageResults[input.session.stageResults.length - 1].artifacts.map((path) => ({ path })),
+      }
+      : undefined,
+    testResult: input.stage === 'code_development'
+      ? {
+        status: input.finalAction === 'revise' ? 'failed' : 'blocked',
+        summary: input.reason,
+        artifactRefs: artifactRefs.filter((ref) => ref.label?.includes('test-result') || ref.label === 'repair-evidence'),
+      }
+      : undefined,
+    reviewResults: [],
+    arbitrationResult: {
+      action: input.finalAction,
+      summary: input.reason,
+      artifactRefs: [{ path: roleNextRoundPath, label: 'next-round-input' }],
+    },
+    openIssues,
+    nextRoundBrief,
+    finalAction: input.finalAction,
+  })
+
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
+  await writeFile(roleRoundPath, JSON.stringify(roundResult, null, 2), 'utf-8')
+  await writeFile(roleOpenIssuesPath, buildLoopRoleOpenIssuesMarkdown(openIssues), 'utf-8')
+  await writeFile(roleNextRoundPath, buildLoopNextRoundMarkdown({
+    session: input.session,
+    stage: input.stage,
+    reason: input.reason,
+    nextRoundBrief,
+    finalAction: input.finalAction,
+  }), 'utf-8')
+  await appendFile(roleArtifacts.messagesPath, `${serializeRoleMessage(createRoleMessage({
+    sessionId: input.session.id,
+    roundId,
+    fromRole: input.fromRole,
+    toRole: input.toRole || 'developer',
+    kind: 'next_round_input',
+    summary: nextRoundBrief,
+    artifactRefs,
+  }))}\n`, 'utf-8')
+  if (input.finalAction === 'requeue_or_blocked') {
+    await appendFile(roleArtifacts.messagesPath, `${serializeRoleMessage(createRoleMessage({
+      sessionId: input.session.id,
+      roundId,
+      fromRole: input.fromRole,
+      toRole: input.toRole || 'developer',
+      kind: 'blocked_for_human',
+      summary: input.reason,
+      artifactRefs: [{ path: roleNextRoundPath, label: 'next-round-input' }],
+    }))}\n`, 'utf-8')
+  }
+
+  input.session.artifacts.roleRoundsDir = roleArtifacts.roundsDir
+  input.session.artifacts.roleMessagesPath = roleArtifacts.messagesPath
+  input.session.artifacts.nextRoundInputPath = roleNextRoundPath
+
+  const knowledgeArtifacts = resolveLoopKnowledgeArtifacts(input.session)
+  if (knowledgeArtifacts) {
+    await updateTaskKnowledgeSummary(
+      knowledgeArtifacts,
+      'next-round-input',
+      buildLoopNextRoundMarkdown({
+        session: input.session,
+        stage: input.stage,
+        reason: input.reason,
+        nextRoundBrief,
+        finalAction: input.finalAction,
+      }),
+      `Next-round input updated for ${input.stage}.`
+    )
+  }
+
+  input.progressObserver?.onSessionUpdate?.(input.session)
+}
+
 function buildLoopCandidates(session: LoopSession, approved: boolean, summary: string, evidencePath?: string): KnowledgeCandidate[] {
   if (approved) {
     return [{
@@ -520,6 +790,23 @@ ${stage === 'code_development' && session.tddEligible && session.redTestConfirme
   : ''}
 
 Return markdown only.`
+}
+
+function buildStagePromptWithDocuments(
+  stage: LoopStageName,
+  session: LoopSession,
+  tasks: LoopTask[],
+  knowledgeContext: string,
+  documentPlan: DocumentPlan
+): string {
+  return [
+    buildStagePrompt(stage, session, tasks, knowledgeContext).trimEnd(),
+    '',
+    renderDocumentPlanForStage(stage, documentPlan),
+    '',
+    'When you generate repository documents, follow the document routing above exactly.',
+    'Return markdown only.',
+  ].join('\n')
 }
 
 async function evaluateStage(
@@ -633,44 +920,49 @@ async function saveLoopSessionWithObserver(
   observer?.onSessionUpdate?.(session)
 }
 
-function buildBranchName(prefix: string, cwd: string): string | null {
-  const normalizedPrefix = prefix.startsWith('sch/') ? prefix : `sch/${prefix.replace(/^\/+/, '')}`
-  const sanitizedPrefix = normalizedPrefix
-    .replace(/[^a-zA-Z0-9/_\-.]/g, '-')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^-+/, '')
-    .replace(/\/-+/g, '/')
-  const safePrefix = sanitizedPrefix.length > 0 ? sanitizedPrefix : 'sch'
-  const finalPrefix = safePrefix.endsWith('/') ? safePrefix : `${safePrefix}/`
-  const branchName = `${finalPrefix}${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19)}`
-  if (!/^[a-zA-Z0-9/_\-.]+$/.test(branchName) || branchName.length > 100) {
-    return null
-  }
-
-  try {
-    execFileSync('git', ['check-ref-format', '--branch', branchName], { stdio: 'pipe', cwd })
-  } catch {
-    return null
-  }
-
-  return branchName
+async function buildBranchName(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
+}): Promise<AutoBranchNameResult | null> {
+  return generateAutoBranchName({
+    prefix: input.prefix,
+    goal: input.goal,
+    prdPath: input.prdPath,
+    provider: input.provider,
+    cwd: input.cwd,
+    allowSemanticFallback: input.allowSemanticFallback,
+    fallbackReason: input.fallbackReason,
+  })
 }
 
-function ensureBranch(prefix: string, cwd: string): string | null {
+async function ensureBranch(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
+}): Promise<AutoBranchNameResult | null> {
   try {
-    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
   } catch {
     return null
   }
 
-  const branchName = buildBranchName(prefix, cwd)
-  if (!branchName) {
+  const branchNameResult = await buildBranchName(input)
+  if (!branchNameResult) {
     return null
   }
 
   try {
-    execFileSync('git', ['checkout', '-b', branchName], { stdio: 'pipe', cwd })
-    return branchName
+    execFileSync('git', ['checkout', '-b', branchNameResult.branchName], { stdio: 'pipe', cwd: input.cwd })
+    return branchNameResult
   } catch {
     return null
   }
@@ -774,69 +1066,76 @@ function ensureIgnoredWorktreeDirectory(cwd: string, directory: string): string 
     : `Worktree directory ${directory} is not ignored by git.`
 }
 
-function ensureWorktree(prefix: string, cwd: string): WorktreeResolution {
+async function ensureWorktree(input: {
+  prefix: string
+  cwd: string
+  goal: string
+  prdPath?: string
+  provider?: AIProvider
+  allowSemanticFallback?: boolean
+  fallbackReason?: string
+}): Promise<WorktreeResolution> {
   try {
-    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd })
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', cwd: input.cwd })
   } catch {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: 'worktree requires a git repository',
     }
   }
 
-  const ensuredDirectory = ensureWorktreeDirectory(cwd)
+  const ensuredDirectory = ensureWorktreeDirectory(input.cwd)
   if ('failureReason' in ensuredDirectory) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: ensuredDirectory.failureReason,
     }
   }
   const { directory } = ensuredDirectory
 
-  if (!isIgnoredPath(cwd, directory)) {
-    const ignoreFailure = ensureIgnoredWorktreeDirectory(cwd, directory)
-    if (!ignoreFailure) {
-      // Re-check against git after updating the local exclude list.
-    } else {
+  if (!isIgnoredPath(input.cwd, directory)) {
+    const ignoreFailure = ensureIgnoredWorktreeDirectory(input.cwd, directory)
+    if (ignoreFailure) {
       return {
         workspaceMode: 'current',
-        workspacePath: cwd,
+        workspacePath: input.cwd,
         failureReason: ignoreFailure,
       }
     }
   }
 
-  if (!isIgnoredPath(cwd, directory)) {
+  if (!isIgnoredPath(input.cwd, directory)) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: `Worktree directory ${directory} is not ignored by git.`,
     }
   }
 
-  const branchName = buildBranchName(prefix, cwd)
-  if (!branchName) {
+  const branchNameResult = await buildBranchName(input)
+  if (!branchNameResult) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: 'Failed to generate a valid worktree branch name.',
     }
   }
 
-  const workspacePath = join(cwd, directory, branchName)
+  const workspacePath = join(input.cwd, directory, branchNameResult.branchName)
   try {
-    execFileSync('git', ['worktree', 'add', workspacePath, '-b', branchName], { cwd, stdio: 'pipe' })
+    execFileSync('git', ['worktree', 'add', workspacePath, '-b', branchNameResult.branchName], { cwd: input.cwd, stdio: 'pipe' })
     return {
       workspaceMode: 'worktree',
       workspacePath,
-      worktreeBranch: branchName,
+      worktreeBranch: branchNameResult.branchName,
+      branchNameResult,
     }
   } catch (error) {
     return {
       workspaceMode: 'current',
-      workspacePath: cwd,
+      workspacePath: input.cwd,
       failureReason: error instanceof Error ? error.message : String(error),
     }
   }
@@ -891,6 +1190,79 @@ async function commitIfChanged(
   }
 }
 
+async function attemptLoopAutoMr(
+  session: LoopSession,
+  runtime: LoopRuntimeConfig,
+  notificationRouter: ReturnType<typeof createNotificationRouter>,
+  progressObserver: LoopProgressObserver | undefined,
+  prepared: LoopPreparedInput,
+  runCwd: string,
+): Promise<LoopMrAttemptResult | null> {
+  if (!runtime.autoMr || prepared.dryRun === true || !session.artifacts.mrResultPath) {
+    return null
+  }
+
+  let result: LoopMrAttemptResult
+
+  if (!session.branchName) {
+    result = {
+      status: 'manual_follow_up',
+      reason: 'No branch available for automatic MR creation.',
+      needsHuman: true,
+    }
+  } else {
+    result = await createLoopMr({
+      cwd: runCwd,
+      branchName: session.branchName,
+      goal: session.goal,
+    })
+  }
+
+  await writeFile(session.artifacts.mrResultPath, JSON.stringify(result, null, 2), 'utf-8')
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+    event: 'loop_auto_mr',
+    status: result.status,
+    ...(result.branchName ? { branch: result.branchName } : {}),
+    ...(result.url ? { url: result.url } : {}),
+    ...(result.reason ? { reason: result.reason } : {}),
+    needsHuman: result.needsHuman,
+  }, progressObserver)
+
+  if (result.status === 'created') {
+    await notificationRouter.dispatch({
+      type: 'loop_auto_mr_created',
+      sessionId: session.id,
+      title: 'Magpie loop MR created',
+      message: `开发已完成，MR 已创建：${result.url}`,
+      severity: 'info',
+      actionUrl: result.url,
+      metadata: {
+        branch: result.branchName,
+        url: result.url,
+      },
+      dedupeKey: `loop-auto-mr-created:${session.id}`,
+    })
+    return result
+  }
+
+  if (result.needsHuman) {
+    await notificationRouter.dispatch({
+      type: 'loop_auto_mr_manual_follow_up',
+      sessionId: session.id,
+      title: 'Magpie loop MR needs manual follow-up',
+      message: `开发已完成，但 MR 需要人工补做。原因：${result.reason || 'unknown'}`,
+      severity: 'warning',
+      metadata: {
+        branch: result.branchName,
+        reason: result.reason,
+      },
+      dedupeKey: `loop-auto-mr-manual:${session.id}`,
+    })
+  }
+
+  return result
+}
+
 async function markSessionFailed(
   session: LoopSession,
   stage: LoopStageName,
@@ -920,6 +1292,16 @@ async function markSessionFailed(
     ].filter((path): path is string => Boolean(path)),
     lastReliablePoint: session.lastReliablePoint,
   }, progressObserver)
+  await persistLoopNextRoundInput({
+    session,
+    stage,
+    stageIndex: session.currentStageIndex,
+    reason,
+    finalAction: 'requeue_or_blocked',
+    fromRole: 'architect',
+    toRole: 'developer',
+    progressObserver,
+  })
   await updateLoopState(session, {
     currentStage: stage,
     lastReliableResult: `Stage ${stage} failed.`,
@@ -1149,6 +1531,7 @@ async function runSingleStage(
   stage: LoopStageName,
   session: LoopSession,
   tasks: LoopTask[],
+  documentPlan: DocumentPlan,
   runtime: LoopRuntimeConfig,
   planner: AIProvider,
   executor: AIProvider,
@@ -1178,7 +1561,7 @@ async function runSingleStage(
   if (dryRun) {
     stageReport = `# Dry Run\n\nStage ${stage} skipped due to --dry-run.`
   } else {
-    const stagePrompt = buildStagePrompt(stage, session, tasks, knowledgeContext)
+    const stagePrompt = buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)
     const progressWrites: Array<Promise<void>> = []
     const response = await executor.chat([{ role: 'user', content: stagePrompt }], undefined, {
       onProgress: (event) => {
@@ -1348,7 +1731,10 @@ async function runSingleStage(
       const replanOutput = await planner.chat([{ role: 'user', content: replanPrompt }])
       await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
 
-      const retried = await executor.chat([{ role: 'user', content: `${buildStagePrompt(stage, session, tasks, knowledgeContext)}\n\nAdditional guidance:\n${replanOutput}` }])
+      const retried = await executor.chat([{
+        role: 'user',
+        content: `${buildStagePromptWithDocuments(stage, session, tasks, knowledgeContext, documentPlan)}\n\nAdditional guidance:\n${replanOutput}`,
+      }])
 
       if (stage === 'unit_mock_test') {
         const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
@@ -1422,6 +1808,7 @@ async function runSingleStage(
 async function continueSession(
   session: LoopSession,
   prepared: LoopPreparedInput,
+  documentPlan: DocumentPlan,
   runCwd: string,
   timeoutTier: ComplexityTier,
   runtime: LoopRuntimeConfig,
@@ -1485,6 +1872,16 @@ async function continueSession(
         session.currentStageIndex = i
         session.status = 'paused_for_human'
         session.updatedAt = new Date()
+        await persistLoopNextRoundInput({
+          session,
+          stage,
+          stageIndex: i,
+          reason: session.lastFailureReason || constraintCheck.reasons.join('; ') || 'constraints need revision',
+          finalAction: 'requeue_or_blocked',
+          fromRole: 'architect',
+          toRole: 'developer',
+          progressObserver,
+        })
         await saveLoopSessionWithObserver(stateManager, session, progressObserver)
         await appendObservedEvent(session.artifacts.eventsPath, session.id, {
           event: constraintCheck.status === 'blocked' ? 'constraints_blocked' : 'constraints_revision_required',
@@ -1560,6 +1957,16 @@ async function continueSession(
           session.status = 'paused_for_human'
           session.lastFailureReason = 'Red test unexpectedly passed before implementation.'
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: session.lastFailureReason,
+            finalAction: 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           await appendObservedEvent(session.artifacts.eventsPath, session.id, {
             event: 'red_test_not_confirmed',
@@ -1597,6 +2004,16 @@ async function continueSession(
           session.artifacts.repairOpenIssuesPath = repairArtifacts.openIssuesPath
           session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: summary,
+            finalAction: 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           await recordLoopFailure(session, stage, runCwd, stateManager, {
             reason: summary,
@@ -1686,6 +2103,7 @@ async function continueSession(
           stage,
           session,
           session.plan,
+          documentPlan,
           runtime,
           planner,
           executor,
@@ -1764,6 +2182,16 @@ async function continueSession(
     if (stageRun?.paused) {
       session.currentStageIndex = i
       session.status = 'paused_for_human'
+      await persistLoopNextRoundInput({
+        session,
+        stage,
+        stageIndex: i,
+        reason: completionStageResult?.summary || `Stage ${stage} paused for human confirmation.`,
+        finalAction: 'requeue_or_blocked',
+        fromRole: 'architect',
+        toRole: 'developer',
+        progressObserver,
+      })
       await saveLoopSessionWithObserver(stateManager, session, progressObserver)
       const pausedNotification = await dispatchStageNotification({
         config,
@@ -1898,6 +2326,16 @@ async function continueSession(
         if (repairState.blockedForHuman) {
           session.status = 'paused_for_human'
           session.updatedAt = new Date()
+          await persistLoopNextRoundInput({
+            session,
+            stage,
+            stageIndex: i,
+            reason: summary,
+            finalAction: greenTestResult.failureKind === 'quality' ? 'revise' : 'requeue_or_blocked',
+            fromRole: 'tester',
+            toRole: 'developer',
+            progressObserver,
+          })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
           return {
             status: 'paused',
@@ -1981,17 +2419,40 @@ async function continueSession(
   session.updatedAt = new Date()
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   await appendObservedEvent(session.artifacts.eventsPath, session.id, { event: 'loop_completed' }, progressObserver)
+  const mrResult = await attemptLoopAutoMr(
+    session,
+    runtime,
+    notificationRouter,
+    progressObserver,
+    prepared,
+    runCwd,
+  )
+
+  const finalSummaryLines = [
+    '# Final Summary',
+    '',
+    `Loop completed successfully for ${session.goal}.`,
+    '',
+    `Stages completed: ${session.stages.join(', ')}`,
+  ]
+  let finalReliableResult = `Loop completed successfully for ${session.goal}.`
+  let returnSummary = `Loop completed successfully. Session: ${session.id}`
+
+  if (mrResult?.status === 'created') {
+    finalSummaryLines.push('', `MR created: ${mrResult.url}`)
+    finalReliableResult = `Loop completed successfully for ${session.goal}. MR created: ${mrResult.url}`
+    returnSummary = `Loop completed successfully. MR created: ${mrResult.url}`
+  } else if (mrResult?.needsHuman) {
+    finalSummaryLines.push('', `MR needs manual follow-up: ${mrResult.reason || 'unknown reason'}`)
+    finalReliableResult = `Loop completed successfully for ${session.goal}. MR needs manual follow-up.`
+    returnSummary = 'Loop completed successfully. MR 需要人工补做。'
+  }
+
   await finalizeLoopKnowledge(
     session,
     true,
-    [
-      '# Final Summary',
-      '',
-      `Loop completed successfully for ${session.goal}.`,
-      '',
-      `Stages completed: ${session.stages.join(', ')}`,
-    ].join('\n'),
-    `Loop completed successfully for ${session.goal}.`,
+    finalSummaryLines.join('\n'),
+    finalReliableResult,
     session.artifacts.planPath,
     'Loop completed successfully.'
   )
@@ -2007,7 +2468,7 @@ async function continueSession(
 
   return {
     status: 'completed',
-    summary: `Loop completed successfully. Session: ${session.id}`,
+    summary: returnSummary,
     session,
   }
 }
@@ -2040,6 +2501,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     loopRuntime.executorModel = routingDecision.execution.model || routingDecision.execution.tool || loopRuntime.executorModel
     loopRuntime.executorAgent = routingDecision.execution.agent
   }
+  applyLoopRoleBindingOverrides(config.capabilities.loop, loopRuntime)
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
@@ -2066,6 +2528,22 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     executorModel: loopRuntime.executorModel,
     executorAgent: loopRuntime.executorAgent,
   }), config)
+  const shouldPrepareAutoBranchProvider = prepared.dryRun !== true
+    && (loopRuntime.autoCommit || (routingDecision?.tier || prepared.complexity) === 'complex')
+  let autoBranchProvider: AIProvider | undefined
+  let autoBranchProviderError: string | undefined
+  if (loopRuntime.branchNamingEnabled && shouldPrepareAutoBranchProvider) {
+    try {
+      autoBranchProvider = createConfiguredProvider(resolveAutoBranchProviderBinding({
+        tool: loopRuntime.branchNamingTool,
+        model: loopRuntime.branchNamingModel,
+        agent: loopRuntime.branchNamingAgent,
+      }), config)
+    } catch (error) {
+      autoBranchProviderError = error instanceof Error ? error.message : String(error)
+      ctx.logger.warn(`[loop] Auto branch naming degraded: ${autoBranchProviderError}`)
+    }
+  }
 
   const stateManager = new StateManager(ctx.cwd)
   await stateManager.initLoopSessions()
@@ -2075,9 +2553,47 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
+  const mrResultPath = join(sessionDir, 'mr-result.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
+  const roleArtifacts = getRoleArtifactPaths(sessionDir)
+  const roleRoster = buildLoopRoleRoster(loopRuntime)
 
   await mkdir(sessionDir, { recursive: true })
+  let branchName: string | undefined
+  let branchNameResult: AutoBranchNameResult | undefined
+  let workspaceMode: 'current' | 'worktree' = 'current'
+  let workspacePath = ctx.cwd
+  let worktreeFailureReason: string | undefined
+  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
+  if (shouldUseWorktree) {
+    const worktree = await ensureWorktree({
+      prefix: loopRuntime.autoBranchPrefix,
+      cwd: ctx.cwd,
+      goal: prepared.goal,
+      prdPath: prepared.prdPath,
+      provider: autoBranchProvider,
+      allowSemanticFallback: loopRuntime.branchNamingEnabled,
+      fallbackReason: autoBranchProviderError,
+    })
+    workspaceMode = worktree.workspaceMode
+    workspacePath = worktree.workspacePath
+    branchName = worktree.worktreeBranch
+    branchNameResult = worktree.branchNameResult
+    worktreeFailureReason = worktree.failureReason
+  }
+  const seededDocumentPlan = ctx.metadata?.documentPlan as DocumentPlan | undefined
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: workspacePath,
+    sessionDir,
+    capability: 'loop',
+    sessionId,
+    goal: prepared.goal,
+    prdPath: prepared.prdPath,
+    stages: loopRuntime.stages,
+    provider: planner,
+    seedPlan: seededDocumentPlan,
+  })
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
   const knowledgeArtifacts = await createTaskKnowledge({
     sessionDir,
     capability: 'loop',
@@ -2102,6 +2618,20 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     planningContextBlock
   )
   await writeFile(planPath, JSON.stringify(tasks, null, 2), 'utf-8')
+  await writeFile(roleArtifacts.rolesPath, JSON.stringify(roleRoster, null, 2), 'utf-8')
+  const initialRoleMessage = roleRoster.some((role) => role.roleId === 'architect')
+    && roleRoster.some((role) => role.roleId === 'developer')
+    ? `${serializeRoleMessage(createRoleMessage({
+      sessionId,
+      roundId: 'round-1',
+      fromRole: 'architect',
+      toRole: 'developer',
+      kind: 'plan_request',
+      summary: `Loop plan generated for ${tasks.length} task(s).`,
+      artifactRefs: [{ path: planPath, label: 'loop-plan' }],
+    }))}\n`
+    : ''
+  await writeFile(roleArtifacts.messagesPath, initialRoleMessage, 'utf-8')
   await updateTaskKnowledgeSummary(
     knowledgeArtifacts,
     'plan',
@@ -2127,18 +2657,6 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     ].join('\n'),
   })
 
-  let branchName: string | undefined
-  let workspaceMode: 'current' | 'worktree' = 'current'
-  let workspacePath = ctx.cwd
-  let worktreeFailureReason: string | undefined
-  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
-  if (shouldUseWorktree) {
-    const worktree = ensureWorktree(loopRuntime.autoBranchPrefix, ctx.cwd)
-    workspaceMode = worktree.workspaceMode
-    workspacePath = worktree.workspacePath
-    branchName = worktree.worktreeBranch
-    worktreeFailureReason = worktree.failureReason
-  }
   let reusedCurrentBranch = false
   if (loopRuntime.autoCommit && prepared.dryRun !== true && workspaceMode !== 'worktree' && !worktreeFailureReason) {
     const currentBranch = loopRuntime.reuseCurrentBranch
@@ -2148,7 +2666,16 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       branchName = currentBranch
       reusedCurrentBranch = true
     } else {
-      branchName = ensureBranch(loopRuntime.autoBranchPrefix, ctx.cwd) || undefined
+      branchNameResult = await ensureBranch({
+        prefix: loopRuntime.autoBranchPrefix,
+        cwd: ctx.cwd,
+        goal: prepared.goal,
+        prdPath: prepared.prdPath,
+        provider: autoBranchProvider,
+        allowSemanticFallback: loopRuntime.branchNamingEnabled,
+        fallbackReason: autoBranchProviderError,
+      }) || undefined
+      branchName = branchNameResult?.branchName
     }
   }
   const humanConfirmationPath = resolve(workspacePath, loopRuntime.humanConfirmationFile)
@@ -2166,6 +2693,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     plan: tasks,
     stageResults: [],
     humanConfirmations: [],
+    roles: roleRoster,
     branchName,
     routingTier: routingDecision?.tier,
     selectedComplexity: prepared.complexity || routingDecision?.tier,
@@ -2181,6 +2709,11 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       planPath,
       humanConfirmationPath,
       ...resolveWorkflowFailureArtifacts(ctx.cwd, 'loop', sessionId),
+      mrResultPath,
+      documentPlanPath,
+      roleRosterPath: roleArtifacts.rolesPath,
+      roleMessagesPath: roleArtifacts.messagesPath,
+      roleRoundsDir: roleArtifacts.roundsDir,
       ...knowledgeArtifacts,
       ...(routingDecision ? { routingDecisionPath } : {}),
     },
@@ -2188,11 +2721,19 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
   await appendObservedEvent(eventsPath, session.id, { event: 'loop_started', goal: prepared.goal }, progressObserver)
+  if (autoBranchProviderError) {
+    await appendObservedEvent(eventsPath, session.id, {
+      event: 'auto_branch_naming_degraded',
+      reason: autoBranchProviderError,
+    }, progressObserver)
+  }
   if (workspaceMode === 'worktree') {
     await appendObservedEvent(eventsPath, session.id, {
       event: 'worktree_created',
       workspacePath,
       branch: branchName,
+      ...(branchNameResult?.source ? { source: branchNameResult.source } : {}),
+      ...(branchNameResult?.slug ? { slug: branchNameResult.slug } : {}),
     }, progressObserver)
   }
   if (worktreeFailureReason) {
@@ -2217,6 +2758,14 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       event: 'auto_commit_branch_reused',
       branch: branchName,
     }, progressObserver)
+  } else if (branchNameResult) {
+    await appendObservedEvent(eventsPath, session.id, {
+      event: 'auto_branch_named',
+      branch: branchNameResult.branchName,
+      source: branchNameResult.source,
+      slug: branchNameResult.slug,
+      ...(branchNameResult.reason ? { reason: branchNameResult.reason } : {}),
+    }, progressObserver)
   }
   if (loopRuntime.autoCommit && prepared.dryRun !== true && !branchName) {
     ctx.logger.warn('[loop] Auto-commit disabled because branch creation failed; changes will remain on the current branch.')
@@ -2229,6 +2778,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   return continueSession(
     session,
     prepared,
+    documentPlan,
     workspacePath,
     prepared.complexity || routingDecision?.tier || 'standard',
     loopRuntime,
@@ -2308,6 +2858,20 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   } else if (resumeComplexity) {
     session.selectedComplexity = resumeComplexity
   }
+  applyLoopRoleBindingOverrides(config.capabilities.loop, loopRuntime)
+  const roleArtifacts = getRoleArtifactPaths(session.artifacts.sessionDir)
+  const roleRoster = buildLoopRoleRoster(loopRuntime)
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
+  await writeFile(roleArtifacts.rolesPath, JSON.stringify(roleRoster, null, 2), 'utf-8')
+  try {
+    await readFile(roleArtifacts.messagesPath, 'utf-8')
+  } catch {
+    await writeFile(roleArtifacts.messagesPath, '', 'utf-8')
+  }
+  session.roles = roleRoster
+  session.artifacts.roleRosterPath = roleArtifacts.rolesPath
+  session.artifacts.roleMessagesPath = roleArtifacts.messagesPath
+  session.artifacts.roleRoundsDir = roleArtifacts.roundsDir
   if (Number.isFinite(prepared.maxIterations)) {
     loopRuntime.maxIterations = prepared.maxIterations as number
   }
@@ -2351,12 +2915,35 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     await writeFile(session.artifacts.planPath, JSON.stringify(session.plan, null, 2), 'utf-8')
   }
 
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: session.artifacts.workspacePath || ctx.cwd,
+    sessionDir: session.artifacts.sessionDir,
+    capability: 'loop',
+    sessionId: session.id,
+    goal: session.goal,
+    prdPath: session.prdPath,
+    stages: session.stages,
+    provider: planner,
+    existingPlanPath: session.artifacts.documentPlanPath,
+  })
+  session.artifacts.documentPlanPath = documentPlanPath
+
   const resumeCheckpointError = validateResumeCheckpoint(session)
   if (resumeCheckpointError) {
     session.status = 'paused_for_human'
     session.currentLoopState = 'blocked_for_human'
     session.lastFailureReason = resumeCheckpointError
     session.updatedAt = new Date()
+    await persistLoopNextRoundInput({
+      session,
+      stage: session.stages[session.currentStageIndex] || session.stages[0] || 'prd_review',
+      stageIndex: session.currentStageIndex,
+      reason: resumeCheckpointError,
+      finalAction: 'requeue_or_blocked',
+      fromRole: 'architect',
+      toRole: 'developer',
+      progressObserver,
+    })
     await saveLoopSessionWithObserver(stateManager, session, progressObserver)
     await recordLoopFailure(session, session.stages[session.currentStageIndex] || 'code_development', session.artifacts.workspacePath || ctx.cwd, stateManager, {
       reason: resumeCheckpointError,
@@ -2446,6 +3033,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   return continueSession(
     session,
     prepared,
+    documentPlan,
     session.artifacts.workspacePath || ctx.cwd,
     resumeComplexity || 'standard',
     loopRuntime,

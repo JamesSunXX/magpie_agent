@@ -185,6 +185,235 @@ describe('session dashboard', () => {
     expect(result.continue[0]?.resumeCommand).toEqual(['harness', 'resume', 'harness-1'])
   })
 
+  it('builds harness round summaries and selected detail from persisted role rounds', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+    const roleRoundsDir = join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1', 'rounds')
+
+    mkdirSync(roleRoundsDir, { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-1', 'session.json'), JSON.stringify({
+      id: 'harness-1',
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'in_progress',
+      currentStage: 'reviewing',
+      summary: 'Running review cycle 2.',
+      artifacts: {
+        roleRoundsDir,
+        eventsPath: '/tmp/workflow/events.jsonl',
+      },
+    }), 'utf-8')
+
+    writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
+      finalAction: 'revise',
+      nextRoundBrief: 'Fix rollback handling before rerun.',
+      roles: [
+        { roleId: 'developer', roleType: 'developer', displayName: 'developer' },
+        { roleId: 'reviewer-1', roleType: 'reviewer', displayName: 'security' },
+        { roleId: 'reviewer-2', roleType: 'reviewer', displayName: 'qa' },
+        { roleId: 'arbitrator', roleType: 'arbitrator', displayName: 'arbitrator' },
+      ],
+      reviewResults: [
+        { reviewerRoleId: 'reviewer-1', passed: false, summary: 'Missing rollback handling.' },
+        { reviewerRoleId: 'reviewer-2', passed: true, summary: 'No additional risks.' },
+      ],
+      arbitrationResult: {
+        action: 'revise',
+        summary: 'Need another cycle after rollback fixes.',
+      },
+      openIssues: [
+        { title: 'Missing rollback handling', severity: 'high', sourceRole: 'reviewer-1' },
+      ],
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+    const harnessCard = result.recent[0]
+
+    expect(harnessCard).toMatchObject({ capability: 'harness', status: 'in_progress' })
+    expect(harnessCard.detail).toContain('reviewing')
+    expect(harnessCard.detail).toContain('1=revise')
+    expect(harnessCard.detail).toContain('dev+2 reviewers+arbitrator')
+    expect(harnessCard.detail).toContain('revise: reviewer-1: Missing rollback handling')
+    expect(harnessCard.detail).toContain('Fix rollback handling before rerun.')
+    expect(harnessCard.selectedDetail).toEqual({
+      participants: 'developer, 2 reviewers, arbitrator',
+      reviewerSummaries: [
+        'security: revise - Missing rollback handling.',
+        'qa: pass - No additional risks.',
+      ],
+      arbitration: 'Decision: revise - Need another cycle after rollback fixes.',
+      nextStep: 'Fix rollback handling before rerun.',
+    })
+  })
+
+  it('uses default approved wording when a harness round has no explicit next-step brief', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+    const roleRoundsDir = join(repoDir, '.magpie', 'sessions', 'harness', 'harness-2', 'rounds')
+
+    mkdirSync(roleRoundsDir, { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-2', 'session.json'), JSON.stringify({
+      id: 'harness-2',
+      capability: 'harness',
+      title: 'Release checkout v2',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'completed',
+      currentStage: 'completed',
+      summary: 'Approved.',
+      artifacts: {
+        roleRoundsDir,
+      },
+    }), 'utf-8')
+
+    writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
+      finalAction: 'approved',
+      roles: [
+        { roleId: 'developer', roleType: 'developer', displayName: 'developer' },
+        { roleId: 'tester', roleType: 'tester', displayName: 'tester' },
+        { roleId: 'reviewer-1', roleType: 'reviewer', displayName: 'release-reviewer' },
+        { roleId: 'arbitrator', roleType: 'arbitrator', displayName: 'arbitrator' },
+      ],
+      reviewResults: [
+        { reviewerRoleId: 'reviewer-1', passed: true, summary: 'Looks ready to ship.' },
+      ],
+      arbitrationResult: {
+        action: 'approved',
+        summary: 'Approved for rollout.',
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+    const harnessCard = result.recent[0]
+
+    expect(harnessCard.detail).toContain('dev+test+1 reviewer+arbitrator')
+    expect(harnessCard.detail).toContain('approved: reviewer-1: Looks ready to ship.')
+    expect(harnessCard.detail).toContain('No further action.')
+    expect(harnessCard.selectedDetail).toEqual({
+      participants: 'developer, tester, 1 reviewer, arbitrator',
+      reviewerSummaries: ['release-reviewer: pass - Looks ready to ship.'],
+      arbitration: 'Decision: approved - Approved for rollout.',
+      nextStep: 'No further action.',
+    })
+  })
+
+  it('surfaces graph approvals, blockers, and likely next runnable nodes for harness sessions', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+    const sessionDir = join(repoDir, '.magpie', 'sessions', 'harness', 'harness-graph-1')
+    const graphPath = join(sessionDir, 'graph.json')
+
+    mkdirSync(sessionDir, { recursive: true })
+
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: 'harness-graph-1',
+      capability: 'harness',
+      title: 'Checkout graph',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'blocked',
+      currentStage: 'reviewing',
+      summary: 'Waiting for release approval.',
+      artifacts: {
+        graphPath,
+      },
+    }), 'utf-8')
+
+    writeFileSync(graphPath, JSON.stringify({
+      version: 1,
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'active',
+      approvalGates: [],
+      rollup: {
+        total: 4,
+        pending: 1,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 1,
+        completed: 1,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'design-api',
+          title: 'Design API',
+          goal: 'Lock the API contract',
+          type: 'feature',
+          dependencies: [],
+          state: 'completed',
+          riskMarkers: [],
+          approvalGates: [],
+        },
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          goal: 'Approve release',
+          type: 'approval',
+          dependencies: ['design-api'],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [
+            {
+              gateId: 'approve-release',
+              label: 'Approve release',
+              scope: 'before_dispatch',
+              status: 'pending',
+            },
+          ],
+          statusReason: 'Waiting for node approval: Approve release',
+        },
+        {
+          id: 'deploy-ui',
+          title: 'Deploy UI',
+          goal: 'Deploy checkout UI',
+          type: 'feature',
+          dependencies: ['release-approval'],
+          state: 'blocked',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Blocked by dependency: release-approval',
+        },
+        {
+          id: 'announce',
+          title: 'Announce rollout',
+          goal: 'Tell the team rollout started',
+          type: 'feature',
+          dependencies: ['deploy-ui'],
+          state: 'pending',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for dependencies: deploy-ui',
+        },
+      ],
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+    const harnessCard = result.continue[0]
+
+    expect(harnessCard.detail).toContain('graph ready=0 waiting=1 blocked=1')
+    expect(harnessCard.graphPath).toBe(graphPath)
+    expect(harnessCard.selectedDetail).toMatchObject({
+      graphSummary: 'checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1',
+      attention: [
+        'Approval needed: release-approval - Approve release. Waiting for node approval: Approve release After approval: release-approval',
+        'Blocked: deploy-ui - Blocked by dependency: release-approval',
+      ],
+      readyNow: 'No nodes are ready right now.',
+      recommendedAction: 'Recommend approving release-approval first. Immediate unlock: release-approval.',
+      recommendedCommand: 'magpie harness approve harness-graph-1 --node release-approval --gate approve-release',
+    })
+  })
+
   it('loads repo-local sessions when launched from a nested directory', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const nestedDir = join(repoDir, 'packages', 'feature')

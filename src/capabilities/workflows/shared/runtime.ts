@@ -11,6 +11,7 @@ import { decideRecovery } from '../../../core/failures/recovery-policy.js'
 import type { FailureFactInput, FailureRecord } from '../../../core/failures/types.js'
 
 export type WorkflowCapability =
+  | 'loop'
   | 'issue-fix'
   | 'docs-sync'
   | 'post-merge-regression'

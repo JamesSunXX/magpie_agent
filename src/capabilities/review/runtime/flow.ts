@@ -1,6 +1,8 @@
 import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
+import { readdirSync, statSync, existsSync } from 'fs'
+import { join, relative } from 'path'
 import type { Reviewer, ReviewerStatus } from '../../../core/debate/types.js'
 import { loadConfig } from '../../../platform/config/loader.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
@@ -32,6 +34,25 @@ export function resolveContextProvider(tool?: string, model?: string): string {
   if (candidate === 'gemini') return 'gemini-cli'
   if (candidate === 'claude') return 'claude-code'
   return candidate
+}
+
+export function resolveReviewerSupportBinding(
+  base: { tool?: string; model?: string; agent?: string },
+  solo?: { tool?: string; model?: string; agent?: string } | null
+): { tool?: string; model?: string; agent?: string } {
+  if (!solo) {
+    return {
+      tool: base.tool,
+      model: base.model,
+      agent: base.agent,
+    }
+  }
+
+  return {
+    tool: solo.tool,
+    model: solo.model,
+    agent: solo.agent,
+  }
 }
 
 function buildSystemPromptWithContext(basePrompt: string, provider: string): string {
@@ -109,18 +130,26 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
           // Get both staged and unstaged changes
           const diff = filterDiff(execSync('git diff HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
           if (!diff.trim()) {
-            // No uncommitted changes, fall back to last commit
-            spinner.text = 'No uncommitted changes, getting last commit...'
-            const lastCommitDiff = filterDiff(execSync('git diff HEAD~1 HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
-            if (!lastCommitDiff.trim()) {
-              spinner.fail('No changes found')
-              console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
-              commandExit(0)
+            // No uncommitted changes in root repo, check nested git repos (submodules / embedded repos)
+            spinner.text = 'Checking nested git repositories...'
+            const nestedDiff = collectNestedGitDiffs(config.defaults.diff_exclude)
+            if (nestedDiff.trim()) {
+              localDiff = nestedDiff
+              spinner.succeed(`Found changes in nested git repositories (${nestedDiff.split('\n').length} lines)`)
+            } else {
+              // No nested changes either, fall back to last commit
+              spinner.text = 'No uncommitted changes, getting last commit...'
+              const lastCommitDiff = filterDiff(execSync('git diff HEAD~1 HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
+              if (!lastCommitDiff.trim()) {
+                spinner.fail('No changes found')
+                console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
+                commandExit(0)
+              }
+              localDiff = lastCommitDiff
+              reviewingLastCommit = true
+              const commitMsg = execSync('git log -1 --pretty=%s', { encoding: 'utf-8' }).trim()
+              spinner.succeed(`Reviewing last commit: "${commitMsg}" (${lastCommitDiff.split('\n').length} lines)`)
             }
-            localDiff = lastCommitDiff
-            reviewingLastCommit = true
-            const commitMsg = execSync('git log -1 --pretty=%s', { encoding: 'utf-8' }).trim()
-            spinner.succeed(`Reviewing last commit: "${commitMsg}" (${lastCommitDiff.split('\n').length} lines)`)
           } else {
             localDiff = diff
             spinner.succeed(`Found local changes (${diff.split('\n').length} lines)`)
@@ -328,19 +357,31 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       // When only one reviewer is selected, use its model for analyzer/summarizer/contextGatherer
       // When multiple reviewers are selected, use the original config models
       const soloBinding = selectedIds.length === 1 ? config.reviewers[selectedIds[0]] : null
+      const summarizerBinding = resolveReviewerSupportBinding(config.summarizer, soloBinding)
+      const analyzerBinding = resolveReviewerSupportBinding(config.analyzer, soloBinding)
+      const contextBinding = soloBinding
+        ? resolveReviewerSupportBinding({
+          model: config.contextGatherer?.model || config.analyzer.model,
+          agent: config.contextGatherer?.agent,
+        }, soloBinding)
+        : {
+          tool: undefined,
+          model: config.contextGatherer?.model || config.analyzer.model,
+          agent: config.contextGatherer?.agent,
+        }
 
       // Create summarizer
       const summarizer: Reviewer = {
         id: 'summarizer',
         provider: createConfiguredProvider({
           logicalName: 'summarizer',
-          tool: soloBinding?.tool || config.summarizer.tool,
-          model: soloBinding?.model || config.summarizer.model,
-          agent: soloBinding?.agent || config.summarizer.agent,
+          tool: summarizerBinding.tool,
+          model: summarizerBinding.model,
+          agent: summarizerBinding.agent,
         }, config),
         systemPrompt: buildSystemPromptWithContext(
           config.summarizer.prompt,
-          resolveContextProvider(soloBinding?.tool || config.summarizer.tool, soloBinding?.model || config.summarizer.model)
+          resolveContextProvider(summarizerBinding.tool, summarizerBinding.model)
         )
       }
 
@@ -349,13 +390,13 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         id: 'analyzer',
         provider: createConfiguredProvider({
           logicalName: 'analyzer',
-          tool: soloBinding?.tool || config.analyzer.tool,
-          model: soloBinding?.model || config.analyzer.model,
-          agent: soloBinding?.agent || config.analyzer.agent,
+          tool: analyzerBinding.tool,
+          model: analyzerBinding.model,
+          agent: analyzerBinding.agent,
         }, config),
         systemPrompt: buildSystemPromptWithContext(
           config.analyzer.prompt,
-          resolveContextProvider(soloBinding?.tool || config.analyzer.tool, soloBinding?.model || config.analyzer.model)
+          resolveContextProvider(analyzerBinding.tool, analyzerBinding.model)
         )
       }
 
@@ -364,13 +405,12 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       const contextEnabled = !options.skipContext && (config.contextGatherer?.enabled !== false)
 
       if (contextEnabled) {
-        const contextModel = soloBinding?.model || config.contextGatherer?.model || config.analyzer.model
         contextGatherer = new ContextGatherer({
           provider: createConfiguredProvider({
             logicalName: 'contextGatherer',
-            tool: soloBinding?.tool,
-            model: contextModel,
-            agent: config.contextGatherer?.agent,
+            tool: contextBinding.tool,
+            model: contextBinding.model,
+            agent: contextBinding.agent,
           }, config),
           language: config.defaults.language,
           options: {
@@ -766,4 +806,47 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
       process.removeListener('SIGINT', sigintHandler)
     }
   })
+}
+
+/**
+ * Scan for nested git repositories (submodules or embedded repos) and collect
+ * their uncommitted diffs. Each diff section is prefixed with the relative path
+ * so reviewers can tell which sub-repo the changes belong to.
+ */
+function collectNestedGitDiffs(diffExclude?: string[]): string {
+  const rootDir = process.cwd()
+  const nested: string[] = []
+
+  function walk(dir: string, depth: number) {
+    if (depth > 3) return
+    let entries: string[]
+    try { entries = readdirSync(dir) } catch { return }
+    for (const entry of entries) {
+      if (entry === 'node_modules' || entry === 'vendor' || entry === 'dist' || entry === '.git') continue
+      const full = join(dir, entry)
+      let st
+      try { st = statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (existsSync(join(full, '.git'))) {
+        // Found a nested git repo
+        try {
+          const diff = execSync('git diff HEAD', { cwd: full, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 })
+          if (diff.trim()) {
+            const rel = relative(rootDir, full)
+            const filtered = filterDiff(diff, diffExclude)
+            if (filtered.trim()) {
+              // Rewrite paths in diff to include the sub-repo prefix
+              const prefixed = filtered.replace(/^(diff --git a\/)(.+?)( b\/)(.+)/gm, `$1${rel}/$2$3${rel}/$4`)
+              nested.push(`# Nested repo: ${rel}\n${prefixed}`)
+            }
+          }
+        } catch { /* not a valid git repo or no commits */ }
+      } else {
+        walk(full, depth + 1)
+      }
+    }
+  }
+
+  walk(rootDir, 0)
+  return nested.join('\n')
 }

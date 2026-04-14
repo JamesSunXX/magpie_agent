@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { CommandPreview } from '../../src/tui/components/command-preview.js'
 import { Section } from '../../src/tui/components/common.js'
 import { Dashboard, getVisibleSessionRows } from '../../src/tui/components/dashboard.js'
+import { GraphWorkbench } from '../../src/tui/components/graph-workbench.js'
 import { RunView } from '../../src/tui/components/run-view.js'
 import { TaskWizard } from '../../src/tui/components/task-wizard.js'
 import { getTaskDefinition } from '../../src/tui/tasks.js'
@@ -119,6 +120,156 @@ describe('TUI components', () => {
 
     expect(normalizedText(element)).toContain('Repo review')
     expect(normalizedText(element)).toContain('review-1')
+  })
+
+  it('renders the selected harness summary when a harness session is focused', () => {
+    const element = Dashboard({
+      selectedIndex: 5,
+      sessions: {
+        continue: [],
+        recent: [
+          {
+            id: 'harness-1',
+            capability: 'harness',
+            title: 'Deliver checkout v2',
+            detail: 'reviewing · 1=revise · dev+2 reviewers+arbitrator · revise: reviewer-1: Missing rollback handling · Fix rollback handling before rerun.',
+            selectedDetail: {
+              participants: 'developer, 2 reviewers, arbitrator',
+              reviewerSummaries: [
+                'security: revise - Missing rollback handling.',
+                'qa: pass - No additional risks.',
+              ],
+              arbitration: 'Decision: revise - Need another cycle after rollback fixes.',
+              nextStep: 'Fix rollback handling before rerun.',
+              graphSummary: 'checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1',
+              attention: [
+                'Approval needed: release-approval - Approve release. Waiting for node approval: Approve release. After approval: release-approval',
+                'Blocked: deploy-ui - Blocked by dependency: release-approval',
+              ],
+              readyNow: 'No nodes are ready right now.',
+              recommendedAction: 'Recommend approving release-approval first. Immediate unlock: release-approval.',
+              recommendedCommand: 'magpie harness approve harness-1 --node release-approval --gate approve-release',
+            },
+            status: 'in_progress',
+            updatedAt: new Date('2026-03-19T11:00:00.000Z'),
+            resumeCommand: ['harness', 'attach', 'harness-1'],
+            artifactPaths: [],
+          },
+        ],
+      },
+      health: {
+        items: [],
+      },
+    })
+
+    expect(normalizedText(element)).toContain('Participants: developer, 2 reviewers, arbitrator')
+    expect(normalizedText(element)).toContain('security: revise - Missing rollback handling.')
+    expect(normalizedText(element)).toContain('Decision: revise - Need another cycle after rollback fixes.')
+    expect(normalizedText(element)).toContain('Next: Fix rollback handling before rerun.')
+    expect(normalizedText(element)).toContain('Graph: checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1')
+    expect(normalizedText(element)).toContain('Approval needed: release-approval - Approve release. Waiting for node approval: Approve release. After approval: release-approval')
+    expect(normalizedText(element)).toContain('Blocked: deploy-ui - Blocked by dependency: release-approval')
+    expect(normalizedText(element)).toContain('Ready now: No nodes are ready right now.')
+    expect(normalizedText(element)).toContain('Recommend: Recommend approving release-approval first. Immediate unlock: release-approval.')
+    expect(normalizedText(element)).toContain('Command: magpie harness approve harness-1 --node release-approval --gate approve-release')
+  })
+
+  it('renders the graph workbench panels with selected node detail, actions, attention, and events', () => {
+    const element = GraphWorkbench({
+      workbench: {
+        graph: {
+          sessionId: 'harness-graph-1',
+          graphId: 'checkout-v2',
+          title: 'Checkout V2',
+          status: 'active',
+          rollup: {
+            ready: 0,
+            waitingApproval: 1,
+            blocked: 1,
+          },
+        },
+        nodes: [
+          {
+            id: 'design-api',
+            title: 'Design API',
+            type: 'feature',
+            state: 'completed',
+            approvalPending: false,
+          },
+          {
+            id: 'release-approval',
+            title: 'Release approval',
+            type: 'approval',
+            state: 'waiting_approval',
+            statusReason: 'Waiting for node approval: Approve release',
+            approvalPending: true,
+          },
+        ],
+        selectedNodeId: 'release-approval',
+        selectedNode: {
+          id: 'release-approval',
+          title: 'Release approval',
+          type: 'approval',
+          state: 'waiting_approval',
+          statusReason: 'Waiting for node approval: Approve release',
+          dependencies: ['design-api'],
+          approvalPending: true,
+          latestSummary: 'Implementation is ready. Waiting for release approval.',
+          nextStep: 'Ask the operator to approve the release gate.',
+          unresolvedIssues: [],
+          linkedExecution: {
+            capability: 'loop',
+            sessionId: 'loop-ship',
+            status: 'paused_for_human',
+            summary: 'Implementation is ready. Waiting for release approval.',
+            nextStep: 'Ask the operator to approve the release gate.',
+            command: ['loop', 'resume', 'loop-ship'],
+          },
+        },
+        actions: [
+          {
+            id: 'approve:node:release-approval:approve-release',
+            kind: 'approve',
+            label: 'Approve release',
+            description: 'Approve pending gate for release-approval.',
+            command: ['harness', 'approve', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+            requiresConfirmation: false,
+          },
+          {
+            id: 'jump:loop:loop-ship',
+            kind: 'jump',
+            label: 'Open linked loop session',
+            description: 'Resume linked loop session loop-ship.',
+            command: ['loop', 'resume', 'loop-ship'],
+            requiresConfirmation: false,
+          },
+        ],
+        attention: [
+          'Waiting approval: release-approval - Waiting for node approval: Approve release',
+          'Blocked: deploy-ui - Blocked by dependency: release-approval',
+        ],
+        events: [
+          {
+            id: 'evt-1',
+            timestamp: '2026-03-19T12:00:00.000Z',
+            summary: 'Approval rejected for release-approval.',
+          },
+        ],
+      },
+      focusedPanel: 'actions',
+      selectedActionIndex: 0,
+    })
+
+    expect(normalizedText(element)).toContain('Graph Overview')
+    expect(normalizedText(element)).toContain('Checkout V2')
+    expect(normalizedText(element)).toContain('release-approval')
+    expect(normalizedText(element)).toContain('Selected Node Detail')
+    expect(normalizedText(element)).toContain('Implementation is ready. Waiting for release approval.')
+    expect(normalizedText(element)).toContain('Linked session: loop loop-ship paused_for_human')
+    expect(normalizedText(element)).toContain('Actions')
+    expect(normalizedText(element)).toContain('Approve pending gate for release-approval.')
+    expect(normalizedText(element)).toContain('Attention and Events')
+    expect(normalizedText(element)).toContain('Approval rejected for release-approval.')
   })
 
   it('keeps session lists compact while browsing long history', () => {

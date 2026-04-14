@@ -67,6 +67,8 @@ describe('Config Init', () => {
     expect(content).toContain('stage_failed: [feishu_team]')
     expect(content).toContain('stage_paused: [feishu_team]')
     expect(content).toContain('stage_resumed: [feishu_team]')
+    expect(content).toContain('loop_auto_mr_created: [feishu_team]')
+    expect(content).toContain('loop_auto_mr_manual_follow_up: [feishu_team]')
   })
 
   it('should include planning and operations integration templates', () => {
@@ -149,11 +151,14 @@ integrations:
     expect(upgraded).toContain('harness:')
     expect(upgraded).toContain('validator_checks:')
     expect(upgraded).toContain('execution_timeout:')
+    expect(upgraded).toContain('mr:')
+    expect(upgraded).toContain('enabled: false')
     expect(upgraded).toContain('default_ms: 900000')
     expect(result.changes).toContain('Converted reviewers.codex-cli from model: codex-cli to tool: codex.')
     expect(result.changes).toContain('Added capabilities.routing defaults.')
     expect(result.changes).toContain('Added capabilities.harness defaults.')
     expect(result.changes).toContain('Added capabilities.loop execution timeout defaults.')
+    expect(result.changes).toContain('Added capabilities.loop MR defaults.')
     expect(result.changes).toContain('Filled missing integrations.notifications defaults.')
     expect(result.warnings).toContain('Review repo-specific verification commands before applying this config to a non-Node repository.')
   })
@@ -196,6 +201,8 @@ integrations:
     expect(result.content).toContain('stage_resumed:')
     expect(result.content).toContain('validator_checks:')
     expect(result.content).toContain('execution_timeout:')
+    expect(result.content).toContain('mr:')
+    expect(result.content).toContain('enabled: false')
   })
 
   it('upgrades legacy codex-cli route bindings so the config can still load', () => {
@@ -365,6 +372,8 @@ integrations:
     expect(content).toContain('timeout_ms: 120000')
     expect(content).toContain('max_buffer_bytes: 2048')
     expect(content).toContain('execution_timeout:')
+    expect(content).toContain('mr:')
+    expect(content).toContain('enabled: false')
     expect(content).toContain('default_ms: 900000')
     expect(content).toContain('complexity_multiplier:')
   })

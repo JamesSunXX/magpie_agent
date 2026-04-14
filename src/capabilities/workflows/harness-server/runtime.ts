@@ -13,6 +13,13 @@ import { getRepoMagpieDir } from '../../../platform/paths.js'
 import { createOperationsProviders } from '../../../platform/integrations/operations/factory.js'
 import { TmuxOperationsProvider } from '../../../platform/integrations/operations/providers/tmux.js'
 import {
+  loadHarnessGraphArtifact,
+  persistHarnessGraphArtifact,
+  reconcileHarnessGraphArtifact,
+  summarizeHarnessGraphReadiness,
+  type HarnessGraphArtifact,
+} from './graph.js'
+import {
   appendWorkflowFailure,
   appendWorkflowEvent,
   generateWorkflowId,
@@ -109,6 +116,11 @@ function normalizeHarnessPriority(priority: HarnessPriority | undefined): Harnes
   return priority || 'normal'
 }
 
+interface EnqueueHarnessSessionOptions {
+  configPath?: string
+  graph?: HarnessGraphArtifact
+}
+
 function sessionPriority(session: WorkflowSession): HarnessPriority {
   return normalizeHarnessPriority(toQueuedEvidence(session)?.input.priority)
 }
@@ -195,7 +207,11 @@ export async function isHarnessServerRunning(cwd: string): Promise<boolean> {
   }
 }
 
-export async function enqueueHarnessSession(cwd: string, input: HarnessInput, options?: { configPath?: string }): Promise<WorkflowSession> {
+export async function enqueueHarnessSession(
+  cwd: string,
+  input: HarnessInput,
+  options?: EnqueueHarnessSessionOptions
+): Promise<WorkflowSession> {
   const normalizedInput: HarnessInput = {
     ...input,
     priority: normalizeHarnessPriority(input.priority),
@@ -217,6 +233,11 @@ export async function enqueueHarnessSession(cwd: string, input: HarnessInput, op
       ...resolveWorkflowFailureArtifacts(cwd, 'harness', id),
     },
     evidence: makeQueuedEvidence(normalizedInput, options?.configPath),
+  }
+
+  if (options?.graph) {
+    const graphPath = await persistHarnessGraphArtifact(cwd, id, options.graph)
+    session.artifacts.graphPath = graphPath
   }
 
   await persistWorkflowSession(cwd, session)
@@ -262,21 +283,50 @@ export async function recoverInterruptedHarnessSessions(cwd: string): Promise<vo
   }
 }
 
-function selectNextRunnableSession(sessions: WorkflowSession[]): WorkflowSession | null {
+async function refreshGraphSessionReadiness(cwd: string, session: WorkflowSession): Promise<boolean> {
+  if (!session.artifacts.graphPath) {
+    return true
+  }
+
+  const graph = await loadHarnessGraphArtifact(cwd, session.id)
+  if (!graph) {
+    return true
+  }
+
+  const reconciled = reconcileHarnessGraphArtifact(graph)
+  await persistHarnessGraphArtifact(cwd, session.id, reconciled)
+
+  if (session.status === 'waiting_retry') {
+    return true
+  }
+
+  const readiness = summarizeHarnessGraphReadiness(reconciled)
+  return readiness.readyNodeIds.length > 0
+}
+
+async function selectNextRunnableSession(cwd: string, sessions: WorkflowSession[]): Promise<WorkflowSession | null> {
   const now = Date.now()
-  const candidates = sessions.filter((session) => {
+  const candidates: WorkflowSession[] = []
+
+  for (const session of sessions) {
     if (session.status === 'queued' || session.status === 'waiting_next_cycle') {
-      return true
+      if (await refreshGraphSessionReadiness(cwd, session)) {
+        candidates.push(session)
+      }
+      continue
     }
     if (session.status !== 'waiting_retry') {
-      return false
+      continue
     }
     const queued = toQueuedEvidence(session)
     if (!queued?.runtime.nextRetryAt) {
-      return true
+      candidates.push(session)
+      continue
     }
-    return new Date(queued.runtime.nextRetryAt).getTime() <= now
-  })
+    if (new Date(queued.runtime.nextRetryAt).getTime() <= now) {
+      candidates.push(session)
+    }
+  }
 
   if (candidates.length === 0) {
     return null
@@ -319,7 +369,7 @@ export async function runHarnessServerOnce(input: {
 }> {
   await recoverInterruptedHarnessSessions(input.cwd)
   const sessions = await listWorkflowSessions(input.cwd, 'harness')
-  const next = selectNextRunnableSession(sessions)
+  const next = await selectNextRunnableSession(input.cwd, sessions)
   if (!next) {
     await updateServerHeartbeat(input.cwd, { currentSessionId: undefined, status: 'running' })
     return { processed: false }

@@ -1,3 +1,5 @@
+import type { RoleBinding } from '../../core/roles/types.js'
+
 export interface ProviderConfig {
   api_key: string
   base_url?: string
@@ -146,6 +148,17 @@ export interface LoopHumanConfirmationConfig {
   poll_interval_sec?: number
 }
 
+export interface LoopMrConfig {
+  enabled?: boolean
+}
+
+export interface LoopBranchNamingConfig {
+  enabled?: boolean
+  tool?: string
+  model?: string
+  agent?: string
+}
+
 export interface LoopConfig {
   enabled?: boolean
   planner_tool?: string
@@ -154,6 +167,10 @@ export interface LoopConfig {
   executor_tool?: string
   executor_model?: string
   executor_agent?: string
+  role_bindings?: {
+    architect?: RoleBinding
+    developer?: RoleBinding
+  }
   auto_commit_model?: string
   stages?: LoopStageName[]
   confidence_threshold?: number
@@ -162,6 +179,8 @@ export interface LoopConfig {
   auto_commit?: boolean
   reuse_current_branch?: boolean
   auto_branch_prefix?: string
+  branch_naming?: LoopBranchNamingConfig
+  mr?: LoopMrConfig
   human_confirmation?: LoopHumanConfirmationConfig
   commands?: LoopCommandsConfig
   execution_timeout?: LoopExecutionTimeoutConfig
@@ -170,6 +189,12 @@ export interface LoopConfig {
 export interface HarnessConfig {
   default_reviewers?: string[]
   validator_checks?: ModelRouteBinding[]
+  role_bindings?: {
+    developer?: RoleBinding
+    arbitrator?: RoleBinding
+    reviewers?: RoleBinding[]
+    named_reviewers?: Record<string, RoleBinding>
+  }
 }
 
 export type NotificationEventType =
@@ -183,6 +208,8 @@ export type NotificationEventType =
   | 'loop_resumed'
   | 'loop_failed'
   | 'loop_completed'
+  | 'loop_auto_mr_created'
+  | 'loop_auto_mr_manual_follow_up'
 
 export interface StageAiNotificationConfig {
   enabled?: boolean

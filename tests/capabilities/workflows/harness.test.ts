@@ -529,7 +529,7 @@ integrations:
     expect(reviewCalls[0]?.reviewers).toBe('alpha,beta')
     expect(validatorProviderMocks.codex).toHaveBeenCalled()
     expect(validatorProviderMocks.claw).not.toHaveBeenCalled()
-    expect(validatorProviderMocks.kiro).not.toHaveBeenCalled()
+    expect(validatorProviderMocks.kiro).toHaveBeenCalledTimes(1)
     expect(harnessConfig.reviewers.alpha?.prompt).toBe('alpha review')
     expect(harnessConfig.reviewers.beta?.prompt).toBe('beta review')
     expect(harnessConfig.capabilities.issue_fix?.planner_model).toBe('mock')
@@ -1446,6 +1446,117 @@ integrations:
     }
   })
 
+  it('records a revise decision even when adjudication fallbacks include unrelated JSON snippets first', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-noisy-adjudication-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-noisy' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({
+          parsedIssues: [{
+            severity: 'high',
+            category: 'logic',
+            file: 'src/core.ts',
+            title: 'Blocking issue',
+            description: 'Must fix before release',
+            raisedBy: ['harness-1'],
+            descriptions: ['Must fix before release'],
+          }],
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '## 讨论总结\n\n请参考附加材料。',
+          analysis: 'Reading file completed.\n[1.1]',
+          messages: [
+            { content: '```json\n[1.1]\n```' },
+            { content: '```json\n{"decision":"revise","rationale":"Need a real staged-content verification.","requiredActions":["Verify staged content instead of the working tree."]}\n```' },
+          ],
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'issue-fix') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'issue-fix-noisy' } },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        maxCycles: 1,
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      const rounds = JSON.parse(readFileSync(result.session!.artifacts.roundsPath, 'utf-8')) as Array<{
+        modelDecision: string
+        modelRationale: string
+        nextRoundBrief: string
+      }>
+      expect(rounds[0]).toMatchObject({
+        modelDecision: 'revise',
+        modelRationale: 'Need a real staged-content verification.',
+        nextRoundBrief: 'Verify staged content instead of the working tree.',
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('falls back to kiro when claude auth is not usable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-auth-fallback-'))
     const magpieHome = join(dir, '.magpie-home')
@@ -2049,6 +2160,156 @@ integrations:
       expect(harnessConfig).toContain('executor_model: kiro')
       expect(harnessConfig).toContain('executor_agent: dev')
       expect(harnessConfig).toContain('strict release gate reviewer')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('falls back to kiro inside review cycle when gemini reviewer hits a known model error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-review-gemini-fallback-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  gemini-cli:
+    enabled: true
+  kiro:
+    enabled: true
+  codex:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  route-gemini:
+    tool: gemini
+    prompt: fast path review
+  route-codex:
+    tool: codex
+    prompt: strict review
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  issue_fix:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  harness:
+    default_reviewers:
+      - route-gemini
+      - route-codex
+  quality:
+    unitTestEval:
+      enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const reviewCalls: string[] = []
+    const discussCalls: string[] = []
+    let reviewAttempt = 0
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-review-fallback' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        reviewAttempt += 1
+        const reviewers = (input as { options: { reviewers: string } }).options.reviewers
+        reviewCalls.push(reviewers)
+        if (reviewAttempt === 1) {
+          throw new Error('Gemini CLI exited with code 1: Error when talking to Gemini API ModelNotFoundError: Requested entity was not found. code: 404')
+        }
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const reviewers = (input as { options: { reviewers: string } }).options.reviewers
+        discussCalls.push(reviewers)
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'issue-fix') {
+        throw new Error('issue-fix should not run when fallback review succeeds')
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Recover review cycle when gemini reviewer is unavailable.',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        maxCycles: 1,
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(reviewCalls).toHaveLength(2)
+      expect(reviewCalls[0]).toBe('route-gemini,route-codex')
+      expect(reviewCalls[1]).not.toBe(reviewCalls[0])
+      expect(reviewCalls[1]).toContain('kiro')
+      expect(discussCalls[0]).toBe(reviewCalls[1])
+      const harnessConfig = readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')
+      expect(harnessConfig).toContain('route-gemini-fallback-kiro')
+      expect(harnessConfig).toContain('tool: kiro')
+      expect(harnessConfig).toContain('agent: code-reviewer')
+      const roleRound = readJson<{
+        reviewResults?: Array<{ reviewerRoleId: string }>
+      }>(join(result.session!.artifacts.roleRoundsDir!, 'cycle-1.json'))
+      expect(roleRound.reviewResults?.map((item) => item.reviewerRoleId)).toContain('route-gemini-fallback-kiro')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

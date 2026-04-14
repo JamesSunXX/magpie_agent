@@ -4,7 +4,7 @@ import crypto from 'crypto'
 import { createInterface } from 'readline'
 import type { MagpieConfigV2 } from '../../../platform/config/types.js'
 import type { Reviewer } from '../../../core/debate/types.js'
-import type { ReviewFocus } from '../../../core/debate/repo-orchestrator.js'
+import type { FeatureRoundCompletion, ReviewFocus } from '../../../core/debate/repo-orchestrator.js'
 import { RepoOrchestrator } from '../../../core/debate/repo-orchestrator.js'
 import { RepoScanner } from '../../../core/repo/index.js'
 import type { RepoStats } from '../../../core/repo/index.js'
@@ -15,6 +15,11 @@ import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import { FeatureAnalyzer } from '../../../feature-analyzer/index.js'
 import { FeaturePlanner } from '../../../planner/feature-planner.js'
 import { FOCUS_OPTIONS } from '../runtime/utils.js'
+import {
+  superviseIncompleteReviewSessions,
+  superviseReviewSession,
+  verifyReviewSessionReadyForSummary,
+} from './supervisor.js'
 
 export interface FeatureChoice {
   id: string
@@ -122,6 +127,7 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
   const cwd = process.cwd()
   const stateManager = new StateManager(cwd)
   await stateManager.init()
+  await superviseIncompleteReviewSessions(stateManager)
 
   // Check for incomplete sessions
   if (!options.reanalyze) {
@@ -263,6 +269,13 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
     }
   }
 
+  session.checkpointing = {
+    stateDir: stateManager.getReviewStateDir(session.id),
+    totalRounds: selectedFeatureIds.length,
+    lastCompletedRound: 0,
+    lastVerifiedRound: 0,
+  }
+
   await stateManager.saveSession(session)
 
   // Execute review
@@ -275,6 +288,8 @@ export async function resumeReview(
   config: MagpieConfigV2,
   spinner: ReturnType<typeof ora>
 ): Promise<void> {
+  const supervision = await superviseReviewSession(stateManager, session)
+  const resumedSession = supervision.session
   const analysis = await stateManager.loadFeatureAnalysis()
   if (!analysis) {
     console.log(chalk.red('Error: Feature analysis not found. Please start a new review.'))
@@ -286,9 +301,9 @@ export async function resumeReview(
   await scanner.scanFiles()
   const stats = scanner.getStats()
 
-  console.log(chalk.cyan(`\nResuming review from feature ${session.progress.currentFeatureIndex + 1}...`))
+  console.log(chalk.cyan(`\nResuming review from round ${resumedSession.progress.currentFeatureIndex + 1}...`))
 
-  await executeFeatureReview(session, analysis, stateManager, config, stats, spinner)
+  await executeFeatureReview(resumedSession, analysis, stateManager, config, stats, spinner)
 }
 
 export async function executeFeatureReview(
@@ -322,10 +337,26 @@ export async function executeFeatureReview(
   )
 
   if (remainingSteps.length === 0) {
+    const readyForSummary = await verifyReviewSessionReadyForSummary(stateManager, session)
+    if (!readyForSummary) {
+      session.status = 'paused'
+      session.updatedAt = new Date()
+      await stateManager.saveSession(session)
+      console.log(chalk.yellow('\nReview checkpoints are incomplete. Resume the session to rebuild the missing rounds before generating the final summary.'))
+      return
+    }
+
     // All features done — update status and generate report
     if (session.status !== 'completed') {
       session.status = 'completed'
       session.updatedAt = new Date()
+      session.checkpointing = {
+        stateDir: stateManager.getReviewStateDir(session.id),
+        totalRounds: session.config.selectedFeatures.length,
+        lastCompletedRound: session.config.selectedFeatures.length,
+        lastVerifiedRound: session.config.selectedFeatures.length,
+        finalSummaryVerifiedAt: new Date(),
+      }
       await stateManager.saveSession(session)
     }
     console.log(chalk.green('\nAll features already reviewed!'))
@@ -398,17 +429,41 @@ export async function executeFeatureReview(
       const globalTotal = session.config.selectedFeatures.length
       console.log(chalk.cyan(`\n[${globalIndex}/${globalTotal}] Reviewing ${step.name}...`))
     },
-    onFeatureComplete: async (featureId: string, result: FeatureReviewResult) => {
+    onFeatureComplete: async (completion: FeatureRoundCompletion) => {
+      await stateManager.saveReviewRoundCheckpoint(session.id, {
+        schemaVersion: 1,
+        sessionId: session.id,
+        roundNumber: completion.roundNumber,
+        featureId: completion.featureId,
+        featureName: completion.step.name,
+        status: 'completed',
+        origin: 'live',
+        focusAreas: session.config.focusAreas,
+        filePaths: completion.step.files.map((file) => file.relativePath),
+        reviewerOutputs: completion.reviewerOutputs,
+        result: completion.result,
+        completedAt: completion.result.reviewedAt,
+      })
+
       // Reload session from disk to avoid race conditions and ensure atomic updates
       const currentSession = await stateManager.loadSession(session.id)
       if (currentSession) {
         // Only add if not already completed (idempotent)
-        if (!currentSession.progress.completedFeatures.includes(featureId)) {
-          currentSession.progress.completedFeatures.push(featureId)
+        if (!currentSession.progress.completedFeatures.includes(completion.featureId)) {
+          currentSession.progress.completedFeatures.push(completion.featureId)
         }
-        currentSession.progress.featureResults[featureId] = result
+        currentSession.progress.featureResults[completion.featureId] = completion.result
         currentSession.progress.currentFeatureIndex = currentSession.progress.completedFeatures.length
         currentSession.updatedAt = new Date()
+        currentSession.checkpointing = {
+          stateDir: stateManager.getReviewStateDir(session.id),
+          totalRounds: session.config.selectedFeatures.length,
+          lastCompletedRound: completion.roundNumber,
+          lastVerifiedRound: completion.roundNumber,
+          ...(currentSession.checkpointing?.finalSummaryVerifiedAt ? {
+            finalSummaryVerifiedAt: currentSession.checkpointing.finalSummaryVerifiedAt,
+          } : {}),
+        }
 
         await stateManager.saveSession(currentSession)
 
@@ -416,13 +471,22 @@ export async function executeFeatureReview(
         Object.assign(session, currentSession)
       } else {
         // Fallback: save current state if reload failed
-        session.progress.completedFeatures.push(featureId)
-        session.progress.featureResults[featureId] = result
+        session.progress.completedFeatures.push(completion.featureId)
+        session.progress.featureResults[completion.featureId] = completion.result
         session.progress.currentFeatureIndex++
         session.updatedAt = new Date()
+        session.checkpointing = {
+          stateDir: stateManager.getReviewStateDir(session.id),
+          totalRounds: session.config.selectedFeatures.length,
+          lastCompletedRound: completion.roundNumber,
+          lastVerifiedRound: completion.roundNumber,
+          ...(session.checkpointing?.finalSummaryVerifiedAt ? {
+            finalSummaryVerifiedAt: session.checkpointing.finalSummaryVerifiedAt,
+          } : {}),
+        }
         await stateManager.saveSession(session)
       }
-      console.log(chalk.green(`  ✓ ${featureId} complete (${result.issues.length} issues) - Progress saved`))
+      console.log(chalk.green(`  ✓ ${completion.featureId} complete (${completion.result.issues.length} issues) - Progress saved`))
     },
     onMessage: (reviewerId: string, chunk: string) => {
       process.stdout.write(chunk)
@@ -440,10 +504,24 @@ export async function executeFeatureReview(
 
   try {
     const result = await orchestrator.executeFeaturePlan(remainingPlan, cwd.split('/').pop() || 'repo', stats)
+    const readyForSummary = await verifyReviewSessionReadyForSummary(stateManager, session)
+    if (!readyForSummary) {
+      session.status = 'paused'
+      session.updatedAt = new Date()
+      await stateManager.saveSession(session)
+      throw new Error('Review checkpoints are incomplete after execution; final summary was withheld.')
+    }
 
     // Mark session complete
     session.status = 'completed'
     session.updatedAt = new Date()
+    session.checkpointing = {
+      stateDir: stateManager.getReviewStateDir(session.id),
+      totalRounds: session.config.selectedFeatures.length,
+      lastCompletedRound: session.config.selectedFeatures.length,
+      lastVerifiedRound: session.config.selectedFeatures.length,
+      finalSummaryVerifiedAt: new Date(),
+    }
     await stateManager.saveSession(session)
 
     spinner.succeed('Review complete')

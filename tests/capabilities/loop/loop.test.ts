@@ -41,6 +41,8 @@ const providerMocks = vi.hoisted(() => ({
     config: unknown,
     actual: typeof import('../../../src/platform/providers/index.js')
   ) => AIProvider),
+  autoBranchResponse: 'branch: delivery-flow',
+  autoBranchFactoryError: null as string | null,
 }))
 
 vi.mock('../../../src/platform/integrations/planning/factory.js', () => ({
@@ -72,6 +74,16 @@ vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
   return {
     ...actual,
     createConfiguredProvider: vi.fn((input: ProviderBindingInput, config: unknown) => {
+      if (input.logicalName === 'capabilities.loop.auto_branch') {
+        if (providerMocks.autoBranchFactoryError) {
+          throw new Error(providerMocks.autoBranchFactoryError)
+        }
+        return {
+          name: 'mock-auto-branch',
+          chat: vi.fn().mockResolvedValue(providerMocks.autoBranchResponse),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
       if (providerMocks.factory) {
         return providerMocks.factory(input, config, actual)
       }
@@ -84,8 +96,11 @@ describe('loop capability', () => {
   afterEach(() => {
     knowledgeMocks.failPromote = false
     providerMocks.factory = null
+    providerMocks.autoBranchResponse = 'branch: delivery-flow'
+    providerMocks.autoBranchFactoryError = null
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('dispatches stage-aware notifications for entered and completed stages', async () => {
@@ -143,13 +158,20 @@ describe('loop capability', () => {
     expect(result.result.status).toBe('completed')
     expect(result.result.session).toBeDefined()
     expect(result.result.session?.stages).toEqual(['prd_review'])
+    expect(result.result.session?.roles?.map((role) => role.roleId)).toEqual(['architect', 'developer', 'tester'])
+    expect(result.result.session?.artifacts.roleRosterPath).toBeTruthy()
+    expect(result.result.session?.artifacts.roleMessagesPath).toBeTruthy()
+    expect(existsSync(result.result.session!.artifacts.roleRosterPath!)).toBe(true)
+    expect(readFileSync(result.result.session!.artifacts.roleMessagesPath!, 'utf-8')).toContain('"kind":"plan_request"')
     expect(result.result.session?.artifacts.knowledgeSchemaPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeIndexPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeLogPath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeStatePath).toBeTruthy()
     expect(result.result.session?.artifacts.knowledgeSummaryDir).toBeTruthy()
+    expect(result.result.session?.artifacts.documentPlanPath).toBeTruthy()
     expect(existsSync(result.result.session!.artifacts.knowledgeSchemaPath)).toBe(true)
     expect(existsSync(result.result.session!.artifacts.knowledgeStatePath!)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.documentPlanPath!)).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
@@ -203,6 +225,44 @@ describe('loop capability', () => {
     expect(events).not.toContain('"event":"human_confirmation_required"')
     expect(events).not.toContain('"event":"stage_paused"')
     expect(events).toContain('"event":"stage_completed"')
+  })
+
+  it('applies loop role binding overrides and persists the active role roster', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-role-bindings-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_tool: kiro\n    planner_model: mock\n    executor_tool: claw\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    role_bindings:\n      architect:\n        tool: codex\n      developer:\n        tool: codex\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner' || input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(result.result.session?.roles).toMatchObject([
+      { roleId: 'architect', binding: { tool: 'codex' } },
+      { roleId: 'developer', binding: { tool: 'codex' } },
+      { roleId: 'tester', binding: { tool: 'codex' } },
+    ])
+    expect(readFileSync(result.result.session!.artifacts.roleRosterPath!, 'utf-8')).toContain('"roleId": "architect"')
+    expect(readFileSync(result.result.session!.artifacts.roleRosterPath!, 'utf-8')).toContain('"tool": "codex"')
   })
 
   it('persists codex progress events to the loop event stream', async () => {
@@ -1264,7 +1324,45 @@ process.exit(result.status ?? 1)
 
     expect(result.result.status).toBe('completed')
     expect(executorCalls).toBe(0)
+    expect(result.result.session?.roles?.map((role) => role.roleId)).toEqual(['architect', 'developer', 'tester'])
+    expect(existsSync(result.result.session!.artifacts.roleRosterPath!)).toBe(true)
+    expect(result.result.session?.artifacts.roleMessagesPath).toBeTruthy()
     expect(readFileSync(session.artifacts.eventsPath, 'utf-8')).toContain('"event":"execution_retry_resumed"')
+  })
+
+  it('lists persisted loop sessions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-list-'))
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n`)
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession({
+      id: 'loop-list-1',
+      title: 'List me',
+      goal: 'List me',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['prd_review'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir: join(dir, '.magpie', 'sessions', 'loop', 'loop-list-1'),
+        eventsPath: join(dir, '.magpie', 'sessions', 'loop', 'loop-list-1', 'events.jsonl'),
+        planPath: join(dir, '.magpie', 'sessions', 'loop', 'loop-list-1', 'plan.json'),
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+      },
+    } as LoopSession)
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, { mode: 'list' }, ctx)
+
+    expect(result.result.status).toBe('listed')
+    expect(result.result.sessions?.map((session) => session.id)).toEqual(['loop-list-1'])
   })
 
   it('syncs loop plan artifacts to the planning router when configured', async () => {
@@ -1400,6 +1498,157 @@ process.exit(result.status ?? 1)
     expect(currentBranch).toBe(result.result.session?.branchName)
   })
 
+  it('uses the AI-generated branch slug and keeps the timestamp suffix', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchResponse = 'branch: admin-cancel-audit-sync'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-ai-branch-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: claw\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/admin-cancel-audit-sync-2026-04-13-05-47-26')
+    expect(currentBranch).toBe('sch/admin-cancel-audit-sync-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_named"')
+    expect(events).toContain('"source":"ai"')
+  })
+
+  it('falls back to a rule-based branch slug when the AI branch name is unusable', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchResponse = '这里不是分支名'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-fallback-branch-'))
+    mkdirSync(join(dir, 'docs', 'current', 'admin_backend'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'current', 'admin_backend', 'PRD.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: claw\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/admin-backend-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_named"')
+    expect(events).toContain('"source":"fallback"')
+    expect(events).toContain('"reason":"invalid_slug"')
+  })
+
+  it('falls back to a non-AI semantic branch name when branch naming provider setup fails', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+    providerMocks.autoBranchFactoryError = 'Unknown tool: nope'
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-bad-branch-tool-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: true\n      tool: nope\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/sample-prd-2026-04-13-05-47-26')
+    expect(events).toContain('"event":"auto_branch_naming_degraded"')
+    expect(events).toContain('"reason":"Unknown tool: nope"')
+    expect(events).toContain('"source":"fallback"')
+  })
+
+  it('uses the legacy timestamp-only branch name when semantic branch naming is disabled', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-13T05:47:26.000Z'))
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-branch-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    execSync('git init', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.email "bot@example.com"', { cwd: dir, stdio: 'pipe' })
+    execSync('git config user.name "bot"', { cwd: dir, stdio: 'pipe' })
+    writeFileSync(join(dir, 'README.md'), '# temp repo\n', 'utf-8')
+    execSync('git add README.md', { cwd: dir, stdio: 'pipe' })
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    branch_naming:\n      enabled: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: '补齐管理后台接口、控制面能力和数据面支撑',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBe('sch/2026-04-13-05-47-26')
+  })
+
   it('reuses the current feature branch for auto-commit when configured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-reuse-branch-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -1525,6 +1774,34 @@ process.exit(result.status ?? 1)
     expect(events).toContain('"event":"auto_commit_disabled"')
   })
 
+  it('disables auto-commit when the workspace is not a git repository', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-no-git-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(join(dir, 'pending-change.txt'), 'should stay uncommitted\n', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: true\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.branchName).toBeUndefined()
+    expect(events).toContain('"event":"auto_commit_disabled"')
+    expect(events).toContain('"reason":"branch_creation_failed"')
+  })
+
   it('rejects shell metacharacters in configured test commands', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-cmd-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -1550,6 +1827,37 @@ process.exit(result.status ?? 1)
   })
 
   it('creates an isolated worktree for complex runs and persists workspace metadata', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn(async (messages) => {
+            const prompt = String(messages.at(-1)?.content ?? '')
+            if (prompt.includes('Plan project document routing for this Magpie session.')) {
+              const repoRoot = prompt.match(/^Repository root: (.+)$/m)?.[1]?.trim()
+              return `\`\`\`json
+{
+  "mode": "project_docs",
+  "reasoningSources": ["${join(repoRoot || '', 'AGENTS.md')}"],
+  "formalDocsRoot": "${join(repoRoot || '', 'docs', 'guides')}",
+  "formalDocTargets": {
+    "trd": "${join(repoRoot || '', 'docs', 'guides', 'delivery-trd.md')}"
+  },
+  "confidence": 0.95
+}
+\`\`\``
+            }
+            if (prompt.includes('Evaluate this stage execution quality.')) {
+              return '{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"ok"}'
+            }
+            return actual.createConfiguredProvider(input, config as never).chat(messages)
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-worktree-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
     mkdirSync(join(dir, '.worktrees'), { recursive: true })
@@ -1580,6 +1888,12 @@ process.exit(result.status ?? 1)
     }, ctx)
 
     const afterBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: dir, encoding: 'utf-8' }).trim()
+    const documentPlan = JSON.parse(
+      readFileSync(result.result.session!.artifacts.documentPlanPath!, 'utf-8')
+    ) as { formalDocsRoot: string; formalDocTargets: { trd?: string } }
+    const normalizedFormalDocsRoot = documentPlan.formalDocsRoot.replace(/^\/private/, '')
+    const normalizedFormalTrdTarget = documentPlan.formalDocTargets.trd?.replace(/^\/private/, '')
+    const normalizedWorkspacePath = result.result.session!.artifacts.workspacePath!.replace(/^\/private/, '')
 
     expect(result.result.status).toBe('completed')
     expect(result.result.session?.artifacts.workspaceMode).toBe('worktree')
@@ -1588,6 +1902,8 @@ process.exit(result.status ?? 1)
     expect(result.result.session?.artifacts.worktreeBranch).toMatch(/^sch\//)
     expect(result.result.session?.branchName).toBe(result.result.session?.artifacts.worktreeBranch)
     expect(existsSync(join(result.result.session!.artifacts.workspacePath!, '.git'))).toBe(true)
+    expect(normalizedFormalDocsRoot).toBe(join(normalizedWorkspacePath, 'docs', 'guides'))
+    expect(normalizedFormalTrdTarget).toBe(join(normalizedWorkspacePath, 'docs', 'guides', 'delivery-trd.md'))
     expect(result.result.session?.artifacts.humanConfirmationPath).toBe(
       join(result.result.session!.artifacts.workspacePath!, 'human_confirmation.md')
     )

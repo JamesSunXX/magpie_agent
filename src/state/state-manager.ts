@@ -2,7 +2,15 @@
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { getMagpieHomeDir, getRepoCapabilitySessionsDir, getRepoSessionFile } from '../platform/paths.js'
-import type { ReviewSession, FeatureAnalysis, DiscussSession, TrdSession, LoopSession } from './types.js'
+import type {
+  ReviewSession,
+  FeatureAnalysis,
+  DiscussSession,
+  TrdSession,
+  LoopSession,
+  ReviewRoundCheckpoint,
+  ReviewRoundReviewerOutput,
+} from './types.js'
 
 async function mergePersistedLoopArtifacts(filePath: string, session: LoopSession): Promise<LoopSession> {
   try {
@@ -17,6 +25,33 @@ async function mergePersistedLoopArtifacts(filePath: string, session: LoopSessio
   }
 
   return session
+}
+
+function reviveReviewRoundReviewerOutput(data: ReviewRoundReviewerOutput & {
+  startedAt: string
+  completedAt: string
+}): ReviewRoundReviewerOutput {
+  return {
+    ...data,
+    startedAt: new Date(data.startedAt),
+    completedAt: new Date(data.completedAt),
+  }
+}
+
+function reviveReviewRoundCheckpoint(data: ReviewRoundCheckpoint & {
+  completedAt: string
+  result: ReviewRoundCheckpoint['result'] & { reviewedAt: string }
+  reviewerOutputs: Array<ReviewRoundReviewerOutput & { startedAt: string; completedAt: string }>
+}): ReviewRoundCheckpoint {
+  return {
+    ...data,
+    completedAt: new Date(data.completedAt),
+    reviewerOutputs: (data.reviewerOutputs || []).map(reviveReviewRoundReviewerOutput),
+    result: {
+      ...data.result,
+      reviewedAt: new Date(data.result.reviewedAt),
+    },
+  }
 }
 
 export class StateManager {
@@ -48,6 +83,9 @@ export class StateManager {
       // Convert date strings back to Date objects
       data.startedAt = new Date(data.startedAt)
       data.updatedAt = new Date(data.updatedAt)
+      if (data.checkpointing?.finalSummaryVerifiedAt) {
+        data.checkpointing.finalSummaryVerifiedAt = new Date(data.checkpointing.finalSummaryVerifiedAt)
+      }
       return data as ReviewSession
     } catch {
       return null
@@ -97,6 +135,44 @@ export class StateManager {
       // Sort by updatedAt descending (most recent first)
       sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       return sessions
+    } catch {
+      return []
+    }
+  }
+
+  getReviewStateDir(sessionId: string): string {
+    return join(this.magpieDir, 'state', sessionId)
+  }
+
+  async saveReviewRoundCheckpoint(sessionId: string, checkpoint: ReviewRoundCheckpoint): Promise<void> {
+    const dir = this.getReviewStateDir(sessionId)
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, `round_${checkpoint.roundNumber}.json`),
+      JSON.stringify(checkpoint, null, 2),
+      'utf-8'
+    )
+  }
+
+  async listReviewRoundCheckpoints(sessionId: string): Promise<ReviewRoundCheckpoint[]> {
+    try {
+      const dir = this.getReviewStateDir(sessionId)
+      const files = await readdir(dir)
+      const checkpoints = await Promise.all(
+        files
+          .filter((file) => /^round_\d+\.json$/.test(file))
+          .map(async (file) => {
+            const raw = await readFile(join(dir, file), 'utf-8')
+            return reviveReviewRoundCheckpoint(JSON.parse(raw) as ReviewRoundCheckpoint & {
+              completedAt: string
+              result: ReviewRoundCheckpoint['result'] & { reviewedAt: string }
+              reviewerOutputs: Array<ReviewRoundReviewerOutput & { startedAt: string; completedAt: string }>
+            })
+          })
+      )
+
+      checkpoints.sort((a, b) => a.roundNumber - b.roundNumber)
+      return checkpoints
     } catch {
       return []
     }

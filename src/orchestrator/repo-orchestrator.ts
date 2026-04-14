@@ -4,7 +4,7 @@ import type { Reviewer } from './types.js'
 import type { ReviewPlan, ReviewStep } from '../planner/types.js'
 import type { RepoReviewResult, ReviewIssue } from '../reporter/types.js'
 import type { RepoStats, FileInfo } from '../repo-scanner/types.js'
-import type { FeatureReviewResult } from '../state/types.js'
+import type { FeatureReviewResult, ReviewRoundReviewerOutput } from '../state/types.js'
 
 export type ReviewFocus = 'security' | 'performance' | 'architecture' | 'code-quality' | 'testing' | 'documentation'
 
@@ -14,11 +14,19 @@ export interface RepoOrchestratorOptions {
   onMessage?: (reviewerId: string, chunk: string) => void
   onDebate?: (issue: string, messages: string[]) => void
   focusAreas?: ReviewFocus[]
-  onFeatureComplete?: (featureId: string, result: FeatureReviewResult) => void
+  onFeatureComplete?: (completion: FeatureRoundCompletion) => void | Promise<void>
 }
 
 export interface FeatureRepoReviewResult extends RepoReviewResult {
   featureResults: Record<string, FeatureReviewResult>
+}
+
+export interface FeatureRoundCompletion {
+  featureId: string
+  roundNumber: number
+  step: ReviewStep & { featureId: string }
+  result: FeatureReviewResult
+  reviewerOutputs: ReviewRoundReviewerOutput[]
 }
 
 export class RepoOrchestrator {
@@ -85,7 +93,7 @@ export class RepoOrchestrator {
       this.options.onStepStart?.(step, i, plan.steps.length)
 
       const stepIssuesBefore = this.allIssues.length
-      await this.executeStep(step)
+      const reviewerOutputs = await this.executeStep(step)
       const stepIssuesAfter = this.allIssues.length
 
       const featureIssues = this.allIssues.slice(stepIssuesBefore, stepIssuesAfter)
@@ -97,7 +105,13 @@ export class RepoOrchestrator {
       }
 
       featureResults[step.featureId] = result
-      this.options.onFeatureComplete?.(step.featureId, result)
+      await this.options.onFeatureComplete?.({
+        featureId: step.featureId,
+        roundNumber: i + 1,
+        step,
+        result,
+        reviewerOutputs,
+      })
       this.options.onStepComplete?.(step, i)
     }
 
@@ -127,24 +141,40 @@ export class RepoOrchestrator {
     return response
   }
 
-  private async executeStep(step: ReviewStep): Promise<void> {
+  private async executeStep(step: ReviewStep): Promise<ReviewRoundReviewerOutput[]> {
     const fileList = step.files.map(f => f.relativePath).join('\n')
     const focusAreas = this.options.focusAreas || ['security', 'performance', 'code-quality']
     const focusText = this.getFocusInstructions(focusAreas)
     const prompt = `Review the following files in ${step.name}:\n${fileList}\n\n${focusText}\n\nAfter your analysis, output your findings as a structured JSON block:\n\`\`\`json\n{\n  "issues": [\n    {\n      "severity": "critical|high|medium|low|nitpick",\n      "file": "path/to/file",\n      "line": 42,\n      "title": "One-line summary",\n      "description": "Detailed explanation",\n      "suggestedFix": "What to do about it"\n    }\n  ],\n  "summary": "Brief overall assessment"\n}\n\`\`\`\nYou may include free-form discussion before the JSON block.`
+    const reviewerOutputs: ReviewRoundReviewerOutput[] = []
 
     for (const reviewer of this.reviewers) {
+      reviewer.provider.endSession?.()
+      reviewer.provider.startSession?.(`Magpie | repo-review | ${step.name} | ${reviewer.id}`)
       const messages: Message[] = [{ role: 'user', content: prompt }]
+      const startedAt = new Date()
       const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
       this.options.onMessage?.(reviewer.id, response)
 
       // Parse issues from response (try JSON first, then regex, then AI extraction)
+      const issueCountBefore = this.allIssues.length
       const issuesParsed = this.parseIssues(response)
       if (issuesParsed === 0) {
         // Fallback: use summarizer to extract issues from free-form text
         await this.extractIssuesWithAI(response)
       }
+      reviewerOutputs.push({
+        reviewerId: reviewer.id,
+        provider: reviewer.provider.name,
+        startedAt,
+        completedAt: new Date(),
+        output: response,
+        issuesParsed: this.allIssues.length - issueCountBefore,
+      })
+      reviewer.provider.endSession?.()
     }
+
+    return reviewerOutputs
   }
 
   /**

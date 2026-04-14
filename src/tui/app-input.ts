@@ -1,6 +1,6 @@
-import { buildCommandFromDraft, buildResumeCommand } from './command-builder.js'
+import { buildCommandDisplay, buildCommandFromDraft, buildResumeCommand } from './command-builder.js'
 import { TASKS } from './tasks.js'
-import type { AppState, SessionCard, TaskDraft, TaskField, TaskValue, TaskValues } from './types.js'
+import type { AppState, BuiltCommand, GraphWorkbenchAction, SessionCard, TaskDraft, TaskField, TaskValue, TaskValues } from './types.js'
 import { isDraftValid, reduceAppState } from './view-model.js'
 
 export interface InputKey {
@@ -77,7 +77,55 @@ function resetToDashboard(state: AppState): AppState {
     route: 'dashboard',
     activeTaskId: undefined,
     draft: undefined,
+    graphWorkbench: undefined,
     selectedIndex: 0,
+  }
+}
+
+function cycleWorkbenchPanel(
+  current: NonNullable<AppState['graphWorkbench']>['focusedPanel'],
+  direction: 1 | -1
+): NonNullable<AppState['graphWorkbench']>['focusedPanel'] {
+  const panels: Array<NonNullable<AppState['graphWorkbench']>['focusedPanel']> = ['overview', 'actions', 'events']
+  const currentIndex = panels.indexOf(current)
+  return panels[(currentIndex + direction + panels.length) % panels.length] || 'overview'
+}
+
+function cycleWorkbenchNode(state: AppState, direction: 1 | -1): AppState {
+  const workbench = state.graphWorkbench
+  const nodes = workbench?.data?.nodes || []
+  if (!workbench || nodes.length === 0) {
+    return state
+  }
+
+  const currentIndex = Math.max(0, nodes.findIndex((node) => node.id === workbench.selectedNodeId))
+  const nextIndex = (currentIndex + direction + nodes.length) % nodes.length
+
+  return {
+    ...state,
+    graphWorkbench: {
+      ...workbench,
+      selectedNodeId: nodes[nextIndex]?.id,
+      selectedActionIndex: 0,
+      pendingConfirmationActionId: undefined,
+    },
+  }
+}
+
+function cycleWorkbenchAction(state: AppState, direction: 1 | -1): AppState {
+  const workbench = state.graphWorkbench
+  const actionCount = workbench?.data?.actions.length || 0
+  if (!workbench || actionCount === 0) {
+    return state
+  }
+
+  return {
+    ...state,
+    graphWorkbench: {
+      ...workbench,
+      selectedActionIndex: (workbench.selectedActionIndex + direction + actionCount) % actionCount,
+      pendingConfirmationActionId: undefined,
+    },
   }
 }
 
@@ -119,6 +167,14 @@ export function handleDashboardInput(params: {
     setState((current) => reduceAppState(current, {
       type: 'task:selected',
       taskId: selected.taskId,
+    }))
+    return true
+  }
+
+  if (selected.card.capability === 'harness' && selected.card.graphPath) {
+    setState((current) => reduceAppState(current, {
+      type: 'graph:opened',
+      sessionId: selected.card.id,
     }))
     return true
   }
@@ -257,6 +313,114 @@ export function handleWizardInput(params: {
   return false
 }
 
+export function handleGraphWorkbenchInput(params: {
+  input: string
+  key: InputKey
+  state: AppState
+  refreshWorkbench: () => Promise<void>
+  openCommandPreview: (command: BuiltCommand) => void
+  runWorkbenchAction: (action: GraphWorkbenchAction) => void
+  setState: StateUpdater
+}): boolean {
+  const { input, key, refreshWorkbench, setState, state } = params
+  const workbench = state.graphWorkbench
+
+  if (!workbench) {
+    return false
+  }
+
+  if (key.escape) {
+    setState((current) => resetToDashboard(current))
+    return true
+  }
+
+  if (input === 'r') {
+    void refreshWorkbench()
+    return true
+  }
+
+  if (key.leftArrow) {
+    setState((current) => current.graphWorkbench
+      ? {
+          ...current,
+          graphWorkbench: {
+            ...current.graphWorkbench,
+            focusedPanel: cycleWorkbenchPanel(current.graphWorkbench.focusedPanel, -1),
+            pendingConfirmationActionId: undefined,
+          },
+        }
+      : current)
+    return true
+  }
+
+  if (key.rightArrow) {
+    setState((current) => current.graphWorkbench
+      ? {
+          ...current,
+          graphWorkbench: {
+            ...current.graphWorkbench,
+            focusedPanel: cycleWorkbenchPanel(current.graphWorkbench.focusedPanel, 1),
+            pendingConfirmationActionId: undefined,
+          },
+        }
+      : current)
+    return true
+  }
+
+  if (key.upArrow) {
+    setState((current) => current.graphWorkbench?.focusedPanel === 'actions'
+      ? cycleWorkbenchAction(current, -1)
+      : current.graphWorkbench?.focusedPanel === 'overview'
+        ? cycleWorkbenchNode(current, -1)
+        : current)
+    return true
+  }
+
+  if (key.downArrow) {
+    setState((current) => current.graphWorkbench?.focusedPanel === 'actions'
+      ? cycleWorkbenchAction(current, 1)
+      : current.graphWorkbench?.focusedPanel === 'overview'
+        ? cycleWorkbenchNode(current, 1)
+        : current)
+    return true
+  }
+
+  if (key.return && workbench.focusedPanel === 'actions') {
+    const action = workbench.data?.actions[workbench.selectedActionIndex]
+    if (!action) {
+      return true
+    }
+
+    if (action.kind === 'jump') {
+      params.openCommandPreview({
+        argv: [...action.command],
+        display: buildCommandDisplay(action.command),
+        summary: action.description,
+      })
+      return true
+    }
+
+    if (action.requiresConfirmation && workbench.pendingConfirmationActionId !== action.id) {
+      setState((current) => current.graphWorkbench
+        ? {
+            ...current,
+            graphWorkbench: {
+              ...current.graphWorkbench,
+              pendingConfirmationActionId: action.id,
+              message: `Press Enter again to confirm ${action.label.toLowerCase()}.`,
+            },
+          }
+        : current)
+      return true
+    }
+
+    params.runWorkbenchAction(action)
+    return true
+  }
+
+  return false
+}
+
 export function handlePreviewInput(params: {
   key: InputKey
   state: AppState
@@ -268,7 +432,7 @@ export function handlePreviewInput(params: {
   if (key.escape) {
     setState((current) => ({
       ...current,
-      route: current.draft ? 'wizard' : 'dashboard',
+      route: current.graphWorkbench ? 'graph-workbench' : current.draft ? 'wizard' : 'dashboard',
       selectedIndex: 0,
     }))
     return true
@@ -291,6 +455,15 @@ export function handleRunInput(params: {
 
   if (!key.escape || state.run?.status === 'running') {
     return false
+  }
+
+  if (state.graphWorkbench) {
+    setState((current) => ({
+      ...current,
+      route: 'graph-workbench',
+      selectedIndex: 0,
+    }))
+    return true
   }
 
   setState((current) => reduceAppState(current, {

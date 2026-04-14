@@ -148,6 +148,37 @@ integrations:
     expect(loadHarnessServerState(cwd)).resolves.toBeNull()
   })
 
+  it('persists a graph artifact alongside a queued harness session when provided', async () => {
+    const { createHarnessGraphArtifact, loadHarnessGraphArtifact } = await import('../../../src/capabilities/workflows/harness-server/graph.js')
+    const { enqueueHarnessSession } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+
+    const queued = await enqueueHarnessSession(cwd, {
+      goal: 'Ship checkout v2',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    }, {
+      graph: createHarnessGraphArtifact({
+        graphId: 'checkout-v2',
+        title: 'Checkout V2',
+        goal: 'Ship checkout v2',
+        nodes: [
+          { id: 'node-a', title: 'Design API', goal: 'Design API', type: 'feature' },
+          { id: 'node-b', title: 'Build UI', goal: 'Build UI', type: 'feature', dependencies: ['node-a'] },
+        ],
+      }),
+    })
+
+    const graph = await loadHarnessGraphArtifact(cwd, queued.id)
+
+    expect(queued.artifacts.graphPath).toBeTruthy()
+    expect(graph).toMatchObject({
+      graphId: 'checkout-v2',
+      rollup: {
+        total: 2,
+        pending: 2,
+      },
+    })
+  })
+
   it('summarizes queue state across runnable, retrying, and blocked sessions', async () => {
     const {
       enqueueHarnessSession,
@@ -301,6 +332,139 @@ integrations:
     const outcome = await runHarnessServerOnce({ cwd, configPath })
 
     expect(outcome.sessionId).toBe(urgent.id)
+  })
+
+  it('skips graph-backed sessions that still have no runnable nodes', async () => {
+    const {
+      createHarnessGraphArtifact,
+      loadHarnessGraphArtifact,
+    } = await import('../../../src/capabilities/workflows/harness-server/graph.js')
+    const {
+      enqueueHarnessSession,
+      runHarnessServerOnce,
+      saveHarnessServerState,
+    } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+
+    const blockedGraphSession = await enqueueHarnessSession(cwd, {
+      goal: 'Blocked graph',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+      priority: 'interactive',
+    }, {
+      graph: createHarnessGraphArtifact({
+        graphId: 'blocked-graph',
+        title: 'Blocked graph',
+        goal: 'Wait for dependencies',
+        approvalGates: [
+          {
+            gateId: 'confirm-graph',
+            label: 'Confirm graph',
+            scope: 'graph_confirmation',
+            status: 'pending',
+          },
+        ],
+        nodes: [
+          { id: 'node-a', title: 'Node A', goal: 'Node A', type: 'feature', state: 'pending' },
+          { id: 'node-b', title: 'Node B', goal: 'Node B', type: 'feature', dependencies: ['node-a'], state: 'pending' },
+        ],
+      }),
+    })
+    const runnable = await enqueueHarnessSession(cwd, {
+      goal: 'Plain queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+      priority: 'normal',
+    })
+    await saveHarnessServerState(cwd, {
+      serverId: 'server-1',
+      status: 'running',
+      startedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      executionHost: 'foreground',
+    })
+
+    runCapability.mockResolvedValue({
+      prepared: {} as never,
+      result: {
+        status: 'completed',
+        session: {
+          ...runnable,
+          status: 'completed',
+          currentStage: 'completed',
+          summary: 'Harness approved after 1 cycle(s).',
+        },
+      },
+      output: {
+        summary: 'Harness approved after 1 cycle(s).',
+      },
+    })
+
+    const outcome = await runHarnessServerOnce({ cwd, configPath })
+    const graph = await loadHarnessGraphArtifact(cwd, blockedGraphSession.id)
+
+    expect(outcome.sessionId).toBe(runnable.id)
+    expect(runCapability).toHaveBeenCalledTimes(1)
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'node-a', state: 'waiting_approval' }),
+      expect.objectContaining({ id: 'node-b', state: 'waiting_approval' }),
+    ]))
+  })
+
+  it('does not rerun completed graph sessions even when they have higher priority', async () => {
+    const {
+      createHarnessGraphArtifact,
+    } = await import('../../../src/capabilities/workflows/harness-server/graph.js')
+    const {
+      enqueueHarnessSession,
+      runHarnessServerOnce,
+      saveHarnessServerState,
+    } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+
+    await enqueueHarnessSession(cwd, {
+      goal: 'Completed graph',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+      priority: 'interactive',
+    }, {
+      graph: createHarnessGraphArtifact({
+        graphId: 'completed-graph',
+        title: 'Completed graph',
+        goal: 'Already done',
+        nodes: [
+          { id: 'node-a', title: 'Node A', goal: 'Node A', type: 'feature', state: 'completed' },
+        ],
+      }),
+    })
+    const queued = await enqueueHarnessSession(cwd, {
+      goal: 'Queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+      priority: 'normal',
+    })
+    await saveHarnessServerState(cwd, {
+      serverId: 'server-1',
+      status: 'running',
+      startedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      executionHost: 'foreground',
+    })
+
+    runCapability.mockResolvedValue({
+      prepared: {} as never,
+      result: {
+        status: 'completed',
+        session: {
+          ...queued,
+          status: 'completed',
+          currentStage: 'completed',
+          summary: 'Harness approved after 1 cycle(s).',
+        },
+      },
+      output: {
+        summary: 'Harness approved after 1 cycle(s).',
+      },
+    })
+
+    const outcome = await runHarnessServerOnce({ cwd, configPath })
+
+    expect(outcome.sessionId).toBe(queued.id)
+    expect(runCapability).toHaveBeenCalledTimes(1)
   })
 
   it('processes the next queued session and clears the active pointer', async () => {

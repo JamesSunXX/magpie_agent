@@ -5,13 +5,13 @@ import crypto from 'crypto'
 import { createInterface } from 'readline'
 import type { MagpieConfig } from '../../config/types.js'
 import type { Reviewer } from '../../core/debate/types.js'
-import type { ReviewFocus } from '../../core/debate/repo-orchestrator.js'
+import type { FeatureRoundCompletion, ReviewFocus } from '../../core/debate/repo-orchestrator.js'
 import { RepoOrchestrator } from '../../core/debate/repo-orchestrator.js'
 import { RepoScanner } from '../../core/repo/index.js'
 import type { RepoStats } from '../../core/repo/index.js'
 import { MarkdownReporter } from '../../core/reporting/index.js'
 import { StateManager } from '../../core/state/index.js'
-import type { ReviewSession, FeatureAnalysis, FeatureReviewResult } from '../../core/state/index.js'
+import type { ReviewSession, FeatureAnalysis } from '../../core/state/index.js'
 import { createConfiguredProvider } from '../../platform/providers/index.js'
 import { FeatureAnalyzer } from '../../feature-analyzer/index.js'
 import { FeaturePlanner } from '../../planner/feature-planner.js'
@@ -385,15 +385,15 @@ export async function executeFeatureReview(
       const globalTotal = session.config.selectedFeatures.length
       console.log(chalk.cyan(`\n[${globalIndex}/${globalTotal}] Reviewing ${step.name}...`))
     },
-    onFeatureComplete: async (featureId: string, result: FeatureReviewResult) => {
+    onFeatureComplete: async (completion: FeatureRoundCompletion) => {
       // Reload session from disk to avoid race conditions and ensure atomic updates
       const currentSession = await stateManager.loadSession(session.id)
       if (currentSession) {
         // Only add if not already completed (idempotent)
-        if (!currentSession.progress.completedFeatures.includes(featureId)) {
-          currentSession.progress.completedFeatures.push(featureId)
+        if (!currentSession.progress.completedFeatures.includes(completion.featureId)) {
+          currentSession.progress.completedFeatures.push(completion.featureId)
         }
-        currentSession.progress.featureResults[featureId] = result
+        currentSession.progress.featureResults[completion.featureId] = completion.result
         currentSession.progress.currentFeatureIndex = currentSession.progress.completedFeatures.length
         currentSession.updatedAt = new Date()
 
@@ -403,13 +403,13 @@ export async function executeFeatureReview(
         Object.assign(session, currentSession)
       } else {
         // Fallback: save current state if reload failed
-        session.progress.completedFeatures.push(featureId)
-        session.progress.featureResults[featureId] = result
+        session.progress.completedFeatures.push(completion.featureId)
+        session.progress.featureResults[completion.featureId] = completion.result
         session.progress.currentFeatureIndex++
         session.updatedAt = new Date()
         await stateManager.saveSession(session)
       }
-      console.log(chalk.green(`  ✓ ${featureId} complete (${result.issues.length} issues) - Progress saved`))
+      console.log(chalk.green(`  ✓ ${completion.featureId} complete (${completion.result.issues.length} issues) - Progress saved`))
     },
     onMessage: (reviewerId: string, chunk: string) => {
       process.stdout.write(chunk)

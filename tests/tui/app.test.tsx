@@ -9,6 +9,7 @@ const loadSessionDashboard = vi.fn()
 const inspectEnvironmentHealth = vi.fn()
 const run = vi.fn()
 const createRunController = vi.fn(() => ({ run }))
+const loadGraphWorkbench = vi.fn()
 
 let capturedInput:
   | ((input: string, key: Record<string, boolean | undefined>) => void)
@@ -48,6 +49,10 @@ vi.mock('../../src/tui/environment-health.js', () => ({
 
 vi.mock('../../src/tui/run-controller.js', () => ({
   createRunController,
+}))
+
+vi.mock('../../src/tui/graph-workbench-loader.js', () => ({
+  loadGraphWorkbench,
 }))
 
 function flushPromises(): Promise<void> {
@@ -447,5 +452,312 @@ describe('App', () => {
 
     capturedInput?.('q', {})
     expect(exit).not.toHaveBeenCalled()
+  })
+
+  it('renders the graph workbench route when graph session state is active', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'overview',
+        selectedActionIndex: 0,
+        data: {
+          graph: {
+            sessionId: 'harness-graph-1',
+            graphId: 'checkout-v2',
+            title: 'Checkout V2',
+            status: 'active',
+            rollup: {
+              ready: 0,
+              waitingApproval: 1,
+              blocked: 1,
+            },
+          },
+          nodes: [],
+          actions: [],
+          attention: [],
+          events: [],
+        },
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+
+    const { App } = await import('../../src/tui/app.js')
+    const element = App({ cwd: '/repo' }) as { type: { name?: string } }
+
+    expect(element.type.name).toBe('GraphWorkbench')
+  })
+
+  it('runs selected graph workbench actions without leaving the workbench', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'actions',
+        selectedActionIndex: 0,
+        data: {
+          graph: {
+            sessionId: 'harness-graph-1',
+            graphId: 'checkout-v2',
+            title: 'Checkout V2',
+            status: 'active',
+            rollup: {
+              ready: 0,
+              waitingApproval: 1,
+              blocked: 1,
+            },
+          },
+          nodes: [],
+          actions: [
+            {
+              id: 'approve:release',
+              kind: 'approve',
+              label: 'Approve release',
+              description: 'Approve pending gate for release-approval.',
+              command: ['harness', 'approve', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+              requiresConfirmation: false,
+            },
+          ],
+          attention: [],
+          events: [],
+        },
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { return: true })
+
+    expect(createRunController).toHaveBeenCalledTimes(1)
+    expect(run).toHaveBeenCalledWith(
+      {
+        argv: ['harness', 'approve', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+        display: 'magpie harness approve harness-graph-1 --node release-approval --gate approve-release',
+        summary: 'Approve pending gate for release-approval.',
+      },
+      expect.objectContaining({
+        cwd: '/repo',
+      }),
+      expect.any(Object)
+    )
+  })
+
+  it('refreshes graph workbench data after a successful direct action', async () => {
+    const setState = vi.fn()
+    loadGraphWorkbench.mockResolvedValue({
+      graph: {
+        sessionId: 'harness-graph-1',
+        graphId: 'checkout-v2',
+        title: 'Checkout V2',
+        status: 'active',
+        rollup: {
+          ready: 1,
+          waitingApproval: 0,
+          blocked: 0,
+        },
+      },
+      nodes: [],
+      actions: [],
+      attention: [],
+      events: [],
+    })
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'actions',
+        selectedActionIndex: 0,
+        data: {
+          graph: {
+            sessionId: 'harness-graph-1',
+            graphId: 'checkout-v2',
+            title: 'Checkout V2',
+            status: 'active',
+            rollup: {
+              ready: 0,
+              waitingApproval: 1,
+              blocked: 1,
+            },
+          },
+          nodes: [],
+          actions: [
+            {
+              id: 'approve:release',
+              kind: 'approve',
+              label: 'Approve release',
+              description: 'Approve pending gate for release-approval.',
+              command: ['harness', 'approve', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+              requiresConfirmation: false,
+            },
+          ],
+          attention: [],
+          events: [],
+        },
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+    run.mockImplementation((command: BuiltCommand, _options: Record<string, unknown>, handlers?: { onUpdate?: (run: RunState) => void }) => {
+      handlers?.onUpdate?.({
+        command,
+        display: command.display,
+        logs: ['done\n'],
+        status: 'completed',
+        exitCode: 0,
+        artifacts: {},
+      })
+    })
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { return: true })
+    await flushPromises()
+
+    const completedMessage = setState.mock.calls
+      .map((call) => call[0](state) as AppState)
+      .find((next) => next.graphWorkbench?.message === 'Approve release completed.')
+
+    expect(completedMessage?.graphWorkbench?.message).toBe('Approve release completed.')
+    expect(loadGraphWorkbench).toHaveBeenCalledWith({
+      cwd: '/repo',
+      sessionId: 'harness-graph-1',
+      selectedNodeId: undefined,
+    })
+  })
+
+  it('shows a loading state and requests graph workbench data when route is opened without cached data', async () => {
+    const setState = vi.fn()
+    mockUseEffect.mockImplementation((effect: () => void | (() => void)) => {
+      effect()
+    })
+    loadGraphWorkbench.mockResolvedValue({
+      graph: {
+        sessionId: 'harness-graph-1',
+        graphId: 'checkout-v2',
+        title: 'Checkout V2',
+        status: 'active',
+        rollup: {
+          ready: 0,
+          waitingApproval: 1,
+          blocked: 1,
+        },
+      },
+      nodes: [],
+      actions: [],
+      attention: [],
+      events: [],
+    })
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'overview',
+        selectedActionIndex: 0,
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+
+    const { App } = await import('../../src/tui/app.js')
+    const element = App({ cwd: '/repo' }) as { props: Record<string, unknown> }
+    await flushPromises()
+
+    expect(element.props.children).toBe('Loading graph workbench...')
+    expect(loadGraphWorkbench).toHaveBeenCalledWith({
+      cwd: '/repo',
+      sessionId: 'harness-graph-1',
+      selectedNodeId: undefined,
+    })
+    expect(setState).toHaveBeenCalled()
+  })
+
+  it('marks graph workbench actions as failed when the command exits non-zero', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'actions',
+        selectedActionIndex: 0,
+        data: {
+          graph: {
+            sessionId: 'harness-graph-1',
+            graphId: 'checkout-v2',
+            title: 'Checkout V2',
+            status: 'active',
+            rollup: {
+              ready: 0,
+              waitingApproval: 1,
+              blocked: 1,
+            },
+          },
+          nodes: [],
+          actions: [
+            {
+              id: 'approve:release',
+              kind: 'approve',
+              label: 'Approve release',
+              description: 'Approve pending gate for release-approval.',
+              command: ['harness', 'approve', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+              requiresConfirmation: false,
+            },
+          ],
+          attention: [],
+          events: [],
+        },
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+    run.mockImplementation((_command: BuiltCommand, _options: Record<string, unknown>, handlers?: { onUpdate?: (run: RunState) => void }) => {
+      handlers?.onUpdate?.({
+        command: _command,
+        display: _command.display,
+        logs: ['failed\n'],
+        status: 'failed',
+        exitCode: 1,
+        artifacts: {},
+      })
+    })
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { return: true })
+
+    const messageUpdate = setState.mock.calls
+      .map((call) => call[0](state) as AppState)
+      .find((next) => next.graphWorkbench?.message === 'Approve release failed.')
+
+    expect(messageUpdate?.graphWorkbench?.message).toBe('Approve release failed.')
+  })
+
+  it('exits immediately on Ctrl+C', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'dashboard',
+      selectedIndex: 0,
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('c', { ctrl: true })
+
+    expect(exit).toHaveBeenCalledTimes(1)
   })
 })

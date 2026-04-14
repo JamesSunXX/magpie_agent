@@ -1,7 +1,7 @@
 // tests/state/state-manager.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { StateManager } from '../../src/state/state-manager.js'
-import type { ReviewSession, FeatureAnalysis, LoopSession } from '../../src/state/types.js'
+import type { ReviewSession, FeatureAnalysis, LoopSession, ReviewRoundCheckpoint } from '../../src/state/types.js'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -109,6 +109,53 @@ describe('StateManager', () => {
     await manager.init()
     const loaded = await manager.loadFeatureAnalysis()
     expect(loaded).toBeNull()
+  })
+
+  it('should save review round checkpoints under .magpie/state/<sessionId>', async () => {
+    await manager.init()
+
+    const checkpoint: ReviewRoundCheckpoint = {
+      schemaVersion: 1,
+      sessionId: 'review-session-1',
+      roundNumber: 2,
+      featureId: 'loop',
+      featureName: 'Loop',
+      status: 'completed',
+      origin: 'live',
+      focusAreas: ['security'],
+      filePaths: ['src/capabilities/loop/application/execute.ts'],
+      reviewerOutputs: [
+        {
+          reviewerId: 'codex',
+          provider: 'codex',
+          startedAt: new Date('2026-04-12T01:00:00.000Z'),
+          completedAt: new Date('2026-04-12T01:01:00.000Z'),
+          output: 'Found one issue',
+          issuesParsed: 1,
+        },
+      ],
+      result: {
+        featureId: 'loop',
+        issues: [],
+        summary: 'Found one issue',
+        reviewedAt: new Date('2026-04-12T01:01:00.000Z'),
+      },
+      completedAt: new Date('2026-04-12T01:01:00.000Z'),
+    }
+
+    await manager.saveReviewRoundCheckpoint('review-session-1', checkpoint)
+
+    const listed = await manager.listReviewRoundCheckpoints('review-session-1')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.roundNumber).toBe(2)
+    expect(listed[0]?.reviewerOutputs[0]?.completedAt).toBeInstanceOf(Date)
+
+    const raw = await readFile(join(tempDir, '.magpie', 'state', 'review-session-1', 'round_2.json'), 'utf-8')
+    expect(JSON.parse(raw)).toMatchObject({
+      sessionId: 'review-session-1',
+      roundNumber: 2,
+      featureId: 'loop',
+    })
   })
 
   it('should list all sessions regardless of status', async () => {

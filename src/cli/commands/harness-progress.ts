@@ -6,6 +6,21 @@ import type { LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
 type HarnessDisplayEvent = Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>
 type LoopDisplayEvent = Pick<LoopRuntimeEvent, 'ts' | 'event' | 'stage' | 'cycle' | 'summary' | 'provider' | 'progressType'>
 
+interface HarnessRoundSummary {
+  roles?: Array<{
+    roleId: string
+    displayName?: string
+    binding?: { tool?: string; model?: string; agent?: string }
+  }>
+  reviewResults?: Array<{
+    reviewerRoleId: string
+    summary: string
+  }>
+  arbitrationResult?: {
+    summary?: string
+  }
+}
+
 function formatProviderName(provider: string | undefined): string {
   if (!provider) return '模型'
   if (provider === 'codex') return 'Codex'
@@ -194,14 +209,21 @@ export async function followHarnessEventStream(options: FollowHarnessEventStream
   let processedLines = 0
   let processedLoopLines = 0
   let lastOutputAt = Date.now()
+  const renderedCycleNarratives = new Set<number>()
 
   while (true) {
     const content = await readFile(eventsPath, 'utf-8').catch(() => '')
-    const { consumedLines, printed } = consumeHarnessEventLines(content, processedLines, log)
+    const { consumedLines, printed } = await consumeHarnessEventLines(
+      content,
+      processedLines,
+      log,
+      session,
+      renderedCycleNarratives
+    )
     const loopContent = loopEventsPath
       ? await readFile(loopEventsPath, 'utf-8').catch(() => '')
       : ''
-    const { consumedLines: consumedLoopLines, printed: printedLoop } = consumeHarnessEventLines(
+    const { consumedLines: consumedLoopLines, printed: printedLoop } = await consumeHarnessEventLines(
       loopContent,
       processedLoopLines,
       log
@@ -241,11 +263,66 @@ export async function followHarnessEventStream(options: FollowHarnessEventStream
   }
 }
 
-function consumeHarnessEventLines(
+function describeRoleParticipant(role: NonNullable<HarnessRoundSummary['roles']>[number]): string {
+  return `${role.roleId}=${role.binding?.agent || role.binding?.model || role.binding?.tool || role.displayName || role.roleId}`
+}
+
+async function loadHarnessRoundSummary(
+  session: WorkflowSession,
+  cycle: number
+): Promise<HarnessRoundSummary | null> {
+  const roleRoundsDir = session.artifacts.roleRoundsDir
+  if (!roleRoundsDir) {
+    return null
+  }
+
+  try {
+    return JSON.parse(await readFile(`${roleRoundsDir}/cycle-${cycle}.json`, 'utf-8')) as HarnessRoundSummary
+  } catch {
+    return null
+  }
+}
+
+async function printCycleNarrative(
+  session: WorkflowSession,
+  cycle: number,
+  log: (line: string) => void,
+  renderedCycleNarratives: Set<number>
+): Promise<number> {
+  if (renderedCycleNarratives.has(cycle)) {
+    return 0
+  }
+
+  const round = await loadHarnessRoundSummary(session, cycle)
+  if (!round) {
+    return 0
+  }
+
+  let printed = 0
+  if (Array.isArray(round.roles) && round.roles.length > 0) {
+    log(`Participants: ${round.roles.map(describeRoleParticipant).join(', ')}`)
+    printed += 1
+  }
+  if (Array.isArray(round.reviewResults) && round.reviewResults.length > 0) {
+    log(`Review notes: ${round.reviewResults.map((result) => `${result.reviewerRoleId}: ${result.summary}`).join(' | ')}`)
+    printed += 1
+  }
+  if (round.arbitrationResult?.summary) {
+    log(`Decision note: ${round.arbitrationResult.summary}`)
+    printed += 1
+  }
+
+  renderedCycleNarratives.add(cycle)
+  return printed
+}
+
+async function consumeHarnessEventLines(
   content: string,
   processedLines: number,
-  log: (line: string) => void
-): { consumedLines: number; printed: number } {
+  log: (line: string) => void,
+  session?: WorkflowSession,
+  renderedCycleNarratives?: Set<number>
+): Promise<{ consumedLines: number; printed: number }> {
   const lines = content.split('\n')
   const hasTrailingNewline = content.endsWith('\n')
   let nextProcessed = processedLines
@@ -265,6 +342,15 @@ function consumeHarnessEventLines(
       log(formatHarnessEventLine(event))
       nextProcessed++
       printed++
+      if (
+        session
+        && renderedCycleNarratives
+        && 'type' in event
+        && event.type === 'cycle_completed'
+        && Number.isFinite(event.cycle)
+      ) {
+        printed += await printCycleNarrative(session, Number(event.cycle), log, renderedCycleNarratives)
+      }
     } catch {
       if (isLast && !hasTrailingNewline) {
         break

@@ -103,19 +103,47 @@ function renderSessionRows(props: {
       {visibleRows.hiddenAbove > 0 ? <Text color="gray">… {visibleRows.hiddenAbove} more above</Text> : null}
       {visibleRows.rows.map((row) => {
         return (
-          <Text
-            key={row.card.capability + row.card.id}
-            color={row.selected ? 'greenBright' : undefined}
-          >
-            {row.selected ? '› ' : '  '}
-            {truncateText(row.card.title, TITLE_MAX_LENGTH)}
-            <Text color="gray">  {formatCapability(row.card.capability)} · {row.card.id}</Text>
-          </Text>
+          <Box key={row.card.capability + row.card.id} flexDirection="column">
+            <Text
+              color={row.selected ? 'greenBright' : undefined}
+            >
+              {row.selected ? '› ' : '  '}
+              {truncateText(row.card.title, TITLE_MAX_LENGTH)}
+              <Text color="gray">  {formatCapability(row.card.capability)} · {row.card.id}</Text>
+            </Text>
+            {row.card.detail ? (
+              <Text color="gray">
+                {row.selected ? '  ' : '  '}
+                {truncateText(row.card.detail, TITLE_MAX_LENGTH + 20)}
+              </Text>
+            ) : null}
+          </Box>
         )
       })}
       {visibleRows.hiddenBelow > 0 ? <Text color="gray">… {visibleRows.hiddenBelow} more below</Text> : null}
     </Box>
   )
+}
+
+function getSelectedSessionCard(props: {
+  selectedIndex: number
+  sessions: DashboardSessions
+}): SessionCard | undefined {
+  if (props.selectedIndex < TASKS.length) {
+    return undefined
+  }
+
+  const continueIndex = props.selectedIndex - TASKS.length
+  if (continueIndex >= 0 && continueIndex < props.sessions.continue.length) {
+    return props.sessions.continue[continueIndex]
+  }
+
+  const recentIndex = continueIndex - props.sessions.continue.length
+  if (recentIndex >= 0 && recentIndex < props.sessions.recent.length) {
+    return props.sessions.recent[recentIndex]
+  }
+
+  return undefined
 }
 
 export function Dashboard(props: {
@@ -132,6 +160,8 @@ export function Dashboard(props: {
     && props.selectedIndex < recentStartIndex + props.sessions.recent.length
     ? props.selectedIndex - recentStartIndex
     : undefined
+  const selectedCard = getSelectedSessionCard(props)
+  const selectedHarnessDetail = selectedCard?.capability === 'harness' ? selectedCard.selectedDetail : undefined
 
   return (
     <Box flexDirection="column">
@@ -167,6 +197,42 @@ export function Dashboard(props: {
           summaryLabel: 'recent sessions',
         })}
       </Section>
+
+      {selectedHarnessDetail ? (
+        <Section title="Selected Harness Summary">
+          {selectedHarnessDetail.participants ? (
+            <Text>Participants: {selectedHarnessDetail.participants}</Text>
+          ) : null}
+          {selectedHarnessDetail.reviewerSummaries.map((summary, index) => (
+            <Text key={`${selectedCard?.id || 'harness'}-reviewer-${index}`}>
+              {summary}
+            </Text>
+          ))}
+          {selectedHarnessDetail.arbitration ? (
+            <Text>{selectedHarnessDetail.arbitration}</Text>
+          ) : null}
+          {selectedHarnessDetail.nextStep ? (
+            <Text>Next: {selectedHarnessDetail.nextStep}</Text>
+          ) : null}
+          {selectedHarnessDetail.graphSummary ? (
+            <Text>Graph: {selectedHarnessDetail.graphSummary}</Text>
+          ) : null}
+          {(selectedHarnessDetail.attention || []).map((line, index) => (
+            <Text key={`${selectedCard?.id || 'harness'}-attention-${index}`}>
+              {line}
+            </Text>
+          ))}
+          {selectedHarnessDetail.readyNow ? (
+            <Text>Ready now: {selectedHarnessDetail.readyNow}</Text>
+          ) : null}
+          {selectedHarnessDetail.recommendedAction ? (
+            <Text>Recommend: {selectedHarnessDetail.recommendedAction}</Text>
+          ) : null}
+          {selectedHarnessDetail.recommendedCommand ? (
+            <Text>Command: {selectedHarnessDetail.recommendedCommand}</Text>
+          ) : null}
+        </Section>
+      ) : null}
 
       <Section title="Environment Health">
         {props.health ? (

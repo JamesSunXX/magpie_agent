@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react'
-import { useApp, useInput } from 'ink'
+import { Text, useApp, useInput } from 'ink'
 import { Dashboard } from './components/dashboard.js'
+import { GraphWorkbench } from './components/graph-workbench.js'
 import { CommandPreview } from './components/command-preview.js'
 import { RunView } from './components/run-view.js'
 import { TaskWizard } from './components/task-wizard.js'
-import { handleDashboardInput, handlePreviewInput, handleRunInput, handleWizardInput } from './app-input.js'
+import { handleDashboardInput, handleGraphWorkbenchInput, handlePreviewInput, handleRunInput, handleWizardInput } from './app-input.js'
 import { refreshDashboardData } from './dashboard-loader.js'
+import { loadGraphWorkbench } from './graph-workbench-loader.js'
 import { createRunController } from './run-controller.js'
+import { buildCommandDisplay } from './command-builder.js'
 import { getTaskDefinition } from './tasks.js'
-import type { AppState } from './types.js'
+import type { AppState, BuiltCommand, GraphWorkbenchAction } from './types.js'
 import { createInitialAppState, getVisibleWizardFields, isDraftValid, reduceAppState } from './view-model.js'
 
 export interface AppProps {
@@ -32,6 +35,118 @@ export function App(props: AppProps) {
       sessions,
       health,
     }))
+  }
+
+  async function refreshWorkbench(): Promise<void> {
+    const workbench = state.graphWorkbench
+    if (!workbench) {
+      return
+    }
+
+    const data = await loadGraphWorkbench({
+      cwd: props.cwd,
+      sessionId: workbench.sessionId,
+      selectedNodeId: workbench.selectedNodeId,
+    })
+
+    setState((current) => {
+      const currentWorkbench = current.graphWorkbench
+      if (!currentWorkbench || currentWorkbench.sessionId !== workbench.sessionId) {
+        return current
+      }
+
+      return {
+        ...current,
+        graphWorkbench: {
+          ...currentWorkbench,
+          data,
+          selectedNodeId: data.selectedNodeId || currentWorkbench.selectedNodeId,
+          selectedActionIndex: Math.min(
+            currentWorkbench.selectedActionIndex,
+            Math.max(data.actions.length - 1, 0)
+          ),
+        },
+      }
+    })
+  }
+
+  function openWorkbenchCommandPreview(command: BuiltCommand | undefined): void {
+    if (!command) {
+      return
+    }
+
+    setState((current) => reduceAppState(current, {
+      type: 'preview:opened',
+      command,
+    }))
+  }
+
+  function runWorkbenchAction(action: GraphWorkbenchAction): void {
+    const command: BuiltCommand = {
+      argv: [...action.command],
+      display: buildCommandDisplay(action.command),
+      summary: action.description,
+    }
+
+    setState((current) => current.graphWorkbench
+      ? {
+          ...current,
+          graphWorkbench: {
+            ...current.graphWorkbench,
+            pendingConfirmationActionId: undefined,
+            message: `Running ${action.label}...`,
+          },
+        }
+      : current)
+
+    void createRunController().run(
+      command,
+      {
+        cwd: props.cwd,
+        cliArgv0: process.argv[1],
+        configPath: props.configPath,
+      },
+      {
+        onUpdate: (run) => {
+          if (run.status === 'completed') {
+            setState((current) => current.graphWorkbench
+              ? {
+                  ...current,
+                  graphWorkbench: {
+                    ...current.graphWorkbench,
+                    message: `${action.label} completed.`,
+                  },
+                }
+              : current)
+            void refreshWorkbench()
+            return
+          }
+
+          if (run.status === 'failed') {
+            setState((current) => current.graphWorkbench
+              ? {
+                  ...current,
+                  graphWorkbench: {
+                    ...current.graphWorkbench,
+                    message: `${action.label} failed.`,
+                  },
+                }
+              : current)
+          }
+        },
+        onError: () => {
+          setState((current) => current.graphWorkbench
+            ? {
+                ...current,
+                graphWorkbench: {
+                  ...current.graphWorkbench,
+                  message: `${action.label} failed.`,
+                },
+              }
+            : current)
+        },
+      }
+    )
   }
 
   function startRun(): void {
@@ -82,6 +197,48 @@ export function App(props: AppProps) {
     }
   }, [props.configPath, props.cwd])
 
+  useEffect(() => {
+    if (state.route !== 'graph-workbench' || !state.graphWorkbench?.sessionId) {
+      return
+    }
+
+    let cancelled = false
+
+    void loadGraphWorkbench({
+      cwd: props.cwd,
+      sessionId: state.graphWorkbench.sessionId,
+      selectedNodeId: state.graphWorkbench.selectedNodeId,
+    }).then((data) => {
+      if (cancelled) {
+        return
+      }
+
+      setState((current) => {
+        const currentWorkbench = current.graphWorkbench
+        if (!currentWorkbench || currentWorkbench.sessionId !== state.graphWorkbench?.sessionId) {
+          return current
+        }
+
+        return {
+          ...current,
+          graphWorkbench: {
+            ...currentWorkbench,
+            data,
+            selectedNodeId: data.selectedNodeId || currentWorkbench.selectedNodeId,
+            selectedActionIndex: Math.min(
+              currentWorkbench.selectedActionIndex,
+              Math.max(data.actions.length - 1, 0)
+            ),
+          },
+        }
+      })
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [props.cwd, state.graphWorkbench?.selectedNodeId, state.graphWorkbench?.sessionId, state.route])
+
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       exit()
@@ -114,6 +271,19 @@ export function App(props: AppProps) {
         key,
         state,
         visibleFields,
+        setState,
+      })
+      return
+    }
+
+    if (state.route === 'graph-workbench') {
+      handleGraphWorkbenchInput({
+        input,
+        key,
+        state,
+        refreshWorkbench,
+        openCommandPreview: openWorkbenchCommandPreview,
+        runWorkbenchAction,
         setState,
       })
       return
@@ -154,6 +324,21 @@ export function App(props: AppProps) {
 
   if (state.route === 'preview' && state.command) {
     return <CommandPreview command={state.command} />
+  }
+
+  if (state.route === 'graph-workbench' && state.graphWorkbench?.data) {
+    return (
+      <GraphWorkbench
+        workbench={state.graphWorkbench.data}
+        focusedPanel={state.graphWorkbench.focusedPanel}
+        selectedActionIndex={state.graphWorkbench.selectedActionIndex}
+        message={state.graphWorkbench.message}
+      />
+    )
+  }
+
+  if (state.route === 'graph-workbench') {
+    return <Text color="gray">Loading graph workbench...</Text>
   }
 
   return state.run ? <RunView run={state.run} /> : null

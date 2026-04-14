@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { join, resolve } from 'path'
 import YAML from 'yaml'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
@@ -21,10 +21,22 @@ import {
   resolveWorkflowFailureArtifacts,
   sessionDirFor,
 } from '../../shared/runtime.js'
+import { generateDocumentPlan, type DocumentPlan } from '../../../../core/project-documents/document-plan.js'
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
+import {
+  createRoleMessage,
+  createRoleRoundResult,
+  getRoleArtifactPaths,
+  serializeRoleMessage,
+  type RoleBinding,
+  type RoleFinalAction,
+  type RoleInstance,
+  type RoleOpenIssue,
+  type RoleReviewResult,
+} from '../../../../core/roles/index.js'
 import type {
   HarnessCycle,
   HarnessPreparedInput,
@@ -44,6 +56,11 @@ import {
   writeTaskKnowledgeFinal,
   type KnowledgeCandidate,
 } from '../../../../knowledge/runtime.js'
+import {
+  resolveHarnessArbitrationOutcome,
+  type HarnessArbitrationDecision,
+} from './arbitration.js'
+import { isGeminiBinding, isKnownGeminiModelError } from '../../shared/gemini-fallback.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
 const HARNESS_REVIEWER_PROMPTS = [
@@ -55,12 +72,6 @@ const DEFAULT_HARNESS_VALIDATOR_BINDINGS: ModelRouteBinding[] = [
   { tool: 'claw' },
   { tool: 'kiro' },
 ]
-
-interface DecisionJson {
-  decision?: 'approved' | 'revise'
-  rationale?: string
-  requiredActions?: string[]
-}
 
 interface HarnessValidatorJson {
   decision?: 'approved' | 'revise'
@@ -86,6 +97,14 @@ interface HarnessResumeState {
   canReuseCompletedDevelopment: boolean
   completedCycles: HarnessCycle[]
   approvedFromCompletedCycles: boolean
+  pendingReviewCheckpoint: PendingHarnessReviewCheckpoint | null
+}
+
+interface PendingHarnessReviewCheckpoint {
+  cycle: number
+  reviewOutputPath: string
+  unitTestEvalPath: string
+  validations: HarnessValidatorResult[]
 }
 
 interface PersistedHarnessResumeEvidence {
@@ -107,6 +126,22 @@ interface PersistedHarnessResumeEvidence {
     lastError?: string
     lastReliablePoint?: string
   }
+}
+
+function collectAdjudicationFallbackTexts(adjudicationData: {
+  analysis?: string
+  messages?: Array<{ content?: string }>
+  summaries?: Array<{ summary?: string }>
+}): string[] {
+  return [
+    adjudicationData.analysis || '',
+    ...(Array.isArray(adjudicationData.messages)
+      ? adjudicationData.messages.map((message) => message.content || '')
+      : []),
+    ...(Array.isArray(adjudicationData.summaries)
+      ? adjudicationData.summaries.map((summary) => summary.summary || '')
+      : []),
+  ].filter(Boolean)
 }
 
 function describeHarnessActor(
@@ -162,6 +197,216 @@ function buildHarnessAiRoster(
       agent: config.capabilities.loop?.executor_agent,
     }, 'loop-executor', '负责开发阶段的实际执行与改动落地'),
   ]
+}
+
+function toRoleBinding(input: {
+  tool?: string
+  model?: string
+  agent?: string
+}): RoleBinding | undefined {
+  if (!input.tool && !input.model) return undefined
+  return {
+    ...(input.tool ? { tool: input.tool } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.agent ? { agent: input.agent } : {}),
+  }
+}
+
+function buildHarnessRoleRoster(
+  config: MagpieConfigV2,
+  reviewerIds: string[],
+  validatorBindings: ModelRouteBinding[]
+): RoleInstance[] {
+  const roles: RoleInstance[] = []
+  const developerBinding = toRoleBinding({
+    tool: config.capabilities.loop?.executor_tool,
+    model: config.capabilities.loop?.executor_model,
+    agent: config.capabilities.loop?.executor_agent,
+  })
+
+  if (developerBinding) {
+    roles.push({
+      roleId: 'developer',
+      roleType: 'developer',
+      displayName: 'developer',
+      binding: developerBinding,
+      responsibility: 'Implement the requested change.',
+      capabilities: ['developer'],
+    })
+  }
+
+  const reviewerBindings = reviewerIds
+    .map((reviewerId): RoleInstance | undefined => {
+      const reviewer = config.reviewers?.[reviewerId]
+      const binding = reviewer
+        ? toRoleBinding({
+          tool: reviewer.tool,
+          model: reviewer.model,
+          agent: reviewer.agent,
+        })
+        : undefined
+
+      return binding
+        ? {
+          roleId: reviewerId,
+          roleType: 'reviewer' as const,
+          displayName: reviewerId,
+          binding,
+          responsibility: 'Inspect the result and raise actionable issues.',
+          capabilities: ['reviewer'],
+        }
+        : undefined
+    })
+    .filter((role): role is RoleInstance => role !== undefined)
+
+  roles.push(...reviewerBindings)
+
+  validatorBindings.forEach((binding, index) => {
+    const roleBinding = toRoleBinding(binding)
+    if (!roleBinding) {
+      return
+    }
+
+    roles.push({
+      roleId: `reviewer-${reviewerIds.length + index + 1}`,
+      roleType: 'reviewer',
+      displayName: describeBindingLabel(binding, `reviewer-${reviewerIds.length + index + 1}`),
+      binding: roleBinding,
+      responsibility: 'Inspect the result and raise actionable issues.',
+      capabilities: ['reviewer'],
+    })
+  })
+
+  const arbitratorBinding = toRoleBinding({
+    tool: config.summarizer?.tool,
+    model: config.summarizer?.model,
+    agent: config.summarizer?.agent,
+  }) || toRoleBinding({
+    tool: config.analyzer?.tool,
+    model: config.analyzer?.model,
+    agent: config.analyzer?.agent,
+  })
+
+  if (arbitratorBinding) {
+    roles.push({
+      roleId: 'arbitrator',
+      roleType: 'arbitrator',
+      displayName: 'arbitrator',
+      binding: arbitratorBinding,
+      responsibility: 'Resolve conflicting signals into the next action.',
+      capabilities: ['arbitrator'],
+    })
+  }
+
+  return roles
+}
+
+function toRoleSeverity(issue: MergedIssue): RoleOpenIssue['severity'] {
+  switch (issue.severity) {
+    case 'critical':
+    case 'high':
+    case 'medium':
+    case 'low':
+      return issue.severity
+    default:
+      return 'medium'
+  }
+}
+
+function buildHarnessRoleOpenIssues(
+  roles: RoleInstance[],
+  issues: MergedIssue[],
+  validations: HarnessValidatorResult[],
+  reviewOutputPath: string,
+  discussReviewerCount: number
+): RoleOpenIssue[] {
+  const reviewerRoles = roles.filter((role) => role.roleType === 'reviewer')
+  const primaryDiscussReviewerId = reviewerRoles[0]?.roleId || 'reviewer-1'
+
+  return issues.map((issue, index) => {
+    const validator = issue.category === 'validator'
+      ? validations.find((candidate) => `${candidate.id}-validator` === issue.file)
+      : undefined
+    const validatorRoleId = validator
+      ? reviewerRoles[discussReviewerCount + validations.indexOf(validator)]?.roleId
+      : undefined
+
+    return {
+      id: `${issue.category}-${issue.file}-${issue.line ?? index + 1}-${index + 1}`,
+      title: issue.title,
+      severity: toRoleSeverity(issue),
+      sourceRole: validatorRoleId || primaryDiscussReviewerId,
+      category: issue.category,
+      evidencePath: validator?.outputPath || reviewOutputPath,
+      requiredAction: issue.description,
+      status: 'open',
+    }
+  })
+}
+
+function buildReviewResults(
+  roles: RoleInstance[],
+  issues: MergedIssue[],
+  validations: HarnessValidatorResult[],
+  reviewOutputPath: string,
+  discussReviewerCount: number
+): RoleReviewResult[] {
+  const reviewerRoles = roles.filter((role) => role.roleType === 'reviewer')
+  if (reviewerRoles.length === 0) {
+    return []
+  }
+
+  const discussReviewerRoles = reviewerRoles.slice(0, Math.max(discussReviewerCount, 0))
+  const results: RoleReviewResult[] = discussReviewerRoles.map((reviewerRole) => ({
+    reviewerRoleId: reviewerRole.roleId,
+    passed: issues.length === 0,
+    summary: issues.length === 0
+      ? 'Primary review found no blocking issues.'
+      : `Primary review raised ${issues.length} blocking issue(s).`,
+    artifactRefs: [{ path: reviewOutputPath, label: 'review' }],
+  }))
+
+  validations.forEach((validation, index) => {
+    const reviewerRole = reviewerRoles[discussReviewerCount + index]
+    if (!reviewerRole) return
+    results.push({
+      reviewerRoleId: reviewerRole.roleId,
+      passed: validation.decision === 'approved',
+      summary: validation.rationale,
+      artifactRefs: [{ path: validation.outputPath, label: validation.label }],
+    })
+  })
+
+  return results
+}
+
+function buildRoleOpenIssuesMarkdown(openIssues: RoleOpenIssue[]): string {
+  if (openIssues.length === 0) {
+    return '# Open Issues\n\n- None.\n'
+  }
+
+  return [
+    '# Open Issues',
+    '',
+    ...openIssues.map((issue) => `- [${issue.severity}] ${issue.title}: ${issue.requiredAction}`),
+  ].join('\n')
+}
+
+function buildRoleNextRoundMarkdown(finalAction: RoleFinalAction, nextRoundBrief: string): string {
+  return [
+    '# Next Round',
+    '',
+    `Final action: ${finalAction}`,
+    '',
+    nextRoundBrief,
+  ].join('\n')
+}
+
+async function appendRoleMessages(messagesPath: string, lines: string[]): Promise<void> {
+  if (lines.length === 0) {
+    return
+  }
+  await appendFile(messagesPath, `${lines.join('\n')}\n`, 'utf-8')
 }
 
 function describeBindingLabel(binding: ModelRouteBinding | undefined, fallback = 'validator'): string {
@@ -240,10 +485,70 @@ function cycleApproved(cycle: HarnessCycle | undefined): boolean {
     && cycle.modelDecision === 'approved'
 }
 
+function readHarnessEvidenceRuntime(evidence: unknown): Record<string, unknown> {
+  if (!evidence || typeof evidence !== 'object') {
+    return {}
+  }
+  const runtime = (evidence as { runtime?: unknown }).runtime
+  return runtime && typeof runtime === 'object'
+    ? runtime as Record<string, unknown>
+    : {}
+}
+
+function readPendingReviewCheckpoint(evidence: unknown): PendingHarnessReviewCheckpoint | null {
+  const pending = readHarnessEvidenceRuntime(evidence).pendingReviewCheckpoint
+  if (!pending || typeof pending !== 'object') {
+    return null
+  }
+
+  const candidate = pending as Partial<PendingHarnessReviewCheckpoint>
+  return typeof candidate.cycle === 'number'
+    && typeof candidate.reviewOutputPath === 'string'
+    && typeof candidate.unitTestEvalPath === 'string'
+    && Array.isArray(candidate.validations)
+    ? {
+      cycle: candidate.cycle,
+      reviewOutputPath: candidate.reviewOutputPath,
+      unitTestEvalPath: candidate.unitTestEvalPath,
+      validations: candidate.validations as HarnessValidatorResult[],
+    }
+    : null
+}
+
+function mergeHarnessRuntimeEvidence(
+  existingEvidence: unknown,
+  patch: {
+    lastReliablePoint?: string
+    pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+  }
+): Record<string, unknown> {
+  const baseEvidence = existingEvidence && typeof existingEvidence === 'object'
+    ? { ...(existingEvidence as Record<string, unknown>) }
+    : {}
+  const runtime = {
+    ...readHarnessEvidenceRuntime(existingEvidence),
+  }
+
+  if (patch.lastReliablePoint !== undefined) {
+    runtime.lastReliablePoint = patch.lastReliablePoint
+  }
+  if (patch.pendingReviewCheckpoint === null) {
+    delete runtime.pendingReviewCheckpoint
+  } else if (patch.pendingReviewCheckpoint !== undefined) {
+    runtime.pendingReviewCheckpoint = patch.pendingReviewCheckpoint
+  }
+
+  return {
+    ...baseEvidence,
+    runtime,
+  }
+}
+
 function resolveHarnessResumeState(
   existingSession: Awaited<ReturnType<typeof loadWorkflowSession>>,
   completedCycles: HarnessCycle[]
 ): HarnessResumeState {
+  const pendingReviewCheckpoint = readPendingReviewCheckpoint(existingSession?.evidence)
   if (!existingSession) {
     return {
       isResume: false,
@@ -251,6 +556,7 @@ function resolveHarnessResumeState(
       canReuseCompletedDevelopment: false,
       completedCycles,
       approvedFromCompletedCycles: false,
+      pendingReviewCheckpoint: null,
     }
   }
 
@@ -275,6 +581,7 @@ function resolveHarnessResumeState(
     canReuseCompletedDevelopment,
     completedCycles,
     approvedFromCompletedCycles: cycleApproved(completedCycles[completedCycles.length - 1]),
+    pendingReviewCheckpoint,
   }
 }
 
@@ -431,6 +738,75 @@ function resolveHarnessDefaultReviewers(config: MagpieConfigV2): string[] | null
   return Array.isArray(reviewerIds) && reviewerIds.length > 0 ? [...reviewerIds] : null
 }
 
+function resolveKiroFallbackReviewerAgent(reviewer: {
+  agent?: string
+} | undefined): string {
+  return reviewer?.agent?.trim() || 'code-reviewer'
+}
+
+function applyKiroFallbackReviewers(
+  config: MagpieConfigV2,
+  reviewerIds: string[]
+): { reviewerIds: string[]; applied: boolean } {
+  const reviewers = config.reviewers || {}
+  const nextReviewerIds = [...reviewerIds]
+  let applied = false
+
+  reviewerIds.forEach((reviewerId, index) => {
+    const reviewer = reviewers[reviewerId]
+    if (!reviewer || !isGeminiBinding(reviewer)) {
+      return
+    }
+
+    const fallbackReviewerId = `${reviewerId}-fallback-kiro`
+    reviewers[fallbackReviewerId] = {
+      tool: 'kiro',
+      model: 'kiro',
+      agent: resolveKiroFallbackReviewerAgent(reviewer),
+      prompt: reviewer.prompt,
+    }
+    nextReviewerIds[index] = fallbackReviewerId
+    applied = true
+  })
+
+  config.reviewers = reviewers
+  return { reviewerIds: nextReviewerIds, applied }
+}
+
+async function runCapabilityWithGeminiReviewerFallback(
+  capability: any,
+  buildInput: (reviewers: string) => Record<string, unknown>,
+  cycleCtx: CapabilityContext,
+  config: MagpieConfigV2,
+  configPath: string,
+  reviewerIds: string[],
+  onFallbackApplied?: (reviewerIds: string[]) => Promise<void>,
+): Promise<string[]> {
+  const runWith = async (ids: string[]) => {
+    await runCapability(capability, buildInput(ids.join(',')) as never, cycleCtx)
+  }
+
+  try {
+    await runWith(reviewerIds)
+    return reviewerIds
+  } catch (error) {
+    if (!isKnownGeminiModelError(error)) {
+      throw error
+    }
+
+    const fallback = applyKiroFallbackReviewers(config, reviewerIds)
+    if (!fallback.applied) {
+      throw error
+    }
+
+    alignSummaryRoles(config, fallback.reviewerIds)
+    await writeFile(configPath, YAML.stringify(config), 'utf-8')
+    await onFallbackApplied?.(fallback.reviewerIds)
+    await runWith(fallback.reviewerIds)
+    return fallback.reviewerIds
+  }
+}
+
 function resolveHarnessValidatorBindings(config: MagpieConfigV2): ModelRouteBinding[] {
   const bindings = config.capabilities.harness?.validator_checks
   if (Array.isArray(bindings)) {
@@ -441,6 +817,55 @@ function resolveHarnessValidatorBindings(config: MagpieConfigV2): ModelRouteBind
     }))
   }
   return DEFAULT_HARNESS_VALIDATOR_BINDINGS.map((binding) => ({ ...binding }))
+}
+
+function toRouteBinding(binding: RoleBinding | undefined): ModelRouteBinding | undefined {
+  if (!binding) return undefined
+  return {
+    ...(binding.tool ? { tool: binding.tool } : {}),
+    ...(binding.model ? { model: binding.model } : {}),
+    ...(binding.agent ? { agent: binding.agent } : {}),
+  }
+}
+
+function configureHarnessRoleReviewers(config: MagpieConfigV2): string[] | null {
+  const roleBindings = config.capabilities.harness?.role_bindings
+  if (!roleBindings) return null
+
+  const reviewers = config.reviewers || {}
+  const reviewerIds: string[] = []
+  let promptIndex = 0
+
+  if (roleBindings.named_reviewers) {
+    for (const [reviewerId, binding] of Object.entries(roleBindings.named_reviewers)) {
+      reviewers[reviewerId] = {
+        ...(binding.tool ? { tool: binding.tool } : {}),
+        ...(binding.model ? { model: binding.model } : {}),
+        ...(binding.agent ? { agent: binding.agent } : {}),
+        prompt: HARNESS_REVIEWER_PROMPTS[promptIndex] || HARNESS_REVIEWER_PROMPTS[HARNESS_REVIEWER_PROMPTS.length - 1],
+      }
+      reviewerIds.push(reviewerId)
+      promptIndex += 1
+    }
+  } else if (Array.isArray(roleBindings.reviewers) && roleBindings.reviewers.length > 0) {
+    roleBindings.reviewers.forEach((binding, index) => {
+      const reviewerId = `harness-role-${index + 1}`
+      reviewers[reviewerId] = {
+        ...(binding.tool ? { tool: binding.tool } : {}),
+        ...(binding.model ? { model: binding.model } : {}),
+        ...(binding.agent ? { agent: binding.agent } : {}),
+        prompt: HARNESS_REVIEWER_PROMPTS[index] || HARNESS_REVIEWER_PROMPTS[HARNESS_REVIEWER_PROMPTS.length - 1],
+      }
+      reviewerIds.push(reviewerId)
+    })
+  }
+
+  if (reviewerIds.length === 0) {
+    return null
+  }
+
+  config.reviewers = reviewers
+  return reviewerIds
 }
 
 function ensureHarnessReviewers(config: MagpieConfigV2, models: string[]): string[] {
@@ -537,12 +962,16 @@ function applyHarnessConfigOverrides(
 ): { config: MagpieConfigV2; reviewerIds: string[] } {
   const config = cloneConfig(baseConfig)
   const routingReviewerIds = routingDecision?.reviewerIds ? [...routingDecision.reviewerIds] : null
-  const configuredDefaultReviewerIds = !modelsExplicit && !routingReviewerIds
+  const configuredRoleReviewerIds = !modelsExplicit
+    ? configureHarnessRoleReviewers(config)
+    : null
+  const configuredDefaultReviewerIds = !modelsExplicit && !configuredRoleReviewerIds
     ? resolveHarnessDefaultReviewers(config)
     : null
   const reviewerIds = modelsExplicit
     ? ensureHarnessReviewers(config, models)
-    : routingReviewerIds
+    : configuredRoleReviewerIds
+      || routingReviewerIds
       || configuredDefaultReviewerIds
       || ensureHarnessReviewers(config, models)
 
@@ -571,6 +1000,41 @@ function applyHarnessConfigOverrides(
       ...issueFixConfig,
       planner_model: models[0],
       executor_model: models[Math.min(1, models.length - 1)] || models[0],
+    }
+  }
+
+  const developerBinding = toRouteBinding(config.capabilities.harness?.role_bindings?.developer)
+  if (developerBinding) {
+    const loopConfig = config.capabilities.loop || {}
+    config.capabilities.loop = {
+      ...loopConfig,
+      executor_tool: developerBinding.tool,
+      executor_model: developerBinding.model || developerBinding.tool || loopConfig.executor_model,
+      ...(developerBinding.agent ? { executor_agent: developerBinding.agent } : {}),
+    }
+
+    const issueFixConfig = config.capabilities.issue_fix || {}
+    config.capabilities.issue_fix = {
+      ...issueFixConfig,
+      executor_tool: developerBinding.tool,
+      executor_model: developerBinding.model || developerBinding.tool || issueFixConfig.executor_model,
+      ...(developerBinding.agent ? { executor_agent: developerBinding.agent } : {}),
+    }
+  }
+
+  const arbitratorBinding = toRouteBinding(config.capabilities.harness?.role_bindings?.arbitrator)
+  if (arbitratorBinding) {
+    config.summarizer = {
+      ...config.summarizer,
+      tool: arbitratorBinding.tool,
+      model: arbitratorBinding.model || arbitratorBinding.tool || config.summarizer.model,
+      ...(arbitratorBinding.agent ? { agent: arbitratorBinding.agent } : {}),
+    }
+    config.analyzer = {
+      ...config.analyzer,
+      tool: arbitratorBinding.tool,
+      model: arbitratorBinding.model || arbitratorBinding.tool || config.analyzer.model,
+      ...(arbitratorBinding.agent ? { agent: arbitratorBinding.agent } : {}),
     }
   }
 
@@ -630,7 +1094,7 @@ function buildIssueFixPrompt(
   issues: MergedIssue[],
   validations: HarnessValidatorResult[],
   testOutput: string,
-  decision: DecisionJson | null
+  decision: HarnessArbitrationDecision | null
 ): string {
   const issueLines = issues.slice(0, 10).map((issue, index) => {
     const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
@@ -665,10 +1129,6 @@ function buildIssueFixPrompt(
     'Test output:',
     testOutput.slice(0, 4000) || '(empty)',
   ].join('\n')
-}
-
-function toDecision(content: string): DecisionJson | null {
-  return extractJsonBlock<DecisionJson>(content)
 }
 
 function toValidatorDecision(content: string): HarnessValidatorJson | null {
@@ -727,6 +1187,7 @@ async function runValidatorCheck(
   const label = describeBindingLabel(binding)
   const id = `${index + 1}-${slugifyBindingLabel(label)}`
   try {
+    const prompt = formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput)
     const provider = createConfiguredProvider({
       logicalName: `capabilities.harness.validator_checks[${index}]`,
       tool: binding.tool,
@@ -735,22 +1196,46 @@ async function runValidatorCheck(
     }, config)
     provider.setCwd?.(cwd)
 
-    const raw = await provider.chat([{
-      role: 'user',
-      content: formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput),
-    }])
+    let raw: string
+    let fallbackUsed = false
+
+    try {
+      raw = await provider.chat([{
+        role: 'user',
+        content: prompt,
+      }])
+    } catch (error) {
+      if (!isGeminiBinding(binding) || !isKnownGeminiModelError(error)) {
+        throw error
+      }
+
+      const fallbackProvider = createConfiguredProvider({
+        logicalName: `capabilities.harness.validator_checks[${index}]`,
+        tool: 'kiro',
+        model: 'kiro',
+        agent: 'architect',
+      }, config)
+      fallbackProvider.setCwd?.(cwd)
+      raw = await fallbackProvider.chat([{
+        role: 'user',
+        content: prompt,
+      }])
+      fallbackUsed = true
+    }
+
     const parsed = toValidatorDecision(raw)
     await writeFile(outputPath, JSON.stringify({
       raw,
       parsed,
+      ...(fallbackUsed ? { fallback: { tool: 'kiro', model: 'kiro', agent: 'architect' } } : {}),
     }, null, 2), 'utf-8')
 
     return {
       id,
       label,
-      tool: binding.tool,
-      model: binding.model,
-      agent: binding.agent,
+      tool: fallbackUsed ? 'kiro' : binding.tool,
+      model: fallbackUsed ? 'kiro' : binding.model,
+      agent: fallbackUsed ? 'architect' : binding.agent,
       outputPath,
       decision: parsed?.decision || 'unknown',
       rationale: parsed?.rationale || 'Validator returned no parsable JSON decision.',
@@ -777,10 +1262,212 @@ async function runValidatorCheck(
   }
 }
 
-function isApproved(decision: DecisionJson | null, blockingIssueCount: number, testsPassed: boolean): boolean {
-  if (blockingIssueCount > 0) return false
-  if (!testsPassed) return false
-  return decision?.decision === 'approved'
+function buildValidatorIssues(validations: HarnessValidatorResult[]): MergedIssue[] {
+  return validations.flatMap((validation) =>
+    validation.unresolvedItems.map((item, index) => ({
+      severity: 'high',
+      category: 'validator',
+      file: `${validation.id}-validator`,
+      line: index + 1,
+      title: `${validation.label} unresolved item`,
+      description: item,
+      descriptions: [item],
+      raisedBy: [validation.label],
+    } satisfies MergedIssue))
+  )
+}
+
+async function completeHarnessCycleFromReviewCheckpoint(
+  checkpoint: PendingHarnessReviewCheckpoint,
+  params: {
+    cwd: string
+    configPath: string
+    sessionDir: string
+    config: MagpieConfigV2
+    cycle: number
+    reviewerIds: string[]
+    routingDecision: RoutingDecision | undefined
+    routingDecisionPath: string
+    sessionId: string
+    roles: RoleInstance[]
+    roleRosterPath: string
+    roleMessagesPath: string
+    roleRoundsDir: string
+    testCommand: string
+  }
+): Promise<{ cycleResult: HarnessCycle; approved: boolean; routingDecision?: RoutingDecision }> {
+  const cycleCtx = createCapabilityContext({ cwd: params.cwd, configPath: params.configPath })
+  const cycleDir = join(params.sessionDir, `cycle-${params.cycle}`)
+  await mkdir(cycleDir, { recursive: true })
+
+  const reviewData = JSON.parse(await readFile(checkpoint.reviewOutputPath, 'utf-8')) as { parsedIssues?: MergedIssue[] }
+  const allIssues = Array.isArray(reviewData.parsedIssues) ? reviewData.parsedIssues : []
+  const blockingIssues = allIssues.filter(issue => BLOCKING_SEVERITIES.has(issue.severity))
+  const unitEval = JSON.parse(await readFile(checkpoint.unitTestEvalPath, 'utf-8')) as {
+    testRun?: { passed?: boolean; output?: string }
+  }
+  const testsPassed = unitEval.testRun?.passed === true
+  const testOutput = unitEval.testRun?.output || ''
+  const validations = checkpoint.validations
+  const validatorIssues = buildValidatorIssues(validations)
+  const combinedBlockingIssues = [...blockingIssues, ...validatorIssues]
+
+  const adjudicationOutputPath = join(cycleDir, 'adjudication.json')
+  const adjudicationTopic = buildAdjudicationTopic(params.cycle, combinedBlockingIssues, validations, testsPassed, testOutput)
+  params.reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    discussCapability,
+    (reviewers) => ({
+      topic: adjudicationTopic,
+      options: {
+        config: params.configPath,
+        rounds: '2',
+        format: 'json',
+        converge: true,
+        reviewers,
+        all: false,
+        interactive: false,
+        output: adjudicationOutputPath,
+      },
+    }),
+    cycleCtx,
+    params.config,
+    params.configPath,
+    params.reviewerIds,
+    async (reviewerIds) => {
+      params.roles = buildHarnessRoleRoster(params.config, reviewerIds, resolveHarnessValidatorBindings(params.config))
+      await writeFile(params.roleRosterPath, JSON.stringify(params.roles, null, 2), 'utf-8')
+    },
+  )
+
+  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as {
+    finalConclusion?: string
+    analysis?: string
+    messages?: Array<{ content?: string }>
+    summaries?: Array<{ summary?: string }>
+  }
+  const outcome = resolveHarnessArbitrationOutcome({
+    finalConclusion: adjudicationData.finalConclusion || '',
+    fallbackTexts: collectAdjudicationFallbackTexts(adjudicationData),
+    blockingIssueCount: combinedBlockingIssues.length,
+    testsPassed,
+  })
+  const openIssues = buildHarnessRoleOpenIssues(
+    params.roles,
+    combinedBlockingIssues,
+    validations,
+    checkpoint.reviewOutputPath,
+    Math.max(params.reviewerIds.length, 1)
+  )
+  const reviewResults = buildReviewResults(
+    params.roles,
+    combinedBlockingIssues,
+    validations,
+    checkpoint.reviewOutputPath,
+    Math.max(params.reviewerIds.length, 1)
+  )
+  const roleRoundPath = join(params.roleRoundsDir, `cycle-${params.cycle}.json`)
+  const roleOpenIssuesPath = join(params.roleRoundsDir, `cycle-${params.cycle}-open-issues.md`)
+  const roleNextRoundPath = join(params.roleRoundsDir, `cycle-${params.cycle}-next.md`)
+  const roundResult = createRoleRoundResult({
+    roundId: `cycle-${params.cycle}`,
+    roles: params.roles,
+    developmentResult: {
+      summary: `Development artifacts are recorded under ${cycleDir}.`,
+      artifactRefs: [{ path: cycleDir, label: `cycle-${params.cycle}` }],
+    },
+    testResult: {
+      status: testsPassed ? 'passed' : 'failed',
+      summary: testsPassed
+        ? 'Unit test evaluation passed.'
+        : 'Unit test evaluation reported failures.',
+      artifactRefs: [{ path: checkpoint.unitTestEvalPath, label: 'unit-test-eval' }],
+    },
+    reviewResults,
+    arbitrationResult: {
+      action: outcome.finalAction,
+      summary: outcome.rationale,
+      artifactRefs: [{ path: adjudicationOutputPath, label: 'adjudication' }],
+    },
+    openIssues,
+    nextRoundBrief: outcome.nextRoundBrief,
+    finalAction: outcome.finalAction,
+  })
+
+  await writeFile(roleRoundPath, JSON.stringify(roundResult, null, 2), 'utf-8')
+  await writeFile(roleOpenIssuesPath, buildRoleOpenIssuesMarkdown(openIssues), 'utf-8')
+  await writeFile(roleNextRoundPath, buildRoleNextRoundMarkdown(outcome.finalAction, outcome.nextRoundBrief), 'utf-8')
+  await appendRoleMessages(params.roleMessagesPath, [
+    ...reviewResults.map((result) => serializeRoleMessage(createRoleMessage({
+      sessionId: params.sessionId,
+      roundId: roundResult.roundId,
+      fromRole: result.reviewerRoleId,
+      toRole: 'arbitrator',
+      kind: 'review_result',
+      summary: result.summary,
+      artifactRefs: result.artifactRefs,
+    }))),
+    serializeRoleMessage(createRoleMessage({
+      sessionId: params.sessionId,
+      roundId: roundResult.roundId,
+      fromRole: 'arbitrator',
+      toRole: 'developer',
+      kind: 'arbitration_result',
+      summary: roundResult.arbitrationResult?.summary || outcome.nextRoundBrief,
+      artifactRefs: roundResult.arbitrationResult?.artifactRefs || [{ path: adjudicationOutputPath, label: 'adjudication' }],
+    })),
+  ])
+
+  const cycleResult: HarnessCycle = {
+    cycle: params.cycle,
+    reviewOutputPath: checkpoint.reviewOutputPath,
+    validatorChecks: validations.map(toValidatorArtifact),
+    adjudicationOutputPath,
+    unitTestEvalPath: checkpoint.unitTestEvalPath,
+    issueCount: allIssues.length + validatorIssues.length,
+    blockingIssueCount: combinedBlockingIssues.length,
+    testsPassed,
+    modelDecision: outcome.decision?.decision || 'unknown',
+    modelRationale: outcome.rationale,
+    roleRoundPath,
+    roleOpenIssuesPath,
+    roleNextRoundPath,
+    finalAction: outcome.finalAction,
+    nextRoundBrief: outcome.nextRoundBrief,
+  }
+
+  if (outcome.approved) {
+    return { cycleResult, approved: true, routingDecision: params.routingDecision }
+  }
+
+  if (!outcome.shouldRequestIssueFix) {
+    return { cycleResult, approved: false, routingDecision: params.routingDecision }
+  }
+
+  let nextRoutingDecision = params.routingDecision
+  const escalationReason = params.routingDecision
+    ? getEscalationReason({
+      blockingIssueCount: combinedBlockingIssues.length,
+      testsPassed,
+      modelDecision: cycleResult.modelDecision,
+    })
+    : null
+
+  if (params.routingDecision && escalationReason) {
+    nextRoutingDecision = escalateRoutingDecision(params.routingDecision, params.config, escalationReason)
+    applyBinding(params.config, 'loop', nextRoutingDecision.planning, nextRoutingDecision.execution)
+    applyBinding(params.config, 'issue_fix', nextRoutingDecision.planning, nextRoutingDecision.execution)
+    await writeFile(params.configPath, YAML.stringify(params.config), 'utf-8')
+    await writeFile(params.routingDecisionPath, JSON.stringify(nextRoutingDecision, null, 2), 'utf-8')
+  }
+
+  const issueFix = await runCapability(issueFixCapability, {
+    issue: buildIssueFixPrompt(params.cycle, combinedBlockingIssues, validations, testOutput, outcome.decision),
+    apply: true,
+    verifyCommand: params.testCommand,
+  }, cycleCtx)
+
+  cycleResult.issueFixSessionId = issueFix.result.session?.id
+  return { cycleResult, approved: false, routingDecision: nextRoutingDecision }
 }
 
 async function runCycle(
@@ -795,6 +1482,12 @@ async function runCycle(
   config: MagpieConfigV2,
   routingDecision: RoutingDecision | undefined,
   routingDecisionPath: string,
+  sessionId: string,
+  roles: RoleInstance[],
+  roleRosterPath: string,
+  roleMessagesPath: string,
+  roleRoundsDir: string,
+  persistPendingReviewCheckpoint?: (checkpoint: PendingHarnessReviewCheckpoint | null, lastReliablePoint?: string) => Promise<void>,
 ): Promise<{ cycleResult: HarnessCycle; approved: boolean; routingDecision?: RoutingDecision }> {
   const cycleDir = join(sessionDir, `cycle-${cycle}`)
   await mkdir(cycleDir, { recursive: true })
@@ -810,22 +1503,33 @@ async function runCycle(
     metadata: { format: 'json' },
   })
 
-  await runCapability(reviewCapability, {
-    options: {
-      config: configPath,
-      rounds: String(reviewRounds),
-      format: 'json',
-      converge: true,
-      local: true,
-      reviewers: reviewerIds.join(','),
-      all: false,
-      deep: true,
-      skipContext: true,
-      post: false,
-      interactive: false,
-      output: reviewOutputPath,
+  reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    reviewCapability,
+    (reviewers) => ({
+      options: {
+        config: configPath,
+        rounds: String(reviewRounds),
+        format: 'json',
+        converge: true,
+        local: true,
+        reviewers,
+        all: false,
+        deep: true,
+        skipContext: true,
+        post: false,
+        interactive: false,
+        output: reviewOutputPath,
+      },
+    }),
+    cycleCtx,
+    config,
+    configPath,
+    reviewerIds,
+    async (nextReviewerIds) => {
+      roles = buildHarnessRoleRoster(config, nextReviewerIds, validatorBindings)
+      await writeFile(roleRosterPath, JSON.stringify(roles, null, 2), 'utf-8')
     },
-  }, cycleCtx)
+  )
 
   const reviewData = JSON.parse(await readFile(reviewOutputPath, 'utf-8')) as { parsedIssues?: MergedIssue[] }
   const allIssues = Array.isArray(reviewData.parsedIssues) ? reviewData.parsedIssues : []
@@ -848,38 +1552,119 @@ async function runCycle(
       return runValidatorCheck(binding, index, cwd, config, cycle, blockingIssues, testsPassed, testOutput, outputPath)
     })
   )
-  const validatorIssues = validations.flatMap((validation) =>
-    validation.unresolvedItems.map((item, index) => ({
-      severity: 'high',
-      category: 'validator',
-      file: `${validation.id}-validator`,
-      line: index + 1,
-      title: `${validation.label} unresolved item`,
-      description: item,
-      descriptions: [item],
-      raisedBy: [validation.label],
-    } satisfies MergedIssue))
-  )
+  await persistPendingReviewCheckpoint?.({
+    cycle,
+    reviewOutputPath,
+    unitTestEvalPath,
+    validations,
+  }, 'review_results_recorded')
+  const validatorIssues = buildValidatorIssues(validations)
   const combinedBlockingIssues = [...blockingIssues, ...validatorIssues]
 
   const adjudicationTopic = buildAdjudicationTopic(cycle, combinedBlockingIssues, validations, testsPassed, testOutput)
-  await runCapability(discussCapability, {
-    topic: adjudicationTopic,
-    options: {
-      config: configPath,
-      rounds: '2',
-      format: 'json',
-      converge: true,
-      reviewers: reviewerIds.join(','),
-      all: false,
-      interactive: false,
-      output: adjudicationOutputPath,
+  reviewerIds = await runCapabilityWithGeminiReviewerFallback(
+    discussCapability,
+    (reviewers) => ({
+      topic: adjudicationTopic,
+      options: {
+        config: configPath,
+        rounds: '2',
+        format: 'json',
+        converge: true,
+        reviewers,
+        all: false,
+        interactive: false,
+        output: adjudicationOutputPath,
+      },
+    }),
+    cycleCtx,
+    config,
+    configPath,
+    reviewerIds,
+    async (nextReviewerIds) => {
+      roles = buildHarnessRoleRoster(config, nextReviewerIds, validatorBindings)
+      await writeFile(roleRosterPath, JSON.stringify(roles, null, 2), 'utf-8')
     },
-  }, cycleCtx)
+  )
 
-  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as { finalConclusion?: string }
-  const decision = toDecision(adjudicationData.finalConclusion || '')
-  const approved = isApproved(decision, combinedBlockingIssues.length, testsPassed)
+  const adjudicationData = JSON.parse(await readFile(adjudicationOutputPath, 'utf-8')) as {
+    finalConclusion?: string
+    analysis?: string
+    messages?: Array<{ content?: string }>
+    summaries?: Array<{ summary?: string }>
+  }
+  const outcome = resolveHarnessArbitrationOutcome({
+    finalConclusion: adjudicationData.finalConclusion || '',
+    fallbackTexts: collectAdjudicationFallbackTexts(adjudicationData),
+    blockingIssueCount: combinedBlockingIssues.length,
+    testsPassed,
+  })
+  const openIssues = buildHarnessRoleOpenIssues(
+    roles,
+    combinedBlockingIssues,
+    validations,
+    reviewOutputPath,
+    Math.max(reviewerIds.length, 1)
+  )
+  const reviewResults = buildReviewResults(
+    roles,
+    combinedBlockingIssues,
+    validations,
+    reviewOutputPath,
+    Math.max(reviewerIds.length, 1)
+  )
+  const roleRoundPath = join(roleRoundsDir, `cycle-${cycle}.json`)
+  const roleOpenIssuesPath = join(roleRoundsDir, `cycle-${cycle}-open-issues.md`)
+  const roleNextRoundPath = join(roleRoundsDir, `cycle-${cycle}-next.md`)
+
+  const roundResult = createRoleRoundResult({
+    roundId: `cycle-${cycle}`,
+    roles,
+    developmentResult: {
+      summary: `Development artifacts are recorded under ${cycleDir}.`,
+      artifactRefs: [{ path: cycleDir, label: `cycle-${cycle}` }],
+    },
+    testResult: {
+      status: testsPassed ? 'passed' : 'failed',
+      summary: testsPassed
+        ? 'Unit test evaluation passed.'
+        : 'Unit test evaluation reported failures.',
+      artifactRefs: [{ path: unitTestEvalPath, label: 'unit-test-eval' }],
+    },
+    reviewResults,
+    arbitrationResult: {
+      action: outcome.finalAction,
+      summary: outcome.rationale,
+      artifactRefs: [{ path: adjudicationOutputPath, label: 'adjudication' }],
+    },
+    openIssues,
+    nextRoundBrief: outcome.nextRoundBrief,
+    finalAction: outcome.finalAction,
+  })
+
+  await writeFile(roleRoundPath, JSON.stringify(roundResult, null, 2), 'utf-8')
+  await writeFile(roleOpenIssuesPath, buildRoleOpenIssuesMarkdown(openIssues), 'utf-8')
+  await writeFile(roleNextRoundPath, buildRoleNextRoundMarkdown(outcome.finalAction, outcome.nextRoundBrief), 'utf-8')
+  await appendRoleMessages(roleMessagesPath, [
+    ...reviewResults.map((result) => serializeRoleMessage(createRoleMessage({
+      sessionId,
+      roundId: roundResult.roundId,
+      fromRole: result.reviewerRoleId,
+      toRole: 'arbitrator',
+      kind: 'review_result',
+      summary: result.summary,
+      artifactRefs: result.artifactRefs,
+    }))),
+    serializeRoleMessage(createRoleMessage({
+      sessionId,
+      roundId: roundResult.roundId,
+      fromRole: 'arbitrator',
+      toRole: 'developer',
+      kind: 'arbitration_result',
+      summary: roundResult.arbitrationResult?.summary || outcome.nextRoundBrief,
+      artifactRefs: roundResult.arbitrationResult?.artifactRefs || [{ path: adjudicationOutputPath, label: 'adjudication' }],
+    })),
+  ])
 
   const cycleResult: HarnessCycle = {
     cycle,
@@ -890,12 +1675,21 @@ async function runCycle(
     issueCount: allIssues.length + validatorIssues.length,
     blockingIssueCount: combinedBlockingIssues.length,
     testsPassed,
-    modelDecision: decision?.decision || 'unknown',
-    modelRationale: decision?.rationale || 'No parsable decision returned by discuss final conclusion.',
+    modelDecision: outcome.decision?.decision || 'unknown',
+    modelRationale: outcome.rationale,
+    roleRoundPath,
+    roleOpenIssuesPath,
+    roleNextRoundPath,
+    finalAction: outcome.finalAction,
+    nextRoundBrief: outcome.nextRoundBrief,
   }
 
-  if (approved) {
+  if (outcome.approved) {
     return { cycleResult, approved: true, routingDecision }
+  }
+
+  if (!outcome.shouldRequestIssueFix) {
+    return { cycleResult, approved: false, routingDecision }
   }
 
   let nextRoutingDecision = routingDecision
@@ -916,7 +1710,7 @@ async function runCycle(
   }
 
   const issueFix = await runCapability(issueFixCapability, {
-    issue: buildIssueFixPrompt(cycle, combinedBlockingIssues, validations, testOutput, decision),
+    issue: buildIssueFixPrompt(cycle, combinedBlockingIssues, validations, testOutput, outcome.decision),
     apply: true,
     verifyCommand: testCommand,
   }, cycleCtx)
@@ -934,6 +1728,7 @@ export async function executeHarness(
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
   const sessionDir = sessionDirFor(ctx.cwd, 'harness', sessionId)
+  const roleArtifacts = getRoleArtifactPaths(sessionDir)
   const roundsPath = join(sessionDir, 'rounds.json')
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
@@ -946,6 +1741,7 @@ export async function executeHarness(
   )
 
   await mkdir(sessionDir, { recursive: true })
+  let documentPlanSeed = ctx.metadata?.documentPlan as DocumentPlan | undefined
   const knowledgeArtifacts = await createTaskKnowledge({
     sessionDir,
     capability: 'harness',
@@ -999,6 +1795,9 @@ export async function executeHarness(
       routingDecisionPath,
       eventsPath,
       ...resolveWorkflowFailureArtifacts(ctx.cwd, 'harness', sessionId),
+      roleRosterPath: roleArtifacts.rolesPath,
+      roleMessagesPath: roleArtifacts.messagesPath,
+      roleRoundsDir: roleArtifacts.roundsDir,
       executionHost: prepared.host === 'tmux' || process.env.MAGPIE_EXECUTION_HOST === 'tmux' ? 'tmux' : 'foreground',
       ...(process.env.MAGPIE_TMUX_SESSION ? { tmuxSession: process.env.MAGPIE_TMUX_SESSION } : {}),
       ...(process.env.MAGPIE_TMUX_WINDOW ? { tmuxWindow: process.env.MAGPIE_TMUX_WINDOW } : {}),
@@ -1010,6 +1809,7 @@ export async function executeHarness(
   let harnessConfig: MagpieConfigV2 = config
   let reviewerIds: string[] = []
   let validatorBindings: ModelRouteBinding[] = []
+  let roles: RoleInstance[] = []
 
   const persistSession = async (
     patch: HarnessSessionPatch = {}
@@ -1031,6 +1831,27 @@ export async function executeHarness(
     }
     await persistWorkflowSession(ctx.cwd, session)
     progressObserver?.onSessionUpdate?.(session)
+  }
+
+  const persistRuntimeEvidence = async (
+    patch: {
+      lastReliablePoint?: string
+      pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+    }
+  ): Promise<void> => {
+    await persistSession({
+      evidence: mergeHarnessRuntimeEvidence(session.evidence, patch),
+    })
+  }
+
+  const persistPendingReviewCheckpoint = async (
+    checkpoint: PendingHarnessReviewCheckpoint | null,
+    lastReliablePoint?: string
+  ): Promise<void> => {
+    await persistRuntimeEvidence({
+      ...(lastReliablePoint ? { lastReliablePoint } : {}),
+      pendingReviewCheckpoint: checkpoint,
+    })
   }
 
   const appendEvent = async (
@@ -1257,6 +2078,9 @@ export async function executeHarness(
   }
 
   await persistSession()
+  if (!resumeState.isResume) {
+    await persistRuntimeEvidence({ lastReliablePoint: 'queued', pendingReviewCheckpoint: null })
+  }
   await appendEvent(resumeState.isResume ? 'workflow_resumed' : 'workflow_started', {
     stage: session.currentStage || 'queued',
     summary: resumeState.isResume ? 'Harness workflow resumed.' : 'Harness workflow started.',
@@ -1286,12 +2110,44 @@ export async function executeHarness(
     routingDecision
   ))
   validatorBindings = resolveHarnessValidatorBindings(harnessConfig)
+  const documentPlanner = createConfiguredProvider({
+    logicalName: 'capabilities.harness.document_planner',
+    tool: harnessConfig.capabilities.loop?.planner_tool,
+    model: harnessConfig.capabilities.loop?.planner_model,
+    agent: harnessConfig.capabilities.loop?.planner_agent,
+  }, harnessConfig)
+  const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
+    repoRoot: ctx.cwd,
+    sessionDir,
+    capability: 'harness',
+    sessionId,
+    goal: prepared.goal,
+    prdPath: prepared.prdPath,
+    stages: ['developing', 'reviewing'],
+    provider: documentPlanner,
+    seedPlan: documentPlanSeed,
+    existingPlanPath: existingSession?.artifacts.documentPlanPath,
+  })
+  documentPlanSeed = documentPlan
+  roles = buildHarnessRoleRoster(harnessConfig, reviewerIds, validatorBindings)
+  await mkdir(roleArtifacts.roundsDir, { recursive: true })
+  await writeFile(roleArtifacts.rolesPath, JSON.stringify(roles, null, 2), 'utf-8')
+  try {
+    await readFile(roleArtifacts.messagesPath, 'utf-8')
+  } catch {
+    await writeFile(roleArtifacts.messagesPath, '', 'utf-8')
+  }
   const providerSelection = selectHarnessProviders(harnessConfig, reviewerIds, resolve(ctx.cwd), ctx.now)
   await writeFile(providerSelectionPath, JSON.stringify(providerSelection.record, null, 2), 'utf-8')
   await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
   if (routingDecision) {
     await writeFile(routingDecisionPath, JSON.stringify(routingDecision, null, 2), 'utf-8')
   }
+  await persistSession({
+    artifacts: {
+      documentPlanPath,
+    },
+  })
   await emitStageEntered('queued', session.summary)
 
   if (providerSelection.record.decision === 'fallback_failed') {
@@ -1336,6 +2192,7 @@ export async function executeHarness(
     cwd: ctx.cwd,
     configPath: harnessConfigPath,
     metadata: {
+      documentPlan: documentPlanSeed,
       loopProgress: {
         onSessionUpdate: (loopSession: {
           id: string
@@ -1547,9 +2404,106 @@ export async function executeHarness(
   const testCommand = prepared.testCommand || config.capabilities.loop?.commands?.unit_test || 'npm run test:run'
   const cycles: HarnessCycle[] = [...resumeState.completedCycles]
   let approved = resumeState.approvedFromCompletedCycles
+  let blockedByArbitration = false
+
+  const recordCompletedCycle = async (
+    cycleRun: { cycleResult: HarnessCycle; approved: boolean; routingDecision?: RoutingDecision }
+  ): Promise<void> => {
+    routingDecision = cycleRun.routingDecision
+    if (routingDecision && !prepared.modelsExplicit) {
+      reviewerIds = [...routingDecision.reviewerIds]
+      alignSummaryRoles(harnessConfig, reviewerIds)
+      await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
+    }
+    cycles.push(cycleRun.cycleResult)
+    await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
+    await updateTaskKnowledgeSummary(
+      knowledgeArtifacts,
+      `stage-cycle-${cycleRun.cycleResult.cycle}`,
+      buildHarnessCycleSummary(cycleRun.cycleResult),
+      `Cycle ${cycleRun.cycleResult.cycle} summary updated.`
+    )
+    await updateTaskKnowledgeSummary(
+      knowledgeArtifacts,
+      'open-issues',
+      buildHarnessOpenIssues(cycleRun.cycleResult),
+      `Cycle ${cycleRun.cycleResult.cycle} open issues updated.`
+    )
+    await updateTaskKnowledgeSummary(
+      knowledgeArtifacts,
+      'evidence',
+      buildHarnessEvidence(cycleRun.cycleResult),
+      `Cycle ${cycleRun.cycleResult.cycle} evidence updated.`
+    )
+    await persistSession({
+      summary: cycleRun.approved
+        ? `Cycle ${cycleRun.cycleResult.cycle} approved.`
+        : `Cycle ${cycleRun.cycleResult.cycle} requested more changes.`,
+    })
+    await persistRuntimeEvidence({
+      lastReliablePoint: 'arbitration_recorded',
+      pendingReviewCheckpoint: null,
+    })
+    await appendEvent('cycle_completed', {
+      stage: cycleRun.approved ? 'completed' : 'reviewing',
+      cycle: cycleRun.cycleResult.cycle,
+      summary: cycleRun.approved
+        ? `Cycle ${cycleRun.cycleResult.cycle} approved.`
+        : `Cycle ${cycleRun.cycleResult.cycle} requested more changes.`,
+      details: {
+        approved: cycleRun.approved,
+        blockingIssueCount: cycleRun.cycleResult.blockingIssueCount,
+        testsPassed: cycleRun.cycleResult.testsPassed,
+        modelDecision: cycleRun.cycleResult.modelDecision,
+        finalAction: cycleRun.cycleResult.finalAction,
+      },
+    })
+    if (cycleRun.approved) {
+      approved = true
+    }
+    if (cycleRun.cycleResult.finalAction === 'requeue_or_blocked') {
+      blockedByArbitration = true
+    }
+  }
 
   try {
+    if (resumeState.pendingReviewCheckpoint) {
+      await transitionStage(
+        'reviewing',
+        `Resuming adjudication for cycle ${resumeState.pendingReviewCheckpoint.cycle}.`,
+        'stage_changed',
+        { cycle: resumeState.pendingReviewCheckpoint.cycle }
+      )
+      roles = buildHarnessRoleRoster(harnessConfig, reviewerIds, validatorBindings)
+      await writeFile(roleArtifacts.rolesPath, JSON.stringify(roles, null, 2), 'utf-8')
+      const resumedCycle = await completeHarnessCycleFromReviewCheckpoint(
+        resumeState.pendingReviewCheckpoint,
+        {
+          cwd: resolve(ctx.cwd),
+          configPath: harnessConfigPath,
+          sessionDir,
+          config: harnessConfig,
+          cycle: resumeState.pendingReviewCheckpoint.cycle,
+          reviewerIds,
+          routingDecision,
+          routingDecisionPath,
+          sessionId,
+          roles,
+          roleRosterPath: roleArtifacts.rolesPath,
+          roleMessagesPath: roleArtifacts.messagesPath,
+          roleRoundsDir: roleArtifacts.roundsDir,
+          testCommand,
+        }
+      )
+      await recordCompletedCycle(resumedCycle)
+    }
+
     for (let cycle = cycles.length + 1; cycle <= prepared.maxCycles; cycle++) {
+      if (approved || blockedByArbitration) {
+        break
+      }
+      roles = buildHarnessRoleRoster(harnessConfig, reviewerIds, validatorBindings)
+      await writeFile(roleArtifacts.rolesPath, JSON.stringify(roles, null, 2), 'utf-8')
       await transitionStage('reviewing', `Running review cycle ${cycle}.`, 'stage_changed', { cycle })
       const cycleRun = await runCycle(
         cycle,
@@ -1563,55 +2517,14 @@ export async function executeHarness(
         harnessConfig,
         routingDecision,
         routingDecisionPath,
+        sessionId,
+        roles,
+        roleArtifacts.rolesPath,
+        roleArtifacts.messagesPath,
+        roleArtifacts.roundsDir,
+        persistPendingReviewCheckpoint,
       )
-      routingDecision = cycleRun.routingDecision
-      if (routingDecision && !prepared.modelsExplicit) {
-        reviewerIds = [...routingDecision.reviewerIds]
-        alignSummaryRoles(harnessConfig, reviewerIds)
-        await writeFile(harnessConfigPath, YAML.stringify(harnessConfig), 'utf-8')
-      }
-      cycles.push(cycleRun.cycleResult)
-      await writeFile(roundsPath, JSON.stringify(cycles, null, 2), 'utf-8')
-      await updateTaskKnowledgeSummary(
-        knowledgeArtifacts,
-        `stage-cycle-${cycle}`,
-        buildHarnessCycleSummary(cycleRun.cycleResult),
-        `Cycle ${cycle} summary updated.`
-      )
-      await updateTaskKnowledgeSummary(
-        knowledgeArtifacts,
-        'open-issues',
-        buildHarnessOpenIssues(cycleRun.cycleResult),
-        `Cycle ${cycle} open issues updated.`
-      )
-      await updateTaskKnowledgeSummary(
-        knowledgeArtifacts,
-        'evidence',
-        buildHarnessEvidence(cycleRun.cycleResult),
-        `Cycle ${cycle} evidence updated.`
-      )
-      await persistSession({
-        summary: cycleRun.approved
-          ? `Cycle ${cycle} approved.`
-          : `Cycle ${cycle} requested more changes.`,
-      })
-      await appendEvent('cycle_completed', {
-        stage: cycleRun.approved ? 'completed' : 'reviewing',
-        cycle,
-        summary: cycleRun.approved
-          ? `Cycle ${cycle} approved.`
-          : `Cycle ${cycle} requested more changes.`,
-        details: {
-          approved: cycleRun.approved,
-          blockingIssueCount: cycleRun.cycleResult.blockingIssueCount,
-          testsPassed: cycleRun.cycleResult.testsPassed,
-          modelDecision: cycleRun.cycleResult.modelDecision,
-        },
-      })
-      if (cycleRun.approved) {
-        approved = true
-        break
-      }
+      await recordCompletedCycle(cycleRun)
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -1646,9 +2559,13 @@ export async function executeHarness(
     return { status: 'failed', session }
   }
 
+  const latestCycle = cycles[cycles.length - 1]
+  const blocked = !approved && latestCycle?.finalAction === 'requeue_or_blocked'
   const summary = approved
     ? `Harness approved after ${cycles.length} cycle(s).`
-    : `Harness failed after ${cycles.length} cycle(s) without approval.`
+    : blocked
+      ? `Harness blocked after ${cycles.length} cycle(s): ${latestCycle?.nextRoundBrief || 'Await human or scheduler intervention.'}`
+      : `Harness failed after ${cycles.length} cycle(s) without approval.`
   const finalCandidates = buildHarnessCandidates(
     prepared.goal,
     sessionId,
@@ -1680,8 +2597,16 @@ export async function executeHarness(
   await updateTaskKnowledgeState(knowledgeArtifacts, {
     currentStage: approved ? 'completed' : 'failed',
     lastReliableResult: summary,
-    nextAction: approved ? 'No further action.' : 'Inspect unresolved review findings and retry.',
-    currentBlocker: approved ? 'None.' : 'Harness did not receive approval.',
+    nextAction: approved
+      ? 'No further action.'
+      : blocked
+        ? 'Inspect the blocked adjudication result before retrying.'
+        : 'Inspect unresolved review findings and retry.',
+    currentBlocker: approved
+      ? 'None.'
+      : blocked
+        ? latestCycle?.nextRoundBrief || 'Harness blocked without a usable next step.'
+        : 'Harness did not receive approval.',
   }, `Harness state marked ${approved ? 'completed' : 'failed'}.`)
   await finalizeKnowledgeBestEffort(
     [

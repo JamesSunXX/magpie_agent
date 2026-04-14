@@ -220,6 +220,8 @@ function buildDefaultNotificationsConfig() {
       human_confirmation_required: ['macos_local', 'feishu_team'],
       loop_failed: ['feishu_team'],
       loop_completed: ['feishu_team'],
+      loop_auto_mr_created: ['feishu_team'],
+      loop_auto_mr_manual_follow_up: ['feishu_team'],
     },
   }
 }
@@ -244,6 +246,12 @@ function buildDefaultLoopExecutionTimeoutConfig() {
       standard: 2,
       complex: 3,
     },
+  }
+}
+
+function buildDefaultLoopMrConfig() {
+  return {
+    enabled: false,
   }
 }
 
@@ -524,10 +532,19 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     changes.push('Filled missing capabilities.harness defaults.')
   }
   if (!isObjectRecord(capabilities.loop)) {
-    capabilities.loop = { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() }
+    capabilities.loop = {
+      execution_timeout: buildDefaultLoopExecutionTimeoutConfig(),
+      mr: buildDefaultLoopMrConfig(),
+    }
     changes.push('Added capabilities.loop execution timeout defaults.')
-  } else if (deepMergeMissing(capabilities.loop, { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() })) {
-    changes.push('Filled missing capabilities.loop execution timeout defaults.')
+    changes.push('Added capabilities.loop MR defaults.')
+  } else {
+    if (deepMergeMissing(capabilities.loop, { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() })) {
+      changes.push('Filled missing capabilities.loop execution timeout defaults.')
+    }
+    if (deepMergeMissing(capabilities.loop, { mr: buildDefaultLoopMrConfig() })) {
+      changes.push('Added capabilities.loop MR defaults.')
+    }
   }
   upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
 
@@ -796,6 +813,11 @@ capabilities:
     auto_commit: true
     reuse_current_branch: false
     auto_branch_prefix: "sch/"
+    branch_naming:
+      enabled: true
+      tool: claw
+    mr:
+      enabled: false
     human_confirmation:
       file: "human_confirmation.md"
       gate_policy: "exception_or_low_confidence"
@@ -824,6 +846,8 @@ integrations:
       human_confirmation_required: [macos_local, feishu_team]
       loop_failed: [feishu_team]
       loop_completed: [feishu_team]
+      loop_auto_mr_created: [feishu_team]
+      loop_auto_mr_manual_follow_up: [feishu_team]
     providers:
       macos_local:
         type: "macos"
