@@ -38,6 +38,20 @@ export function reduceAppState(state: AppState, action: AppAction): AppState {
         command: undefined,
         run: undefined,
       }
+    case 'graph:opened':
+      return {
+        ...state,
+        route: 'graph-workbench',
+        selectedIndex: 0,
+        command: undefined,
+        run: undefined,
+        graphWorkbench: {
+          sessionId: action.sessionId,
+          ...(action.selectedNodeId ? { selectedNodeId: action.selectedNodeId } : {}),
+          focusedPanel: 'overview',
+          selectedActionIndex: 0,
+        },
+      }
     case 'preview:opened':
       return {
         ...state,

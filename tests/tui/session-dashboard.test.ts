@@ -401,6 +401,7 @@ describe('session dashboard', () => {
     const harnessCard = result.continue[0]
 
     expect(harnessCard.detail).toContain('graph ready=0 waiting=1 blocked=1')
+    expect(harnessCard.graphPath).toBe(graphPath)
     expect(harnessCard.selectedDetail).toMatchObject({
       graphSummary: 'checkout-v2 · active · ready 0 · waiting approval 1 · blocked 1',
       attention: [

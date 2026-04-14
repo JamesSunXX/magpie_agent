@@ -78,6 +78,7 @@ export interface SessionCard {
   capability: 'review' | 'discuss' | 'trd' | 'loop' | 'issue-fix' | 'docs-sync' | 'post-merge-regression' | 'harness'
   title: string
   detail?: string
+  graphPath?: string
   selectedDetail?: {
     participants?: string
     reviewerSummaries: string[]
@@ -93,6 +94,84 @@ export interface SessionCard {
   updatedAt: Date
   resumeCommand?: string[]
   artifactPaths: string[]
+}
+
+export interface GraphWorkbenchNodeSummary {
+  id: string
+  title: string
+  type: string
+  state: string
+  statusReason?: string
+  approvalPending: boolean
+}
+
+export interface GraphWorkbenchLinkedExecution {
+  capability: 'loop' | 'harness'
+  sessionId: string
+  status: string
+  summary: string
+  nextStep?: string
+  command: string[]
+}
+
+export interface GraphWorkbenchNodeDetail {
+  id: string
+  title: string
+  type: string
+  state: string
+  statusReason?: string
+  dependencies: string[]
+  approvalPending: boolean
+  latestSummary?: string
+  nextStep?: string
+  unresolvedIssues: string[]
+  linkedExecution?: GraphWorkbenchLinkedExecution
+}
+
+export interface GraphWorkbenchAction {
+  id: string
+  kind: 'approve' | 'reject' | 'jump'
+  label: string
+  description: string
+  command: string[]
+  requiresConfirmation: boolean
+}
+
+export interface GraphWorkbenchEventItem {
+  id: string
+  timestamp: string
+  summary: string
+}
+
+export interface GraphWorkbenchData {
+  graph: {
+    sessionId: string
+    graphId: string
+    title: string
+    status: string
+    rollup: {
+      ready: number
+      waitingApproval: number
+      blocked: number
+    }
+  }
+  nodes: GraphWorkbenchNodeSummary[]
+  selectedNodeId?: string
+  selectedNode?: GraphWorkbenchNodeDetail
+  actions: GraphWorkbenchAction[]
+  attention: string[]
+  events: GraphWorkbenchEventItem[]
+  error?: string
+}
+
+export interface GraphWorkbenchState {
+  sessionId: string
+  selectedNodeId?: string
+  focusedPanel: 'overview' | 'actions' | 'events'
+  selectedActionIndex: number
+  data?: GraphWorkbenchData
+  message?: string
+  pendingConfirmationActionId?: string
 }
 
 export interface DashboardSessions {
@@ -123,12 +202,13 @@ export interface RunState {
 }
 
 export interface AppState {
-  route: 'dashboard' | 'wizard' | 'preview' | 'run'
+  route: 'dashboard' | 'wizard' | 'preview' | 'run' | 'graph-workbench'
   selectedIndex: number
   activeTaskId?: TaskId
   draft?: TaskDraft
   command?: BuiltCommand
   run?: RunState
+  graphWorkbench?: GraphWorkbenchState
   sessions: DashboardSessions
   health?: EnvironmentHealth
 }
@@ -137,6 +217,7 @@ export const CONTINUABLE_STATUSES = ['planning', 'paused', 'in_progress', 'activ
 
 export type AppAction =
   | { type: 'task:selected'; taskId: TaskId }
+  | { type: 'graph:opened'; sessionId: string; selectedNodeId?: string }
   | { type: 'preview:opened'; command: BuiltCommand }
   | { type: 'wizard:submitted'; command: BuiltCommand }
   | { type: 'execution:started' }

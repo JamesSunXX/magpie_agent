@@ -645,6 +645,7 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
     id: session.id,
     capability: session.capability,
     title: normalizeSessionTitle(session.title, session.capability),
+    ...(session.capability === 'harness' && session.artifacts?.graphPath ? { graphPath: session.artifacts.graphPath } : {}),
     detail: latestHarnessRound
       ? [
         session.currentStage || session.status,
