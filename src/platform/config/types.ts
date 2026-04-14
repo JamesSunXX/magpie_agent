@@ -234,7 +234,7 @@ export interface FeishuWebhookNotificationProviderConfig {
   enabled?: boolean
   webhook_url: string
   secret?: string
-  msg_type?: 'text' | 'post'
+  msg_type?: 'text' | 'post' | 'interactive'
 }
 
 export interface ImessageBlueBubblesNotificationProviderConfig {

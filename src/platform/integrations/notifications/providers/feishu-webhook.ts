@@ -11,7 +11,7 @@ export interface FeishuWebhookNotificationProviderConfig {
   enabled?: boolean
   webhook_url: string
   secret?: string
-  msg_type?: 'text' | 'post'
+  msg_type?: 'text' | 'post' | 'interactive'
 }
 
 function buildFeishuSign(secret: string, timestamp: string): string {
@@ -19,12 +19,70 @@ function buildFeishuSign(secret: string, timestamp: string): string {
   return createHmac('sha256', stringToSign).digest('base64')
 }
 
-function buildPayload(event: NotificationEvent, msgType: 'text' | 'post') {
+function renderCardMarkdown(message: string): string {
+  return message
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf(':')
+      if (separator <= 0) return line
+      const label = line.slice(0, separator).trim()
+      const value = line.slice(separator + 1).trim()
+      return `**${label}**: ${value || '-'}`
+    })
+    .join('\n')
+}
+
+function cardTemplateFor(event: NotificationEvent): 'blue' | 'orange' | 'red' {
+  switch (event.severity) {
+    case 'warning':
+      return 'orange'
+    case 'error':
+      return 'red'
+    default:
+      return 'blue'
+  }
+}
+
+function buildPayload(event: NotificationEvent, msgType: 'text' | 'post' | 'interactive') {
   if (msgType === 'text') {
     return {
       msg_type: 'text',
       content: {
         text: `[${event.type}] ${event.title}\n${event.message}${event.actionUrl ? `\n${event.actionUrl}` : ''}`,
+      },
+    }
+  }
+
+  if (msgType === 'interactive') {
+    return {
+      msg_type: 'interactive',
+      card: {
+        header: {
+          title: {
+            tag: 'plain_text',
+            content: `[${event.type}] ${event.title}`,
+          },
+          template: cardTemplateFor(event),
+        },
+        elements: [
+          {
+            tag: 'markdown',
+            content: renderCardMarkdown(event.message),
+          },
+          ...(event.actionUrl ? [{
+            tag: 'action',
+            actions: [{
+              tag: 'button',
+              type: 'primary',
+              text: {
+                tag: 'plain_text',
+                content: '打开处理入口',
+              },
+              url: event.actionUrl,
+            }],
+          }] : []),
+        ],
       },
     }
   }
@@ -68,7 +126,7 @@ export class FeishuWebhookNotificationProvider implements NotificationProvider {
     }
 
     try {
-      const msgType = this.config.msg_type || 'post'
+      const msgType = this.config.msg_type || 'interactive'
       const payload = buildPayload(event, msgType)
 
       const timestamp = Math.floor(Date.now() / 1000).toString()

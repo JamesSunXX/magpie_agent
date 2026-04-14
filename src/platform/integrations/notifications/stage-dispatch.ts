@@ -1,4 +1,5 @@
 import { readFile } from 'fs/promises'
+import { basename, resolve } from 'path'
 import type { MagpieConfig } from '../../../config/types.js'
 import type { DispatchResult, NotificationSeverity } from './types.js'
 import type { NotificationRouter } from './router.js'
@@ -71,13 +72,19 @@ export async function dispatchStageNotification(
     return { occurrence }
   }
 
+  const projectPath = args.input.projectPath || resolve(args.cwd)
+  const projectName = args.input.projectName || basename(projectPath) || projectPath
+  const input: StageNotificationSummaryInput = {
+    ...args.input,
+    occurrence,
+    projectName,
+    projectPath,
+  }
+
   const message = await summarizeStageNotification({
     config: args.config,
     cwd: args.cwd,
-    input: {
-      ...args.input,
-      occurrence,
-    },
+    input,
   })
 
   const dispatch = await args.router.dispatch({

@@ -15,6 +15,8 @@ export interface StageNotificationSummaryInput {
   sessionId: string
   capability: 'loop' | 'harness'
   runTitle: string
+  projectName?: string
+  projectPath?: string
   stage: string
   occurrence: number
   summary: string
@@ -47,9 +49,19 @@ export function buildFallbackStageNotificationMessage(
   input: StageNotificationSummaryInput,
   maxChars?: number
 ): StageNotificationMessage {
-  const title = `Magpie | ${input.capability} | ${input.sessionId} | ${input.stage} | ${eventLabel(input.eventType)}`
+  const titleParts = [
+    'Magpie',
+    input.projectName,
+    input.capability,
+    input.sessionId,
+    input.stage,
+    eventLabel(input.eventType),
+  ].filter(Boolean)
+  const title = titleParts.join(' | ')
   const lines = [
     `任务: ${input.runTitle}`,
+    `项目: ${input.projectName || 'unknown'}`,
+    `路径: ${input.projectPath || 'unknown'}`,
     `状态: ${eventLabel(input.eventType)}`,
     `阶段: ${input.stage}`,
     `次数: 第 ${input.occurrence} 次`,
@@ -72,8 +84,8 @@ export function buildStageSummaryPrompt(input: StageNotificationSummaryInput): s
     '要求：',
     '1. 返回 JSON。',
     '2. 字段只有 title 和 body。',
-    '3. title 必须包含 session 信息。',
-    '4. body 必须包含任务、状态、阶段、AI 列表、AI 分工、下一步。',
+    '3. title 必须包含项目名和 session 信息。',
+    '4. body 必须包含任务、项目名、项目路径、状态、阶段、AI 列表、AI 分工、下一步。',
     '5. 如果是失败或暂停，要明确原因。',
     '',
     '```json',
@@ -84,6 +96,8 @@ export function buildStageSummaryPrompt(input: StageNotificationSummaryInput): s
     `capability: ${input.capability}`,
     `eventType: ${input.eventType}`,
     `runTitle: ${input.runTitle}`,
+    `projectName: ${input.projectName || 'unknown'}`,
+    `projectPath: ${input.projectPath || 'unknown'}`,
     `stage: ${input.stage}`,
     `occurrence: ${input.occurrence}`,
     `summary: ${input.summary}`,

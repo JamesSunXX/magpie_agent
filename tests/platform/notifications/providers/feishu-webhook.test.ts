@@ -17,7 +17,7 @@ const event = {
 }
 
 describe('FeishuWebhookNotificationProvider', () => {
-  it('adds timestamp/sign when secret is configured', async () => {
+  it('sends an interactive card and adds timestamp/sign when secret is configured', async () => {
     const timestamp = '1700000000'
     vi.spyOn(Date, 'now').mockReturnValue(Number(timestamp) * 1000)
 
@@ -28,7 +28,6 @@ describe('FeishuWebhookNotificationProvider', () => {
       type: 'feishu-webhook',
       webhook_url: 'https://open.feishu.cn/open-apis/bot/v2/hook/demo',
       secret: 'signing-secret',
-      msg_type: 'post',
     })
 
     const result = await provider.send(event, { timeoutMs: 1500 })
@@ -41,6 +40,9 @@ describe('FeishuWebhookNotificationProvider', () => {
 
     expect(body.timestamp).toBe(timestamp)
     expect(body.sign).toBe(expected)
-    expect(body.msg_type).toBe('post')
+    expect(body.msg_type).toBe('interactive')
+    expect(body.card.header.title.content).toContain('Need review')
+    expect(JSON.stringify(body.card)).toContain('Please approve stage output')
+    expect(JSON.stringify(body.card)).toContain('vscode://file/tmp/human_confirmation.md:10')
   })
 })

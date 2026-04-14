@@ -284,10 +284,11 @@ describe('harness workflow', () => {
       expect(events).toContain('"type":"stage_entered","stage":"developing"')
       expect(fetchMock).toHaveBeenCalled()
       const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-      const firstText = firstBody.content.post.zh_cn.content[0][0].text as string
-      expect(firstBody.content.post.zh_cn.title).toContain('[stage_entered]')
-      expect(firstText).toContain('AI: kiro / kiro')
-      expect(firstText).not.toContain('claude-code')
+      const cardJson = JSON.stringify(firstBody.card)
+      expect(firstBody.msg_type).toBe('interactive')
+      expect(firstBody.card.header.title.content).toContain('[stage_entered]')
+      expect(cardJson).toContain('**AI**: kiro / kiro')
+      expect(cardJson).not.toContain('claude-code')
     } finally {
       delete process.env.MAGPIE_MOCK_RESPONSE
     }

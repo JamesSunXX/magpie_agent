@@ -890,7 +890,7 @@ integrations:
         type: "feishu-webhook"
         webhook_url: ${yamlDoubleQuoted(notifications.feishuWebhookUrl)}
         secret: ${yamlDoubleQuoted(notifications.feishuWebhookSecret)}
-        msg_type: "post"
+        msg_type: "interactive"
       imessage_local:
         type: "imessage"
         transport: "messages-applescript"

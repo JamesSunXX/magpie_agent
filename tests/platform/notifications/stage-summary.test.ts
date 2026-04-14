@@ -10,6 +10,8 @@ function buildInput(eventType: StageNotificationSummaryInput['eventType']): Stag
     sessionId: 'loop-1',
     capability: 'loop',
     runTitle: 'Deliver feature',
+    projectName: 'magpie',
+    projectPath: '/Users/sunchenhui/Documents/AI/magpie',
     stage: 'code_development',
     occurrence: 2,
     summary: 'Running code changes.',
@@ -23,11 +25,14 @@ function buildInput(eventType: StageNotificationSummaryInput['eventType']): Stag
 }
 
 describe('buildFallbackStageNotificationMessage', () => {
-  it('renders session, occurrence, ai list, and responsibilities', () => {
+  it('renders project details, session, occurrence, ai list, and responsibilities', () => {
     const result = buildFallbackStageNotificationMessage(buildInput('stage_entered'))
 
+    expect(result.title).toContain('magpie')
     expect(result.title).toContain('loop-1')
     expect(result.title).toContain('code_development')
+    expect(result.body).toContain('项目: magpie')
+    expect(result.body).toContain('路径: /Users/sunchenhui/Documents/AI/magpie')
     expect(result.body).toContain('第 2 次')
     expect(result.body).toContain('codex')
     expect(result.body).toContain('main execution')
