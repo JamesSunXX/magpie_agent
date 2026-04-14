@@ -5,6 +5,7 @@ import {
   stopHarnessServer,
   summarizeHarnessServer,
 } from '../../capabilities/workflows/harness-server/runtime.js'
+import { formatLocalDateTime } from '../../shared/utils/time.js'
 
 export const harnessServerCommand = new Command('harness-server')
   .description('Run the persistent harness background server')
@@ -54,7 +55,7 @@ harnessServerCommand
     if (summary.state.tmuxSession) {
       console.log(`Tmux: ${summary.state.tmuxSession}`)
     }
-    console.log(`Updated: ${summary.state.updatedAt}`)
+    console.log(`Updated: ${formatLocalDateTime(summary.state.updatedAt)}`)
     console.log(
       `Queue: queued=${summary.queue.queued} running=${summary.queue.running} waiting_retry=${summary.queue.waitingRetry} waiting_next_cycle=${summary.queue.waitingNextCycle} blocked=${summary.queue.blocked}`
     )

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
 
 const loadHarnessServerState = vi.fn()
 const runHarnessServerLoop = vi.fn()
@@ -98,6 +99,7 @@ describe('harness-server CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Status: running')
     expect(logSpy).toHaveBeenCalledWith('Host: tmux')
     expect(logSpy).toHaveBeenCalledWith('Tmux: magpie-harness-server')
+    expect(logSpy).toHaveBeenCalledWith(`Updated: ${formatExpectedLocalDateTime('2026-04-12T00:00:00.000Z')}`)
     expect(logSpy).toHaveBeenCalledWith('Queue: queued=2 running=1 waiting_retry=1 waiting_next_cycle=1 blocked=0')
     logSpy.mockRestore()
   })

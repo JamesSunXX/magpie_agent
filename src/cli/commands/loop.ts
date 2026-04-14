@@ -15,6 +15,7 @@ import type { ExecutionHost } from '../../platform/integrations/operations/types
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
+import { formatLocalDateTime } from '../../shared/utils/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 
 interface SharedLoopOptions {
@@ -52,7 +53,7 @@ async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): 
     }
 
     for (const session of output.details) {
-      console.log(`${session.id}\t${session.status}\t${session.updatedAt.toISOString()}\t${session.title}`)
+      console.log(`${session.id}\t${session.status}\t${formatLocalDateTime(session.updatedAt)}\t${session.title}`)
     }
   }
 

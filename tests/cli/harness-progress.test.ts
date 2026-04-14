@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
 import type { WorkflowSession } from '../../src/capabilities/workflows/shared/runtime.js'
 import {
   createHarnessProgressReporter,
@@ -26,7 +27,7 @@ describe('harness progress helpers', () => {
       stage: 'reviewing',
       cycle: 2,
       summary: 'Cycle 2 approved.',
-    })).toBe('2026-04-11T00:00:00.000Z cycle_completed stage=reviewing cycle=2 Cycle 2 approved.')
+    })).toBe(`${formatExpectedLocalDateTime('2026-04-11T00:00:00.000Z')} cycle_completed stage=reviewing cycle=2 Cycle 2 approved.`)
   })
 
   it('formats nested loop provider progress events for terminal output', () => {
@@ -38,7 +39,7 @@ describe('harness progress helpers', () => {
       provider: 'codex',
       progressType: 'item.started',
       summary: 'Running shell command.',
-    } as never)).toBe('2026-04-11T00:00:01.000Z stage=code_development Codex 正在执行命令。')
+    } as never)).toBe(`${formatExpectedLocalDateTime('2026-04-11T00:00:01.000Z')} stage=code_development Codex 正在执行命令。`)
   })
 
   it('prints session discovery, streamed events, and idle heartbeats', () => {
@@ -67,7 +68,7 @@ describe('harness progress helpers', () => {
     expect(log).toHaveBeenCalledWith('Status: in_progress')
     expect(log).toHaveBeenCalledWith('Stage: queued')
     expect(log).toHaveBeenCalledWith('Events: /tmp/harness/events.jsonl')
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:05.000Z stage_changed stage=developing Running loop development stage.')
+    expect(log).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:05.000Z')} stage_changed stage=developing Running loop development stage.`)
     expect(log).toHaveBeenCalledWith('Heartbeat: session harness-1 stage=developing still running.')
 
     reporter.stop()
@@ -131,9 +132,9 @@ describe('harness progress helpers', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     await followPromise
 
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
+    expect(log).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:00.000Z')} workflow_started stage=queued Harness workflow started.`)
     expect(log).toHaveBeenCalledWith('Watching harness-1 for new events. Press Ctrl+C to stop.')
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:10.000Z workflow_completed stage=completed Harness approved after 1 cycle(s).')
+    expect(log).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:10.000Z')} workflow_completed stage=completed Harness approved after 1 cycle(s).`)
 
     rmSync(dir, { recursive: true, force: true })
     vi.useFakeTimers()
@@ -177,8 +178,8 @@ describe('harness progress helpers', () => {
       once: true,
     })
 
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:00.000Z workflow_started stage=queued Harness workflow started.')
-    expect(log).toHaveBeenCalledWith('2026-04-11T00:00:03.000Z stage=code_development Codex 开始处理当前步骤。')
+    expect(log).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:00.000Z')} workflow_started stage=queued Harness workflow started.`)
+    expect(log).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:03.000Z')} stage=code_development Codex 开始处理当前步骤。`)
 
     rmSync(dir, { recursive: true, force: true })
     vi.useFakeTimers()

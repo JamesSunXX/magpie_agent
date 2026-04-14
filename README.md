@@ -24,6 +24,8 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 
 更细的命令入口和代码位置见 [`docs/references/capabilities.md`](./docs/references/capabilities.md)。
 
+常用状态命令、列表、进度输出、统计报表和 TUI 事件里的展示时间默认按当前机器本地时区显示；会话文件和事件落盘仍保留原始 ISO 时间戳，便于续跑和排查。
+
 ## 安装
 
 前置依赖：

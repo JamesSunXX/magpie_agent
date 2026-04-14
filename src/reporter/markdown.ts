@@ -1,4 +1,5 @@
 // src/reporter/markdown.ts
+import { formatLocalDate } from '../shared/utils/time.js'
 import type { RepoReviewResult, ReviewIssue } from './types.js'
 
 export class MarkdownReporter {
@@ -7,7 +8,7 @@ export class MarkdownReporter {
 
     // Header
     lines.push(`# Repository Review Report: ${result.repoName}`)
-    lines.push(`Generated: ${result.timestamp.toISOString().split('T')[0]}`)
+    lines.push(`Generated: ${formatLocalDate(result.timestamp)}`)
     lines.push(`Scope: Full repository (${result.stats.totalFiles} files, ${result.stats.totalLines} lines of code)`)
     lines.push('')
 

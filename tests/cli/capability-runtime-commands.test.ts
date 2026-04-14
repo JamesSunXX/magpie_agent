@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
 
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
@@ -207,7 +208,7 @@ describe('capability runtime CLI commands', () => {
     )
 
     expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
-    expect(logSpy).toHaveBeenCalledWith('2026-04-11T00:00:05.000Z stage_changed stage=developing Running loop development stage.')
+    expect(logSpy).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:05.000Z')} stage_changed stage=developing Running loop development stage.`)
     logSpy.mockRestore()
   })
 

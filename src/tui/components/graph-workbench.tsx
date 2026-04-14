@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { GraphWorkbenchData, GraphWorkbenchState } from '../types.js'
 import { buildCommandDisplay } from '../command-builder.js'
+import { formatLocalDateTimeShort } from '../../shared/utils/time.js'
 import { Section } from './common.js'
 
 function renderPanelTitle(title: string, focused: boolean) {
@@ -9,12 +10,7 @@ function renderPanelTitle(title: string, focused: boolean) {
 }
 
 function formatEventTimestamp(timestamp: string) {
-  const match = timestamp.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
-  if (!match) {
-    return timestamp
-  }
-
-  return `${match[1]} ${match[2]}`
+  return formatLocalDateTimeShort(timestamp)
 }
 
 function renderNodeLine(

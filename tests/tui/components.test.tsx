@@ -1,5 +1,6 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
+import { formatExpectedLocalDateTimeShort } from '../helpers/local-time.js'
 import { CommandPreview } from '../../src/tui/components/command-preview.js'
 import { Section } from '../../src/tui/components/common.js'
 import { Dashboard, getVisibleSessionRows } from '../../src/tui/components/dashboard.js'
@@ -288,7 +289,7 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('Approve pending gate for release-approval.')
     expect(normalizedText(element)).toContain('Approve release [press Enter again]')
     expect(normalizedText(element)).toContain('Attention and Events')
-    expect(normalizedText(element)).toContain('2026-03-19 12:00 Approval rejected for release-approval.')
+    expect(normalizedText(element)).toContain(`${formatExpectedLocalDateTimeShort('2026-03-19T12:00:00.000Z')} Approval rejected for release-approval.`)
     expect(normalizedText(element)).toContain('Approval rejected for release-approval.')
   })
 

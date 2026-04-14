@@ -1,5 +1,6 @@
 // tests/reporter/markdown.test.ts
 import { describe, it, expect } from 'vitest'
+import { formatExpectedLocalDate } from '../helpers/local-time.js'
 import { MarkdownReporter } from '../../src/reporter/markdown.js'
 import type { RepoReviewResult, ReviewIssue } from '../../src/reporter/types.js'
 
@@ -7,7 +8,7 @@ describe('MarkdownReporter', () => {
   it('should generate report header', () => {
     const result: RepoReviewResult = {
       repoName: 'test-repo',
-      timestamp: new Date('2026-01-26'),
+      timestamp: new Date('2026-01-26T20:00:00.000Z'),
       stats: { totalFiles: 10, totalLines: 500, languages: { typescript: 10 }, estimatedTokens: 2000, estimatedCost: 0.02 },
       architectureAnalysis: 'Good architecture',
       issues: [],
@@ -18,6 +19,7 @@ describe('MarkdownReporter', () => {
     const report = reporter.generate(result)
 
     expect(report).toContain('# Repository Review Report: test-repo')
+    expect(report).toContain(`Generated: ${formatExpectedLocalDate('2026-01-26T20:00:00.000Z')}`)
     expect(report).toContain('10 files')
     expect(report).toContain('500 lines of code')
   })

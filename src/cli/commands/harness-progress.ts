@@ -2,6 +2,7 @@ import { readFile } from 'fs/promises'
 import type { WorkflowSession } from '../../capabilities/workflows/shared/runtime.js'
 import type { HarnessRuntimeEvent } from '../../capabilities/workflows/harness/progress.js'
 import type { LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
+import { formatLocalDateTime } from '../../shared/utils/time.js'
 
 type HarnessDisplayEvent = Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>
 type LoopDisplayEvent = Pick<LoopRuntimeEvent, 'ts' | 'event' | 'stage' | 'cycle' | 'summary' | 'provider' | 'progressType'>
@@ -81,8 +82,9 @@ export function formatHarnessEventLine(
 ): string {
   const loopEvent = event as Partial<LoopDisplayEvent>
   const harnessEvent = event as Partial<HarnessDisplayEvent>
+  const timestamp = formatLocalDateTime(String(harnessEvent.timestamp || loopEvent.ts || '').trim())
   if (loopEvent.event === 'provider_progress') {
-    const parts = [String(loopEvent.ts || '').trim()]
+    const parts = [timestamp]
     if (event.stage) {
       parts.push(`stage=${event.stage}`)
     }
@@ -94,7 +96,7 @@ export function formatHarnessEventLine(
   }
 
   const parts = [
-    String(harnessEvent.timestamp || loopEvent.ts || '').trim(),
+    timestamp,
     String(harnessEvent.type || loopEvent.event || '').trim(),
   ]
   if (event.stage) {

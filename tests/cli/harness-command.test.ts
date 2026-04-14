@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
+import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
@@ -375,7 +376,7 @@ describe('top-level harness CLI command', () => {
     )
 
     expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
-    expect(logSpy).toHaveBeenCalledWith('2026-04-11T00:00:05.000Z stage_changed stage=developing Running loop development stage.')
+    expect(logSpy).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-11T00:00:05.000Z')} stage_changed stage=developing Running loop development stage.`)
     logSpy.mockRestore()
   })
 
@@ -469,6 +470,7 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Participants: developer=codex, reviewer-1=claude-code, arbitrator=codex')
     expect(logSpy).toHaveBeenCalledWith('Review notes: reviewer-1: Missing rollback handling.')
     expect(logSpy).toHaveBeenCalledWith('Decision note: Need another cycle after rollback fixes.')
+    expect(logSpy).toHaveBeenCalledWith(`Updated: ${formatExpectedLocalDateTime('2026-04-10T09:30:00.000Z')}`)
     expect(logSpy).toHaveBeenCalledWith('Events: /tmp/events.jsonl')
     expect(logSpy).toHaveBeenCalledWith('Document mode: project_docs')
     expect(logSpy).toHaveBeenCalledWith('Formal docs root: /tmp/repo/docs/v2/checkout')
@@ -476,8 +478,8 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Loop summary: Loop completed successfully. MR created: https://gitlab.example.com/team/project/-/merge_requests/42')
     expect(logSpy).toHaveBeenCalledWith('Loop MR: created https://gitlab.example.com/team/project/-/merge_requests/42')
     expect(logSpy).toHaveBeenCalledWith('Loop stage: code_development')
-    expect(logSpy).toHaveBeenCalledWith('Last activity: 2026-04-11T00:00:07.000Z')
-    expect(logSpy).toHaveBeenCalledWith('Loop activity: 2026-04-11T00:00:07.000Z stage=code_development Codex 正在执行命令。')
+    expect(logSpy).toHaveBeenCalledWith(`Last activity: ${formatExpectedLocalDateTime('2026-04-11T00:00:07.000Z')}`)
+    expect(logSpy).toHaveBeenCalledWith(`Loop activity: ${formatExpectedLocalDateTime('2026-04-11T00:00:07.000Z')} stage=code_development Codex 正在执行命令。`)
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Knowledge: '))
     logSpy.mockRestore()
   })
@@ -649,8 +651,8 @@ describe('top-level harness CLI command', () => {
     )
 
     expect(listWorkflowSessions).toHaveBeenCalledWith(process.cwd(), 'harness')
-    expect(logSpy).toHaveBeenCalledWith('harness-2\tcompleted\tcompleted\t2026-04-10T10:00:00.000Z\tCheckout\tgraph=checkout-v2:active:ready=1:running=1:waiting_approval=0:blocked=0')
-    expect(logSpy).toHaveBeenCalledWith('harness-1\tin_progress\treviewing\t2026-04-10T09:00:00.000Z\tPayments')
+    expect(logSpy).toHaveBeenCalledWith(`harness-2\tcompleted\tcompleted\t${formatExpectedLocalDateTime('2026-04-10T10:00:00.000Z')}\tCheckout\tgraph=checkout-v2:active:ready=1:running=1:waiting_approval=0:blocked=0`)
+    expect(logSpy).toHaveBeenCalledWith(`harness-1\tin_progress\treviewing\t${formatExpectedLocalDateTime('2026-04-10T09:00:00.000Z')}\tPayments`)
     logSpy.mockRestore()
   })
 
@@ -1075,8 +1077,8 @@ describe('top-level harness CLI command', () => {
         { from: 'node' }
       )
 
-      expect(logSpy).toHaveBeenCalledWith('2026-04-10T09:00:00.000Z workflow_started stage=queued Harness workflow started.')
-      expect(logSpy).toHaveBeenCalledWith('2026-04-10T09:01:00.000Z cycle_completed stage=reviewing cycle=1 Cycle 1 requested more changes.')
+      expect(logSpy).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-10T09:00:00.000Z')} workflow_started stage=queued Harness workflow started.`)
+      expect(logSpy).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-10T09:01:00.000Z')} cycle_completed stage=reviewing cycle=1 Cycle 1 requested more changes.`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
       logSpy.mockRestore()
@@ -1140,7 +1142,7 @@ describe('top-level harness CLI command', () => {
         { from: 'node' }
       )
 
-      expect(logSpy).toHaveBeenCalledWith('2026-04-10T09:00:00.000Z workflow_started stage=queued Harness workflow started.')
+      expect(logSpy).toHaveBeenCalledWith(`${formatExpectedLocalDateTime('2026-04-10T09:00:00.000Z')} workflow_started stage=queued Harness workflow started.`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
       logSpy.mockRestore()

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { statsCapability } from '../../../src/capabilities/stats/index.js'
+import { formatExpectedLocalDateTime } from '../../helpers/local-time.js'
 
 function writeReviewRecord(
   dir: string,
@@ -144,8 +145,10 @@ describe('stats capability', () => {
       'PR #12',
     ])
     expect(res.output.text).toContain('Review Stats')
+    expect(res.output.text).toContain(`Generated: ${formatExpectedLocalDateTime('2026-04-09T00:00:00.000Z')}`)
     expect(res.output.text).toContain('Severity Breakdown')
     expect(res.output.text).toContain('Top Files')
     expect(res.output.text).toContain('Recent Review Trend')
+    expect(res.output.text).toContain(`- ${formatExpectedLocalDateTime('2026-03-12T02:00:00.000Z')} PR #12: 1 issues`)
   })
 })

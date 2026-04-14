@@ -37,6 +37,7 @@ import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 
+import { formatLocalDateTime } from '../../shared/utils/time.js'
 interface HarnessCommandOptions {
   config?: string
   maxCycles?: number
@@ -773,7 +774,7 @@ harnessCommand
       throw error
     }
     console.log(`Summary: ${session.summary}`)
-    console.log(`Updated: ${session.updatedAt.toISOString()}`)
+    console.log(`Updated: ${formatLocalDateTime(session.updatedAt)}`)
     if (session.artifacts.eventsPath) {
       console.log(`Events: ${session.artifacts.eventsPath}`)
     }
@@ -791,7 +792,7 @@ harnessCommand
       if (latestLoopActivity.stage) {
         console.log(`Loop stage: ${latestLoopActivity.stage}`)
       }
-      console.log(`Last activity: ${latestLoopActivity.timestamp}`)
+      console.log(`Last activity: ${formatLocalDateTime(latestLoopActivity.timestamp)}`)
       console.log(`Loop activity: ${latestLoopActivity.line}`)
     }
     await printKnowledgeSummary(session.artifacts)
@@ -945,7 +946,7 @@ harnessCommand
         session.id,
         session.status,
         session.currentStage || '-',
-        session.updatedAt.toISOString(),
+        formatLocalDateTime(session.updatedAt),
         session.title,
       ]
       if (graph) {

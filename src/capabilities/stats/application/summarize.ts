@@ -1,4 +1,5 @@
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { formatLocalDateTime } from '../../../shared/utils/time.js'
 import type { StatsResult, StatsSummary } from '../types.js'
 
 function renderCountList<T>(
@@ -15,7 +16,7 @@ function toMarkdown(result: StatsResult): string {
     `# ${result.repoName} Review Stats`,
     '',
     `Window: last ${result.windowDays} day(s)`,
-    `Generated: ${result.generatedAt}`,
+    `Generated: ${formatLocalDateTime(result.generatedAt)}`,
     '',
   ]
 
@@ -42,7 +43,7 @@ function toMarkdown(result: StatsResult): string {
   lines.push(...renderCountList(result.topTargets.slice(0, 10), (item) => `- ${item.target}: ${item.reviewCount} reviews, ${item.issueCount} issues`))
   lines.push('')
   lines.push('## Recent Review Trend')
-  lines.push(...renderCountList(result.recentReviews.slice(0, 10), (item) => `- ${item.timestamp} ${item.target}: ${item.issueCount} issues`))
+  lines.push(...renderCountList(result.recentReviews.slice(0, 10), (item) => `- ${formatLocalDateTime(item.timestamp)} ${item.target}: ${item.issueCount} issues`))
 
   return lines.join('\n')
 }
