@@ -17,6 +17,12 @@ export class CliSessionHelper {
     this.sessionName = name
   }
 
+  restore(sessionId: string, name?: string): void {
+    this.sessionId = sessionId
+    this.isFirstMessage = false
+    this.sessionName = name
+  }
+
   end(): void {
     this.sessionId = undefined
     this.isFirstMessage = true

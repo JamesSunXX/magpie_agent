@@ -945,6 +945,116 @@ describe('loop capability', () => {
     expect(existsSync(join(sessionDir, 'tdd', 'green-test-result.json'))).toBe(true)
   })
 
+  it('resumes a failed code development session when the checkpoint is still recoverable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-failed-red-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-resume-failed-red'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const eventsPath = join(sessionDir, 'events.jsonl')
+    const planPath = join(sessionDir, 'plan.json')
+    const redTestResultPath = join(sessionDir, 'tdd', 'red-test-result.json')
+    const tddTargetPath = join(sessionDir, 'tdd', 'target.md')
+    const nextRoundInputPath = join(sessionDir, 'role-rounds', 'round-1-next.md')
+    mkdirSync(join(sessionDir, 'tdd'), { recursive: true })
+    mkdirSync(join(sessionDir, 'role-rounds'), { recursive: true })
+    writeFileSync(eventsPath, '', 'utf-8')
+    writeFileSync(planPath, JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(tddTargetPath, '# TDD Target\n\n- Keep formatter behavior stable.\n', 'utf-8')
+    writeFileSync(nextRoundInputPath, '# Next Round\n\nContinue from the existing workspace.\n', 'utf-8')
+    writeFileSync(redTestResultPath, JSON.stringify({
+      command: 'node script.js',
+      startedAt: '2026-04-12T00:00:00.000Z',
+      finishedAt: '2026-04-12T00:00:01.000Z',
+      exitCode: 1,
+      status: 'failed',
+      output: 'Expected failure before implementation.',
+      confirmed: true,
+    }, null, 2), 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Resume failed session from red test',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'failed',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'code_development',
+          title: 'Add amount formatter utility',
+          description: 'Implement a pure formatter for checkout amounts',
+          dependencies: [],
+          successCriteria: ['Formatter output matches the spec'],
+        },
+      ],
+      stageResults: [],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      constraintCheckStatus: 'pass',
+      tddEligible: true,
+      redTestConfirmed: true,
+      currentLoopState: 'blocked_for_human',
+      lastReliablePoint: 'red_test_confirmed',
+      lastFailureReason: '实现后测试仍失败：继续从当前工作区修复。',
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath,
+        planPath,
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        tddTargetPath,
+        redTestResultPath,
+        nextRoundInputPath,
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            return '# Stage Report\n\nImplemented formatter.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.status).toBe('completed')
+    expect(result.result.session?.lastReliablePoint).toBe('completed')
+    expect(executorCalls).toBe(1)
+  })
+
   it('blocks resume when the saved checkpoint is not a complete reliable point', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-invalid-checkpoint-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })

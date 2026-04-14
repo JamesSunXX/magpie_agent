@@ -1,4 +1,5 @@
 import { readFile, readdir } from 'fs/promises'
+import { normalize, resolve } from 'path'
 import { Command, InvalidArgumentError } from 'commander'
 import { createCapabilityContext } from '../../core/capability/context.js'
 import { getTypedCapability } from '../../core/capability/registry.js'
@@ -6,6 +7,7 @@ import { runCapability } from '../../core/capability/runner.js'
 import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import {
   appendWorkflowEvent,
+  isRecoverableHarnessSession,
   listWorkflowSessions,
   loadWorkflowSession,
   persistWorkflowSession,
@@ -15,6 +17,7 @@ import {
   isHarnessServerRunning,
 } from '../../capabilities/workflows/harness-server/runtime.js'
 import {
+  createHarnessGraphArtifact,
   loadHarnessGraphArtifact,
   persistHarnessGraphArtifact,
   recordHarnessGraphApprovalDecision,
@@ -35,9 +38,9 @@ import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js
 import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
+import { formatLocalDateTime } from '../../shared/utils/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 
-import { formatLocalDateTime } from '../../shared/utils/time.js'
 interface HarnessCommandOptions {
   config?: string
   maxCycles?: number
@@ -52,6 +55,9 @@ interface HarnessCommandOptions {
 interface PersistedHarnessResumeEvidence {
   input?: HarnessInput
   configPath?: string
+  runtime?: {
+    lastReliablePoint?: string
+  }
 }
 
 interface HarnessRoundViewOptions {
@@ -125,6 +131,57 @@ function parseHarnessCycle(value: string): number {
     throw new InvalidArgumentError('Cycle must be a positive integer')
   }
   return cycle
+}
+
+function slugifyHarnessGraphId(goal: string): string {
+  return goal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'harness-session'
+}
+
+function buildQueuedHarnessGraph(goal: string, prdPath: string): HarnessGraphArtifact {
+  return createHarnessGraphArtifact({
+    graphId: slugifyHarnessGraphId(goal),
+    title: goal,
+    goal,
+    sourceRequirementPath: prdPath,
+    nodes: [
+      {
+        id: 'deliverable',
+        title: 'Deliver requirement',
+        goal,
+        type: 'feature',
+      },
+    ],
+  })
+}
+
+function normalizeComparablePrdPath(prdPath: string): string {
+  return normalize(resolve(process.cwd(), prdPath))
+}
+
+function mergeHarnessResumeInput(
+  persisted: HarnessInput | undefined,
+  submitted: HarnessInput
+): HarnessInput {
+  if (!persisted) {
+    return submitted
+  }
+
+  const samePrd = normalizeComparablePrdPath(persisted.prdPath) === normalizeComparablePrdPath(submitted.prdPath)
+  return {
+    goal: submitted.goal,
+    prdPath: samePrd ? persisted.prdPath : submitted.prdPath,
+    maxCycles: submitted.maxCycles ?? persisted.maxCycles,
+    reviewRounds: submitted.reviewRounds ?? persisted.reviewRounds,
+    testCommand: submitted.testCommand ?? persisted.testCommand,
+    models: submitted.models ?? persisted.models,
+    complexity: submitted.complexity ?? persisted.complexity,
+    host: submitted.host ?? persisted.host,
+    priority: submitted.priority ?? persisted.priority,
+  }
 }
 
 function legacyHarnessKnowledgeState(session: NonNullable<Awaited<ReturnType<typeof loadWorkflowSession>>>): Partial<KnowledgeState> {
@@ -542,6 +599,37 @@ async function runHarness(input: HarnessInput, options: HarnessCommandOptions): 
   return runHarnessWithSession(input, options)
 }
 
+async function findRecoverableHarnessSession(
+  goal: string,
+  prdPath: string
+): Promise<WorkflowSession | null> {
+  const sessions = (await listWorkflowSessions(process.cwd(), 'harness'))
+    .slice()
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+
+  for (const session of sessions) {
+    const persisted = extractHarnessResumeInput(session)
+    if (!persisted) {
+      continue
+    }
+    if (persisted.input.goal !== goal
+      || normalizeComparablePrdPath(persisted.input.prdPath) !== normalizeComparablePrdPath(prdPath)) {
+      continue
+    }
+
+    const loopSession = session.artifacts.loopSessionId
+      ? await loadWorkflowSession(process.cwd(), 'loop', session.artifacts.loopSessionId)
+      : null
+    if (!isRecoverableHarnessSession(session, loopSession || undefined)) {
+      continue
+    }
+
+    return session
+  }
+
+  return null
+}
+
 async function runHarnessWithSession(
   input: HarnessInput,
   options: HarnessCommandOptions,
@@ -667,10 +755,40 @@ harnessCommand
         host: options.host,
         priority: options.priority,
       }
+      const recoverableSession = await findRecoverableHarnessSession(goal, options.prd)
 
       if (await isHarnessServerRunning(process.cwd())) {
+        if (recoverableSession) {
+          const persisted = extractHarnessResumeInput(recoverableSession)
+          const mergedInput = mergeHarnessResumeInput(persisted?.input, queuedInput)
+          await persistWorkflowSession(process.cwd(), {
+            ...recoverableSession,
+            updatedAt: new Date(),
+            status: 'waiting_next_cycle',
+            currentStage: recoverableSession.currentStage || 'developing',
+            summary: 'Recoverable harness session re-queued for resume.',
+            evidence: {
+              ...(recoverableSession.evidence as Record<string, unknown> || {}),
+              input: mergedInput,
+              ...((options.config || persisted?.configPath)
+                ? { configPath: options.config || persisted?.configPath }
+                : {}),
+            },
+          })
+          await appendWorkflowEvent(process.cwd(), 'harness', recoverableSession.id, {
+            timestamp: new Date(),
+            type: 'workflow_requeued',
+            stage: recoverableSession.currentStage || 'developing',
+            summary: 'Recoverable harness session selected by submit and queued to resume.',
+          })
+          console.log(`Resuming recoverable harness session: ${recoverableSession.id}`)
+          console.log(`Session: ${recoverableSession.id}`)
+          console.log('Status: waiting_next_cycle')
+          return
+        }
         const queued = await enqueueHarnessSession(process.cwd(), queuedInput, {
           configPath: options.config,
+          graph: buildQueuedHarnessGraph(goal, options.prd),
         })
         console.log('Harness session queued.')
         console.log(`Session: ${queued.id}`)
@@ -679,6 +797,20 @@ harnessCommand
         if (queued.artifacts.eventsPath) {
           console.log(`Events: ${queued.artifacts.eventsPath}`)
         }
+        return
+      }
+
+      if (recoverableSession) {
+        const persisted = extractHarnessResumeInput(recoverableSession)
+        console.log(`Resuming recoverable harness session: ${recoverableSession.id}`)
+        await runHarnessWithSession(
+          mergeHarnessResumeInput(persisted?.input, queuedInput),
+          {
+            ...options,
+            config: options.config || persisted?.configPath,
+          },
+          recoverableSession.id
+        )
         return
       }
 

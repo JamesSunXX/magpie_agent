@@ -246,5 +246,6 @@ export interface LoopSession {
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
     documentPlanPath?: string
+    providerSessionsPath?: string
   }
 }

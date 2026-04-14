@@ -4,6 +4,7 @@ import YAML from 'yaml'
 import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { createCapabilityContext } from '../../../../core/capability/context.js'
 import { runCapability } from '../../../../core/capability/runner.js'
+import { StateManager } from '../../../../core/state/index.js'
 import { createRoutingDecision, escalateRoutingDecision, getEscalationReason, isRoutingEnabled } from '../../../routing/index.js'
 import { discussCapability } from '../../../discuss/index.js'
 import { loopCapability } from '../../../loop/index.js'
@@ -15,6 +16,7 @@ import { issueFixCapability } from '../../issue-fix/index.js'
 import {
   appendWorkflowEvent,
   generateWorkflowId,
+  isRecoverableLoopSession,
   loadWorkflowSession,
   persistWorkflowSession,
   sessionDirFor,
@@ -23,6 +25,7 @@ import { generateDocumentPlan, type DocumentPlan } from '../../../../core/projec
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
+import { withProviderSessionScope } from '../../../../providers/session-persistence.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
 import {
   createRoleMessage,
@@ -542,10 +545,11 @@ function mergeHarnessRuntimeEvidence(
   }
 }
 
-function resolveHarnessResumeState(
+async function resolveHarnessResumeState(
   existingSession: Awaited<ReturnType<typeof loadWorkflowSession>>,
-  completedCycles: HarnessCycle[]
-): HarnessResumeState {
+  completedCycles: HarnessCycle[],
+  cwd: string
+): Promise<HarnessResumeState> {
   const pendingReviewCheckpoint = readPendingReviewCheckpoint(existingSession?.evidence)
   if (!existingSession) {
     return {
@@ -559,14 +563,22 @@ function resolveHarnessResumeState(
   }
 
   const hasLoopSession = Boolean(existingSession.artifacts.loopSessionId)
+  const loopStateManager = new StateManager(cwd)
+  await loopStateManager.initLoopSessions()
+  const loopSession = hasLoopSession
+    ? await loopStateManager.loadLoopSession(existingSession.artifacts.loopSessionId!)
+    : null
+  const recoverableLoopFailure = isRecoverableLoopSession(loopSession)
   const canReuseCompletedDevelopment = hasLoopSession
     && (existingSession.currentStage === 'reviewing'
       || existingSession.currentStage === 'completed'
-      || existingSession.currentStage === 'failed'
       || completedCycles.length > 0)
   const shouldResumeLoop = hasLoopSession
     && !canReuseCompletedDevelopment
-    && existingSession.currentStage === 'developing'
+    && (
+      existingSession.currentStage === 'developing'
+      || ((existingSession.currentStage === 'failed' || existingSession.status === 'failed') && recoverableLoopFailure)
+    )
   const isResume = existingSession.status === 'waiting_next_cycle'
     || existingSession.status === 'blocked'
     || existingSession.status === 'waiting_retry'
@@ -775,13 +787,20 @@ async function runCapabilityWithGeminiReviewerFallback(
   capability: any,
   buildInput: (reviewers: string) => Record<string, unknown>,
   cycleCtx: CapabilityContext,
+  providerSessionsPath: string,
+  workflowSessionId: string,
+  namespace: string,
   config: MagpieConfigV2,
   configPath: string,
   reviewerIds: string[],
   onFallbackApplied?: (reviewerIds: string[]) => Promise<void>,
 ): Promise<string[]> {
   const runWith = async (ids: string[]) => {
-    await runCapability(capability, buildInput(ids.join(',')) as never, cycleCtx)
+    await withProviderSessionScope({
+      sessionsPath: providerSessionsPath,
+      workflowSessionId,
+      namespace,
+    }, async () => runCapability(capability, buildInput(ids.join(',')) as never, cycleCtx))
   }
 
   try {
@@ -1176,6 +1195,8 @@ async function runValidatorCheck(
   index: number,
   cwd: string,
   config: MagpieConfigV2,
+  providerSessionsPath: string,
+  workflowSessionId: string,
   cycle: number,
   issues: MergedIssue[],
   testsPassed: boolean,
@@ -1186,12 +1207,16 @@ async function runValidatorCheck(
   const id = `${index + 1}-${slugifyBindingLabel(label)}`
   try {
     const prompt = formatValidatorPrompt(label, cycle, issues, testsPassed, testOutput)
-    const provider = createConfiguredProvider({
+    const provider = await withProviderSessionScope({
+      sessionsPath: providerSessionsPath,
+      workflowSessionId,
+      namespace: 'harness',
+    }, async () => createConfiguredProvider({
       logicalName: `capabilities.harness.validator_checks[${index}]`,
       tool: binding.tool,
       model: binding.model,
       agent: binding.agent,
-    }, config)
+    }, config))
     provider.setCwd?.(cwd)
 
     let raw: string
@@ -1207,12 +1232,16 @@ async function runValidatorCheck(
         throw error
       }
 
-      const fallbackProvider = createConfiguredProvider({
+      const fallbackProvider = await withProviderSessionScope({
+        sessionsPath: providerSessionsPath,
+        workflowSessionId,
+        namespace: 'harness',
+      }, async () => createConfiguredProvider({
         logicalName: `capabilities.harness.validator_checks[${index}]`,
         tool: 'kiro',
         model: 'kiro',
         agent: 'architect',
-      }, config)
+      }, config))
       fallbackProvider.setCwd?.(cwd)
       raw = await fallbackProvider.chat([{
         role: 'user',
@@ -1287,6 +1316,7 @@ async function completeHarnessCycleFromReviewCheckpoint(
     routingDecision: RoutingDecision | undefined
     routingDecisionPath: string
     sessionId: string
+    providerSessionsPath: string
     roles: RoleInstance[]
     roleRosterPath: string
     roleMessagesPath: string
@@ -1328,6 +1358,9 @@ async function completeHarnessCycleFromReviewCheckpoint(
       },
     }),
     cycleCtx,
+    params.providerSessionsPath,
+    params.sessionId,
+    'harness.arbitration',
     params.config,
     params.configPath,
     params.reviewerIds,
@@ -1481,6 +1514,7 @@ async function runCycle(
   routingDecision: RoutingDecision | undefined,
   routingDecisionPath: string,
   sessionId: string,
+  providerSessionsPath: string,
   roles: RoleInstance[],
   roleRosterPath: string,
   roleMessagesPath: string,
@@ -1520,6 +1554,9 @@ async function runCycle(
       },
     }),
     cycleCtx,
+    providerSessionsPath,
+    sessionId,
+    'harness.review',
     config,
     configPath,
     reviewerIds,
@@ -1547,7 +1584,19 @@ async function runCycle(
     validatorBindings.map((binding, index) => {
       const label = describeBindingLabel(binding)
       const outputPath = join(cycleDir, `validator-${index + 1}-${slugifyBindingLabel(label)}.json`)
-      return runValidatorCheck(binding, index, cwd, config, cycle, blockingIssues, testsPassed, testOutput, outputPath)
+      return runValidatorCheck(
+        binding,
+        index,
+        cwd,
+        config,
+        providerSessionsPath,
+        sessionId,
+        cycle,
+        blockingIssues,
+        testsPassed,
+        testOutput,
+        outputPath
+      )
     })
   )
   await persistPendingReviewCheckpoint?.({
@@ -1576,6 +1625,9 @@ async function runCycle(
       },
     }),
     cycleCtx,
+    providerSessionsPath,
+    sessionId,
+    'harness.arbitration',
     config,
     configPath,
     reviewerIds,
@@ -1732,10 +1784,12 @@ export async function executeHarness(
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
   const eventsPath = join(sessionDir, 'events.jsonl')
+  const providerSessionsPath = join(sessionDir, 'provider-sessions.json')
   const existingSession = await loadWorkflowSession(ctx.cwd, 'harness', sessionId)
-  const resumeState = resolveHarnessResumeState(
+  const resumeState = await resolveHarnessResumeState(
     existingSession,
-    await loadPersistedHarnessCycles(roundsPath)
+    await loadPersistedHarnessCycles(roundsPath),
+    ctx.cwd
   )
 
   await mkdir(sessionDir, { recursive: true })
@@ -1800,6 +1854,7 @@ export async function executeHarness(
       ...(process.env.MAGPIE_TMUX_WINDOW ? { tmuxWindow: process.env.MAGPIE_TMUX_WINDOW } : {}),
       ...(process.env.MAGPIE_TMUX_PANE ? { tmuxPane: process.env.MAGPIE_TMUX_PANE } : {}),
       ...knowledgeArtifacts,
+      providerSessionsPath,
     },
     evidence: buildPersistedHarnessResumeEvidence(prepared, ctx.configPath, existingSession?.evidence),
   }
@@ -2076,12 +2131,16 @@ export async function executeHarness(
     routingDecision
   ))
   validatorBindings = resolveHarnessValidatorBindings(harnessConfig)
-  const documentPlanner = createConfiguredProvider({
+  const documentPlanner = await withProviderSessionScope({
+    sessionsPath: providerSessionsPath,
+    workflowSessionId: sessionId,
+    namespace: 'harness',
+  }, async () => createConfiguredProvider({
     logicalName: 'capabilities.harness.document_planner',
     tool: harnessConfig.capabilities.loop?.planner_tool,
     model: harnessConfig.capabilities.loop?.planner_model,
     agent: harnessConfig.capabilities.loop?.planner_agent,
-  }, harnessConfig)
+  }, harnessConfig))
   const { plan: documentPlan, planPath: documentPlanPath } = await generateDocumentPlan({
     repoRoot: ctx.cwd,
     sessionDir,
@@ -2244,9 +2303,13 @@ export async function executeHarness(
   if (loopResult && loopResult.result.status !== 'completed') {
     const loopPausedForHuman = loopResult.result.status === 'paused'
       || loopResult.result.session?.status === 'paused_for_human'
+    const loopFailedButRecoverable = loopResult.result.status === 'failed'
+      && isRecoverableLoopSession(loopResult.result.session)
 
-    if (loopPausedForHuman) {
-      const summary = 'Harness paused during loop development stage for human intervention.'
+    if (loopPausedForHuman || loopFailedButRecoverable) {
+      const summary = loopFailedButRecoverable
+        ? 'Harness blocked during loop development stage with a recoverable workspace.'
+        : 'Harness paused during loop development stage for human intervention.'
       await persistSession({
         status: 'blocked',
         currentStage: 'developing',
@@ -2262,11 +2325,16 @@ export async function executeHarness(
       await updateTaskKnowledgeState(knowledgeArtifacts, {
         currentStage: 'developing',
         lastReliableResult: summary,
-        nextAction: '处理人工确认后恢复开发阶段。',
+        nextAction: loopFailedButRecoverable
+          ? '直接恢复开发阶段，继续使用上一次失败留下的工作区。'
+          : '处理人工确认后恢复开发阶段。',
         currentBlocker: summary,
-      }, 'Harness paused during loop development stage for human intervention.')
+      }, loopFailedButRecoverable
+        ? 'Harness blocked with a recoverable loop development checkpoint.'
+        : 'Harness paused during loop development stage for human intervention.')
       await emitStagePaused('developing', summary, {
         loopSessionId: loopResult.result.session?.id,
+        ...(loopFailedButRecoverable ? { recoverableFailure: true } : {}),
       })
 
       return {
@@ -2419,6 +2487,7 @@ export async function executeHarness(
           routingDecision,
           routingDecisionPath,
           sessionId,
+          providerSessionsPath,
           roles,
           roleRosterPath: roleArtifacts.rolesPath,
           roleMessagesPath: roleArtifacts.messagesPath,
@@ -2449,6 +2518,7 @@ export async function executeHarness(
         routingDecision,
         routingDecisionPath,
         sessionId,
+        providerSessionsPath,
         roles,
         roleArtifacts.rolesPath,
         roleArtifacts.messagesPath,

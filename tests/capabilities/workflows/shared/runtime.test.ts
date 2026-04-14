@@ -7,6 +7,8 @@ import {
   buildCommandSafetyConfig,
   classifyDangerousCommand,
   generateWorkflowId,
+  isRecoverableHarnessSession,
+  isRecoverableLoopSession,
   listWorkflowSessions,
   loadWorkflowSession,
   parseCommandArgs,
@@ -194,5 +196,70 @@ describe('workflow shared runtime helpers', () => {
 
     expect(id).toMatch(/^harness-[0-9a-f]{8}$/)
     expect(dir).toBe(join(realpathSync(cwd), '.magpie', 'sessions', 'harness', 'example-session'))
+  })
+
+  it('detects recoverable loop sessions from persisted workspace evidence', () => {
+    expect(isRecoverableLoopSession({
+      status: 'failed',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      currentLoopState: 'blocked_for_human',
+      lastReliablePoint: 'red_test_confirmed',
+      lastFailureReason: 'Continue from the current workspace.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+      stageResults: [],
+    })).toBe(true)
+
+    expect(isRecoverableLoopSession({
+      status: 'failed',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      lastReliablePoint: 'half_written_output',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+    })).toBe(false)
+  })
+
+  it('requires a recoverable inner loop session before failed harness development can resume', () => {
+    const failedHarnessSession = {
+      id: 'harness-1',
+      capability: 'harness' as const,
+      title: 'Deliver checkout v2',
+      createdAt: new Date('2026-04-14T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      status: 'failed' as const,
+      currentStage: 'developing',
+      summary: 'Harness failed during loop development stage.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        loopSessionId: 'loop-1',
+      },
+    }
+
+    expect(isRecoverableHarnessSession(
+      failedHarnessSession,
+      {
+        status: 'failed',
+        currentStageIndex: 0,
+        stages: ['code_development'],
+        currentLoopState: 'blocked_for_human',
+        lastReliablePoint: 'red_test_confirmed',
+        lastFailureReason: 'Resume from the current workspace.',
+        artifacts: {
+          workspacePath: '/tmp/workspace',
+          nextRoundInputPath: '/tmp/next.md',
+          redTestResultPath: '/tmp/red.json',
+        },
+      }
+    )).toBe(true)
+
+    expect(isRecoverableHarnessSession(failedHarnessSession, null)).toBe(false)
   })
 })

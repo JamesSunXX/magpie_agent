@@ -1,6 +1,7 @@
 import type { MagpieConfig } from '../config/types.js'
 import type { AIProvider } from './types.js'
 import { createProvider, getProviderForModel, getProviderForTool } from './factory.js'
+import { withProviderSessionPersistence } from './session-persistence.js'
 
 export interface ProviderBindingInput {
   logicalName: string
@@ -57,6 +58,36 @@ export function resolveProviderBinding(input: ProviderBindingInput): ProviderBin
   }
 }
 
+function resolveSessionFallbackBinding(input: ProviderBinding): ProviderBinding | null {
+  const fallbackBase: ProviderBinding = {
+    logicalName: input.logicalName,
+    tool: 'kiro',
+    model: 'kiro',
+    timeoutMs: input.timeoutMs,
+  }
+
+  if (input.logicalName === 'capabilities.loop.planner') {
+    return { ...fallbackBase, agent: 'architect' }
+  }
+  if (input.logicalName === 'capabilities.loop.executor') {
+    return { ...fallbackBase, agent: 'dev' }
+  }
+  if (input.logicalName === 'capabilities.harness.document_planner') {
+    return { ...fallbackBase, agent: 'architect' }
+  }
+  if (/^capabilities\.harness\.validator_checks\[\d+\]$/.test(input.logicalName)) {
+    return { ...fallbackBase, agent: 'architect' }
+  }
+  if (input.logicalName.startsWith('reviewers.')) {
+    return { ...fallbackBase, agent: 'code-reviewer' }
+  }
+  if (input.logicalName === 'summarizer' || input.logicalName === 'analyzer') {
+    return { ...fallbackBase, agent: 'architect' }
+  }
+
+  return null
+}
+
 export function createConfiguredProvider(input: ProviderBindingInput, config: MagpieConfig): AIProvider {
   const binding = resolveProviderBinding(input)
   const selector = binding.tool
@@ -67,5 +98,22 @@ export function createConfiguredProvider(input: ProviderBindingInput, config: Ma
     throw new Error(`Provider binding ${input.logicalName} must resolve to a tool or model`)
   }
 
-  return createProvider(selector, config, binding)
+  const fallbackBinding = resolveSessionFallbackBinding(binding)
+  return withProviderSessionPersistence(
+    createProvider(selector, config, binding),
+    binding.logicalName,
+    fallbackBinding
+      ? {
+        fallbackFactory: () => {
+          const fallbackSelector = fallbackBinding.tool
+            ? getProviderForTool(fallbackBinding.tool)
+            : fallbackBinding.model
+          if (!fallbackSelector) {
+            throw new Error(`Fallback provider binding ${fallbackBinding.logicalName} must resolve to a tool or model`)
+          }
+          return createProvider(fallbackSelector, config, fallbackBinding)
+        },
+      }
+      : undefined
+  )
 }

@@ -4,6 +4,7 @@ import { CliSessionHelper } from './session-helper.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
+  supportsPreciseSessionRestore = true
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private readonly model?: string
@@ -41,6 +42,10 @@ export class ClaudeCodeProvider implements AIProvider {
 
   startSession(name?: string): void {
     this.session.start(name)
+  }
+
+  restoreSession(sessionId: string, name?: string): void {
+    this.session.restore(sessionId, name)
   }
 
   endSession(): void {

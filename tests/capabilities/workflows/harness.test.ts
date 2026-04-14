@@ -38,6 +38,8 @@ vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
 
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { runCapability } from '../../../src/core/capability/runner.js'
+import { StateManager } from '../../../src/core/state/index.js'
+import { persistWorkflowSession } from '../../../src/capabilities/workflows/shared/runtime.js'
 import { executeHarness } from '../../../src/capabilities/workflows/harness/application/execute.js'
 import { prepareHarnessInput } from '../../../src/capabilities/workflows/harness/application/prepare.js'
 import { reportHarness } from '../../../src/capabilities/workflows/harness/application/report.js'
@@ -787,6 +789,211 @@ integrations:
       expect(events).not.toContain('"type":"stage_completed","stage":"developing"')
       expect(fetchMock).toHaveBeenCalled()
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('treats a failed-but-recoverable loop session as blocked during developing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-recoverable-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'failed',
+            session: {
+              id: 'loop-recoverable-1',
+              status: 'failed',
+              currentStageIndex: 0,
+              stages: ['code_development'],
+              currentLoopState: 'blocked_for_human',
+              lastReliablePoint: 'red_test_confirmed',
+              lastFailureReason: '继续从当前工作区修复。',
+              artifacts: {
+                sessionDir: '/tmp/loop-recoverable-1',
+                eventsPath: '/tmp/loop-recoverable-events.jsonl',
+                planPath: '/tmp/loop-recoverable-plan.json',
+                humanConfirmationPath: '/tmp/human_confirmation.md',
+                workspaceMode: 'current',
+                workspacePath: dir,
+                nextRoundInputPath: '/tmp/loop-recoverable-next.md',
+                redTestResultPath: '/tmp/loop-recoverable-red.json',
+              },
+            },
+          },
+          output: {} as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('blocked')
+      expect(result.session?.status).toBe('blocked')
+      expect(result.session?.currentStage).toBe('developing')
+      expect(result.session?.artifacts.loopSessionId).toBe('loop-recoverable-1')
+      expect(result.session?.artifacts.workspacePath).toBe(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('resumes a previously failed harness session when its loop checkpoint is still recoverable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-resume-failed-loop-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    mockClaudeHealthy()
+
+    const sessionId = 'harness-resume-failed-loop'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'harness', sessionId)
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'rounds.json'), JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const failedHarnessSession = {
+      id: sessionId,
+      capability: 'harness' as const,
+      title: 'Deliver checkout v2',
+      createdAt: new Date('2026-04-14T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      status: 'failed' as const,
+      currentStage: 'developing' as const,
+      summary: 'Harness failed during loop development stage.',
+      artifacts: {
+        repoRootPath: dir,
+        harnessConfigPath: join(sessionDir, 'harness.config.yaml'),
+        roundsPath: join(sessionDir, 'rounds.json'),
+        providerSelectionPath: join(sessionDir, 'provider-selection.json'),
+        routingDecisionPath: join(sessionDir, 'routing-decision.json'),
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        loopSessionId: 'loop-failed-recoverable-1',
+        loopEventsPath: '/tmp/loop-failed-recoverable-events.jsonl',
+        workspaceMode: 'current' as const,
+        workspacePath: dir,
+      },
+      evidence: {
+        input: {
+          goal: 'Deliver checkout v2',
+          prdPath: join(dir, 'docs', 'prd.md'),
+        },
+        runtime: {
+          lastReliablePoint: 'developing',
+        },
+      },
+    }
+    await persistWorkflowSession(dir, failedHarnessSession)
+
+    const loopStateManager = new StateManager(dir)
+    await loopStateManager.initLoopSessions()
+    await loopStateManager.saveLoopSession({
+      id: 'loop-failed-recoverable-1',
+      title: 'Recoverable loop',
+      goal: 'Deliver checkout v2',
+      prdPath: join(dir, 'docs', 'prd.md'),
+      createdAt: new Date('2026-04-14T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      status: 'failed',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      currentLoopState: 'blocked_for_human',
+      lastReliablePoint: 'red_test_confirmed',
+      lastFailureReason: '继续从当前工作区修复。',
+      artifacts: {
+        sessionDir: join(dir, '.magpie', 'sessions', 'loop', 'loop-failed-recoverable-1'),
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath: '/tmp/loop-failed-recoverable-events.jsonl',
+        planPath: '/tmp/loop-failed-recoverable-plan.json',
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        nextRoundInputPath: '/tmp/loop-failed-recoverable-next.md',
+        redTestResultPath: '/tmp/loop-failed-recoverable-red.json',
+      },
+    })
+
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = sessionId
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-failed-recoverable-1', artifacts: {} } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(runCapabilityMock.mock.calls.find(([module]) => module.name === 'loop')?.[1]).toMatchObject({
+        mode: 'resume',
+        sessionId: 'loop-failed-recoverable-1',
+      })
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME
     }

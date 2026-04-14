@@ -92,6 +92,7 @@ export interface HarnessResult {
       knowledgeSummaryDir?: string
       knowledgeCandidatesPath?: string
       documentPlanPath?: string
+      providerSessionsPath?: string
       loopSessionId?: string
       loopEventsPath?: string
     }

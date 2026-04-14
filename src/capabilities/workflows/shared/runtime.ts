@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { getRepoCapabilitySessionsDir, getRepoSessionDir } from '../../../platform/paths.js'
 import type { SafetyConfig } from '../../../platform/config/types.js'
+import type { LoopReliablePoint } from '../../../state/types.js'
 
 export type WorkflowCapability =
   | 'loop'
@@ -37,6 +38,7 @@ export interface WorkflowSession {
     knowledgeStatePath?: string
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
+    providerSessionsPath?: string
   }
   evidence?: unknown
 }
@@ -66,6 +68,28 @@ export interface CommandExecutionOptions {
   interactive?: boolean
 }
 
+type RecoverableLoopSessionLike = {
+  status?: string
+  currentStage?: string
+  currentStageIndex?: number
+  stages?: string[]
+  currentLoopState?: string
+  lastReliablePoint?: string
+  lastFailureReason?: string
+  artifacts?: Record<string, string> & {
+    workspacePath?: string
+    nextRoundInputPath?: string
+    redTestResultPath?: string
+    greenTestResultPath?: string
+    repairEvidencePath?: string
+    repairOpenIssuesPath?: string
+  }
+  stageResults?: Array<{
+    stage?: string
+    artifacts?: string[]
+  }>
+}
+
 const DEFAULT_DANGEROUS_COMMAND_PATTERNS = [
   'rm -rf',
   'git push --force',
@@ -74,6 +98,109 @@ const DEFAULT_DANGEROUS_COMMAND_PATTERNS = [
   'git clean -fd',
   'git clean -xdf',
 ]
+
+const RECOVERABLE_LOOP_POINTS = new Set<LoopReliablePoint>([
+  'constraints_validated',
+  'red_test_confirmed',
+  'implementation_generated',
+  'test_result_recorded',
+  'development_result_recorded',
+  'test_result_recorded',
+  'review_results_recorded',
+  'arbitration_recorded',
+  'next_round_brief_recorded',
+  'completed',
+])
+
+function resolveLoopStage(session: RecoverableLoopSessionLike): string | null {
+  if (typeof session.currentStage === 'string' && session.currentStage.length > 0) {
+    return session.currentStage
+  }
+  if (!Array.isArray(session.stages)) {
+    return null
+  }
+  const index = Number.isInteger(session.currentStageIndex) ? Number(session.currentStageIndex) : 0
+  return session.stages[index] || null
+}
+
+function hasLoopFailureArtifacts(session: RecoverableLoopSessionLike, stage: string | null): boolean {
+  if (session.artifacts?.redTestResultPath
+    || session.artifacts?.greenTestResultPath
+    || session.artifacts?.repairEvidencePath
+    || session.artifacts?.repairOpenIssuesPath) {
+    return true
+  }
+
+  if (!stage || !Array.isArray(session.stageResults)) {
+    return false
+  }
+
+  return session.stageResults.some((result) =>
+    result.stage === stage
+    && Array.isArray(result.artifacts)
+    && result.artifacts.length > 0
+  )
+}
+
+function hasLoopContinuationHint(session: RecoverableLoopSessionLike): boolean {
+  return Boolean(
+    session.artifacts?.nextRoundInputPath
+    || session.lastFailureReason
+    || session.currentLoopState
+  )
+}
+
+export function isRecoverableLoopSession(session: RecoverableLoopSessionLike | null | undefined): boolean {
+  if (!session) {
+    return false
+  }
+
+  const stage = resolveLoopStage(session)
+  if (stage !== 'code_development') {
+    return false
+  }
+
+  if (!session.artifacts?.workspacePath) {
+    return false
+  }
+
+  if (!hasLoopFailureArtifacts(session, stage) || !hasLoopContinuationHint(session)) {
+    return false
+  }
+
+  if (session.lastReliablePoint && !RECOVERABLE_LOOP_POINTS.has(session.lastReliablePoint as LoopReliablePoint)) {
+    return false
+  }
+
+  if (session.lastReliablePoint === 'red_test_confirmed' && !session.artifacts?.redTestResultPath) {
+    return false
+  }
+
+  if (session.lastReliablePoint === 'test_result_recorded' && !session.artifacts?.greenTestResultPath) {
+    return false
+  }
+
+  return true
+}
+
+export function isRecoverableHarnessSession(
+  session: WorkflowSession,
+  loopSession?: RecoverableLoopSessionLike | null
+): boolean {
+  if (session.status === 'blocked' || session.status === 'waiting_next_cycle' || session.status === 'waiting_retry') {
+    return true
+  }
+
+  if (session.status !== 'failed') {
+    return false
+  }
+
+  if (session.currentStage === 'developing') {
+    return isRecoverableLoopSession(loopSession)
+  }
+
+  return false
+}
 
 export function generateWorkflowId(prefix: string): string {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}`

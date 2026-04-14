@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
+
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
 const createDefaultCapabilityRegistry = vi.fn()
@@ -11,9 +11,11 @@ const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
 const persistWorkflowSession = vi.fn()
 const appendWorkflowEvent = vi.fn()
+const isRecoverableHarnessSession = vi.fn()
 const launchMagpieInTmux = vi.fn()
 const enqueueHarnessSession = vi.fn()
 const isHarnessServerRunning = vi.fn()
+const createHarnessGraphArtifact = vi.fn()
 const loadHarnessGraphArtifact = vi.fn()
 const persistHarnessGraphArtifact = vi.fn()
 const recordHarnessGraphApprovalDecision = vi.fn()
@@ -39,6 +41,7 @@ vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   loadWorkflowSession,
   persistWorkflowSession,
   appendWorkflowEvent,
+  isRecoverableHarnessSession,
 }))
 
 vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
@@ -51,6 +54,7 @@ vi.mock('../../src/capabilities/workflows/harness-server/runtime.js', () => ({
 }))
 
 vi.mock('../../src/capabilities/workflows/harness-server/graph.js', () => ({
+  createHarnessGraphArtifact,
   loadHarnessGraphArtifact,
   persistHarnessGraphArtifact,
   recordHarnessGraphApprovalDecision,
@@ -83,6 +87,7 @@ describe('top-level harness CLI command', () => {
     process.exitCode = 0
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
     getTypedCapability.mockReturnValue({ name: 'harness' })
+    listWorkflowSessions.mockResolvedValue([])
     launchMagpieInTmux.mockResolvedValue({
       sessionId: 'harness-tmux-1',
       tmuxSession: 'magpie-harness-tmux-1',
@@ -90,6 +95,25 @@ describe('top-level harness CLI command', () => {
       tmuxPane: '%1',
     })
     isHarnessServerRunning.mockResolvedValue(false)
+    createHarnessGraphArtifact.mockReturnValue({
+      graphId: 'ship-checkout-v2',
+      title: 'Ship checkout v2',
+      goal: 'Ship checkout v2',
+      nodes: [],
+      approvalGates: [],
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 1,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 0,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      status: 'active',
+    })
     enqueueHarnessSession.mockResolvedValue({
       id: 'harness-queued-1',
       status: 'queued',
@@ -125,6 +149,7 @@ describe('top-level harness CLI command', () => {
     persistHarnessGraphArtifact.mockResolvedValue('/tmp/harness-graph.json')
     appendWorkflowEvent.mockResolvedValue('/tmp/events.jsonl')
     persistWorkflowSession.mockResolvedValue(undefined)
+    isRecoverableHarnessSession.mockReturnValue(false)
     recordHarnessGraphApprovalDecision.mockImplementation((graph, input) => ({
       ...graph,
       approvalDecision: input,
@@ -225,6 +250,20 @@ describe('top-level harness CLI command', () => {
       { from: 'node' }
     )
 
+    expect(createHarnessGraphArtifact).toHaveBeenCalledWith({
+      graphId: 'ship-checkout-v2',
+      title: 'Ship checkout v2',
+      goal: 'Ship checkout v2',
+      sourceRequirementPath: '/tmp/prd.md',
+      nodes: [
+        {
+          id: 'deliverable',
+          title: 'Deliver requirement',
+          goal: 'Ship checkout v2',
+          type: 'feature',
+        },
+      ],
+    })
     expect(enqueueHarnessSession).toHaveBeenCalledWith(
       process.cwd(),
       expect.objectContaining({
@@ -232,7 +271,10 @@ describe('top-level harness CLI command', () => {
         prdPath: '/tmp/prd.md',
         priority: 'high',
       }),
-      { configPath: '/tmp/custom.yaml' }
+      {
+        configPath: '/tmp/custom.yaml',
+        graph: createHarnessGraphArtifact.mock.results[0]?.value,
+      }
     )
     expect(runCapability).not.toHaveBeenCalled()
     expect(logSpy).toHaveBeenCalledWith('Harness session queued.')
@@ -240,6 +282,283 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Status: queued')
     expect(logSpy).toHaveBeenCalledWith('Priority: high')
     logSpy.mockRestore()
+  })
+
+  it('reconnects submit to the latest recoverable matching session', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isRecoverableHarnessSession.mockReturnValue(true)
+    listWorkflowSessions.mockResolvedValue([
+      {
+        id: 'harness-old-1',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:00:00.000Z'),
+        status: 'blocked',
+        currentStage: 'developing',
+        summary: 'Older blocked session.',
+        artifacts: {},
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+          },
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+      {
+        id: 'harness-old-2',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+        status: 'failed',
+        currentStage: 'developing',
+        summary: 'Recoverable failed session.',
+        artifacts: {
+          loopSessionId: 'loop-77',
+          workspacePath: '/tmp/workspace',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+            maxCycles: 4,
+          },
+          configPath: '/tmp/persisted.yaml',
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+    ])
+    loadWorkflowSession.mockResolvedValue({
+      id: 'loop-77',
+      capability: 'loop',
+      title: 'loop',
+      createdAt: new Date('2026-04-10T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+      status: 'failed',
+      currentStage: 'code_development',
+      summary: 'Loop can resume from current workspace.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+    })
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: '/tmp/prd.md',
+        maxCycles: 4,
+      }),
+      expect.objectContaining({
+        configPath: '/tmp/persisted.yaml',
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Resuming recoverable harness session: harness-old-2')
+    logSpy.mockRestore()
+  })
+
+  it('matches a recoverable session when the PRD path string differs but resolves to the same file', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isRecoverableHarnessSession.mockReturnValue(true)
+    listWorkflowSessions.mockResolvedValue([
+      {
+        id: 'harness-relative-prd',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+        status: 'failed',
+        currentStage: 'developing',
+        summary: 'Recoverable failed session.',
+        artifacts: {
+          loopSessionId: 'loop-88',
+          workspacePath: '/tmp/workspace',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: './docs/prd.md',
+          },
+          configPath: '/tmp/persisted.yaml',
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+    ])
+    loadWorkflowSession.mockResolvedValue({
+      id: 'loop-88',
+      capability: 'loop',
+      title: 'loop',
+      createdAt: new Date('2026-04-10T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+      status: 'failed',
+      currentStage: 'code_development',
+      summary: 'Loop can resume from current workspace.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+    })
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', 'docs/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: './docs/prd.md',
+      }),
+      expect.objectContaining({
+        configPath: '/tmp/persisted.yaml',
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Resuming recoverable harness session: harness-relative-prd')
+    logSpy.mockRestore()
+  })
+
+  it('requeues a recoverable session through the harness server with persisted defaults intact', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isHarnessServerRunning.mockResolvedValue(true)
+    isRecoverableHarnessSession.mockReturnValue(true)
+    listWorkflowSessions.mockResolvedValue([
+      {
+        id: 'harness-requeue-1',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+        status: 'failed',
+        currentStage: 'developing',
+        summary: 'Recoverable failed session.',
+        artifacts: {
+          loopSessionId: 'loop-99',
+          workspacePath: '/tmp/workspace',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: './docs/prd.md',
+            maxCycles: 2,
+            reviewRounds: 5,
+          },
+          configPath: '/tmp/persisted.yaml',
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+    ])
+    loadWorkflowSession.mockResolvedValue({
+      id: 'loop-99',
+      capability: 'loop',
+      title: 'loop',
+      createdAt: new Date('2026-04-10T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+      status: 'failed',
+      currentStage: 'code_development',
+      summary: 'Loop can resume from current workspace.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+    })
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', 'docs/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(persistWorkflowSession).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-requeue-1',
+        status: 'waiting_next_cycle',
+        evidence: expect.objectContaining({
+          input: expect.objectContaining({
+            goal: 'Ship checkout v2',
+            prdPath: './docs/prd.md',
+            maxCycles: 2,
+            reviewRounds: 5,
+          }),
+          configPath: '/tmp/persisted.yaml',
+        }),
+      })
+    )
+    expect(appendWorkflowEvent).toHaveBeenCalledWith(
+      process.cwd(),
+      'harness',
+      'harness-requeue-1',
+      expect.objectContaining({
+        type: 'workflow_requeued',
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Resuming recoverable harness session: harness-requeue-1')
+    expect(logSpy).toHaveBeenCalledWith('Status: waiting_next_cycle')
+    expect(runCapability).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+  })
+
+  it('starts a fresh submit when no recoverable matching session exists', async () => {
+    listWorkflowSessions.mockResolvedValue([
+      {
+        id: 'harness-other',
+        capability: 'harness',
+        title: 'Different goal',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:00:00.000Z'),
+        status: 'blocked',
+        currentStage: 'developing',
+        summary: 'Different goal session.',
+        artifacts: {},
+        evidence: {
+          input: {
+            goal: 'Different goal',
+            prdPath: '/tmp/prd.md',
+          },
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+    ])
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledTimes(1)
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: '/tmp/prd.md',
+      }),
+      expect.any(Object)
+    )
   })
 
   it('forwards host overrides and prints workspace metadata', async () => {

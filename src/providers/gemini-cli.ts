@@ -4,6 +4,7 @@ import { CliSessionHelper } from './session-helper.js'
 
 export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
+  supportsPreciseSessionRestore = true
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private readonly model?: string
@@ -38,6 +39,11 @@ export class GeminiCliProvider implements AIProvider {
     this.sessionEnabled = true
     this.session.start(name)
     this.session.sessionId = undefined  // Will be set from first response's JSON
+  }
+
+  restoreSession(sessionId: string, name?: string): void {
+    this.sessionEnabled = true
+    this.session.restore(sessionId, name)
   }
 
   endSession(): void {

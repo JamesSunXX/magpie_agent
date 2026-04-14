@@ -4,6 +4,7 @@ import { CliSessionHelper } from './session-helper.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex'
+  supportsPreciseSessionRestore = true
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private readonly model?: string
@@ -44,6 +45,11 @@ export class CodexCliProvider implements AIProvider {
     this.sessionEnabled = true
     this.session.start(name)
     this.session.sessionId = undefined  // Will be set from first response's JSONL
+  }
+
+  restoreSession(sessionId: string, name?: string): void {
+    this.sessionEnabled = true
+    this.session.restore(sessionId, name)
   }
 
   endSession(): void {

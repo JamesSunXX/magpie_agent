@@ -17,6 +17,7 @@ import { loadConfig } from '../../../platform/config/loader.js'
 import { getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
+import { withProviderSessionScope } from '../../../providers/session-persistence.js'
 import type { ComplexityTier, LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
@@ -28,6 +29,7 @@ import {
 } from '../../../platform/integrations/planning/index.js'
 import {
   buildCommandSafetyConfig,
+  isRecoverableLoopSession,
   runSafeCommand,
 } from '../../workflows/shared/runtime.js'
 import {
@@ -2597,36 +2599,49 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const planningRouter = createPlanningRouter(config.integrations.planning)
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(`${prepared.goal}\n${prepared.prdPath}`)
+  const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
+  const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
+  const providerSessionsPath = join(sessionDir, 'provider-sessions.json')
 
-  const planner = createConfiguredProvider({
-    logicalName: 'capabilities.loop.planner',
-    tool: loopRuntime.plannerTool,
-    model: loopRuntime.plannerModel,
-    agent: loopRuntime.plannerAgent,
-  }, config)
-  const executor = createConfiguredProvider({
-    logicalName: 'capabilities.loop.executor',
-    tool: loopRuntime.executorTool,
-    model: loopRuntime.executorModel,
-    agent: loopRuntime.executorAgent,
-  }, config)
-  const autoCommitProvider = createConfiguredProvider(resolveAutoCommitProviderBinding({
-    autoCommitModel: loopRuntime.autoCommitModel,
-    executorTool: loopRuntime.executorTool,
-    executorModel: loopRuntime.executorModel,
-    executorAgent: loopRuntime.executorAgent,
-  }), config)
+  const { planner, executor, autoCommitProvider } = await withProviderSessionScope({
+    sessionsPath: providerSessionsPath,
+    workflowSessionId: sessionId,
+    namespace: 'loop',
+  }, async () => ({
+    planner: createConfiguredProvider({
+      logicalName: 'capabilities.loop.planner',
+      tool: loopRuntime.plannerTool,
+      model: loopRuntime.plannerModel,
+      agent: loopRuntime.plannerAgent,
+    }, config),
+    executor: createConfiguredProvider({
+      logicalName: 'capabilities.loop.executor',
+      tool: loopRuntime.executorTool,
+      model: loopRuntime.executorModel,
+      agent: loopRuntime.executorAgent,
+    }, config),
+    autoCommitProvider: createConfiguredProvider(resolveAutoCommitProviderBinding({
+      autoCommitModel: loopRuntime.autoCommitModel,
+      executorTool: loopRuntime.executorTool,
+      executorModel: loopRuntime.executorModel,
+      executorAgent: loopRuntime.executorAgent,
+    }), config),
+  }))
   const shouldPrepareAutoBranchProvider = prepared.dryRun !== true
     && (loopRuntime.autoCommit || (routingDecision?.tier || prepared.complexity) === 'complex')
   let autoBranchProvider: AIProvider | undefined
   let autoBranchProviderError: string | undefined
   if (loopRuntime.branchNamingEnabled && shouldPrepareAutoBranchProvider) {
     try {
-      autoBranchProvider = createConfiguredProvider(resolveAutoBranchProviderBinding({
+      autoBranchProvider = await withProviderSessionScope({
+        sessionsPath: providerSessionsPath,
+        workflowSessionId: sessionId,
+        namespace: 'loop',
+      }, async () => createConfiguredProvider(resolveAutoBranchProviderBinding({
         tool: loopRuntime.branchNamingTool,
         model: loopRuntime.branchNamingModel,
         agent: loopRuntime.branchNamingAgent,
-      }), config)
+      }), config))
     } catch (error) {
       autoBranchProviderError = error instanceof Error ? error.message : String(error)
       ctx.logger.warn(`[loop] Auto branch naming degraded: ${autoBranchProviderError}`)
@@ -2637,8 +2652,6 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   await stateManager.initLoopSessions()
   const progressObserver = getLoopProgressObserver(ctx)
 
-  const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
-  const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
   const eventsPath = join(sessionDir, 'events.jsonl')
   const planPath = join(sessionDir, 'plan.json')
   const mrResultPath = join(sessionDir, 'mr-result.json')
@@ -2798,6 +2811,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       humanConfirmationPath,
       mrResultPath,
       documentPlanPath,
+      providerSessionsPath,
       roleRosterPath: roleArtifacts.rolesPath,
       roleMessagesPath: roleArtifacts.messagesPath,
       roleRoundsDir: roleArtifacts.roundsDir,
@@ -2910,7 +2924,9 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     }
   }
 
-  if (session.status === 'failed') {
+  const recoverableFailedSession = session.status === 'failed' && isRecoverableLoopSession(session)
+
+  if (session.status === 'failed' && !recoverableFailedSession) {
     return {
       status: 'failed',
       summary: `Session ${session.id} is failed. Start a new run or manually fix and resume from artifacts.`,
@@ -2966,25 +2982,34 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   const planningRouter = createPlanningRouter(config.integrations.planning)
   const planningItemKey = prepared.planningItemKey
     || extractPlanningItemKey(`${session.goal}\n${session.prdPath}`)
+  const providerSessionsPath = session.artifacts.providerSessionsPath
+    || join(session.artifacts.sessionDir, 'provider-sessions.json')
+  session.artifacts.providerSessionsPath = providerSessionsPath
 
-  const planner = createConfiguredProvider({
-    logicalName: 'capabilities.loop.planner',
-    tool: loopRuntime.plannerTool,
-    model: loopRuntime.plannerModel,
-    agent: loopRuntime.plannerAgent,
-  }, config)
-  const executor = createConfiguredProvider({
-    logicalName: 'capabilities.loop.executor',
-    tool: loopRuntime.executorTool,
-    model: loopRuntime.executorModel,
-    agent: loopRuntime.executorAgent,
-  }, config)
-  const autoCommitProvider = createConfiguredProvider(resolveAutoCommitProviderBinding({
-    autoCommitModel: loopRuntime.autoCommitModel,
-    executorTool: loopRuntime.executorTool,
-    executorModel: loopRuntime.executorModel,
-    executorAgent: loopRuntime.executorAgent,
-  }), config)
+  const { planner, executor, autoCommitProvider } = await withProviderSessionScope({
+    sessionsPath: providerSessionsPath,
+    workflowSessionId: session.id,
+    namespace: 'loop',
+  }, async () => ({
+    planner: createConfiguredProvider({
+      logicalName: 'capabilities.loop.planner',
+      tool: loopRuntime.plannerTool,
+      model: loopRuntime.plannerModel,
+      agent: loopRuntime.plannerAgent,
+    }, config),
+    executor: createConfiguredProvider({
+      logicalName: 'capabilities.loop.executor',
+      tool: loopRuntime.executorTool,
+      model: loopRuntime.executorModel,
+      agent: loopRuntime.executorAgent,
+    }, config),
+    autoCommitProvider: createConfiguredProvider(resolveAutoCommitProviderBinding({
+      autoCommitModel: loopRuntime.autoCommitModel,
+      executorTool: loopRuntime.executorTool,
+      executorModel: loopRuntime.executorModel,
+      executorAgent: loopRuntime.executorAgent,
+    }), config),
+  }))
   const planningContext = await planningRouter.createPlanContext({
     itemKey: planningItemKey,
     title: session.goal,
@@ -3043,6 +3068,11 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
       summary: resumeCheckpointError,
       session,
     }
+  }
+
+  if (recoverableFailedSession) {
+    session.status = 'paused_for_human'
+    session.currentLoopState = session.currentLoopState || 'blocked_for_human'
   }
 
   if (session.status === 'paused_for_human') {

@@ -40,6 +40,10 @@ export class QwenCodeProvider implements AIProvider {
     this.session.start(name)
   }
 
+  restoreSession(sessionId: string, name?: string): void {
+    this.session.restore(sessionId, name)
+  }
+
   endSession(): void {
     this.session.end()
   }

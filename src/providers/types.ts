@@ -29,6 +29,15 @@ export interface ChatOptions {
   onProgress?: (event: ProviderProgressEvent) => void
 }
 
+export interface ProviderSessionRecord {
+  provider: string
+  sessionId: string
+  workflowSessionId: string
+  roleId: string
+  updatedAt: string
+  supportsResume: boolean
+}
+
 export interface AIProvider {
   name: string
   chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
@@ -36,8 +45,10 @@ export interface AIProvider {
   setCwd?(cwd: string): void
   setTimeoutMs?(timeoutMs: number): void
   // Session management for multi-turn conversations
+  supportsPreciseSessionRestore?: boolean
   sessionId?: string
   startSession?(name?: string): void  // Create a new session, optional name for identification
+  restoreSession?(sessionId: string, name?: string): void
   endSession?(): void    // Clean up session
 }
 
