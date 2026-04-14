@@ -28,6 +28,7 @@ export function GraphWorkbench(props: {
   workbench: GraphWorkbenchData
   focusedPanel: GraphWorkbenchState['focusedPanel']
   selectedActionIndex: number
+  pendingConfirmationActionId?: string
   message?: string
 }) {
   const selectedNode = props.workbench.selectedNode
@@ -40,7 +41,14 @@ export function GraphWorkbench(props: {
           <Text color="gray">  {props.workbench.graph.graphId} · {props.workbench.graph.status}</Text>
         </Text>
         <Text color="gray">
-          ready {props.workbench.graph.rollup.ready} · waiting approval {props.workbench.graph.rollup.waitingApproval} · blocked {props.workbench.graph.rollup.blocked}
+          total {props.workbench.graph.rollup.total}
+          {' · '}ready {props.workbench.graph.rollup.ready}
+          {' · '}running {props.workbench.graph.rollup.running}
+          {' · '}waiting approval {props.workbench.graph.rollup.waitingApproval}
+          {' · '}retry {props.workbench.graph.rollup.waitingRetry}
+          {' · '}blocked {props.workbench.graph.rollup.blocked}
+          {' · '}completed {props.workbench.graph.rollup.completed}
+          {' · '}failed {props.workbench.graph.rollup.failed}
         </Text>
         {props.workbench.error ? <Text color="red">{props.workbench.error}</Text> : null}
         {props.workbench.nodes.map((node) => renderNodeLine(node, props.workbench.selectedNodeId, props.focusedPanel))}
@@ -60,6 +68,10 @@ export function GraphWorkbench(props: {
         <Text>Approval pending: {selectedNode.approvalPending ? 'yes' : 'no'}</Text>
         {selectedNode.latestSummary ? <Text>Latest summary: {selectedNode.latestSummary}</Text> : null}
         {selectedNode.nextStep ? <Text>Next: {selectedNode.nextStep}</Text> : null}
+        {selectedNode.reviewerSummaries.length > 0
+          ? selectedNode.reviewerSummaries.map((summary) => <Text key={summary}>Review: {summary}</Text>)
+          : <Text color="gray">No review summary yet.</Text>}
+        {selectedNode.arbitrationSummary ? <Text>Arbitration: {selectedNode.arbitrationSummary}</Text> : null}
         {selectedNode.linkedExecution ? (
           <>
             <Text>
@@ -82,12 +94,14 @@ export function GraphWorkbench(props: {
       const selected = index === props.selectedActionIndex
       const prefix = selected ? '› ' : '  '
       const color = selected && props.focusedPanel === 'actions' ? 'greenBright' : undefined
+      const confirmationHint = action.id === props.pendingConfirmationActionId ? ' [press Enter again]' : ''
 
       return (
         <Box key={action.id} flexDirection="column">
           <Text color={color}>
             {prefix}
             {action.label}
+            {confirmationHint}
             <Text color="gray">  {action.kind}</Text>
           </Text>
           <Text color="gray">

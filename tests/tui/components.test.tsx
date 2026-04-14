@@ -183,9 +183,14 @@ describe('TUI components', () => {
           title: 'Checkout V2',
           status: 'active',
           rollup: {
+            total: 3,
             ready: 0,
+            running: 0,
             waitingApproval: 1,
+            waitingRetry: 0,
             blocked: 1,
+            completed: 1,
+            failed: 0,
           },
         },
         nodes: [
@@ -216,6 +221,11 @@ describe('TUI components', () => {
           approvalPending: true,
           latestSummary: 'Implementation is ready. Waiting for release approval.',
           nextStep: 'Ask the operator to approve the release gate.',
+          reviewerSummaries: [
+            'security: revise - Missing rollback handling.',
+            'qa: pass - No additional risks.',
+          ],
+          arbitrationSummary: 'Decision: revise - Need another cycle after rollback fixes.',
           unresolvedIssues: [],
           linkedExecution: {
             capability: 'loop',
@@ -258,16 +268,24 @@ describe('TUI components', () => {
       },
       focusedPanel: 'actions',
       selectedActionIndex: 0,
+      pendingConfirmationActionId: 'approve:node:release-approval:approve-release',
     })
 
     expect(normalizedText(element)).toContain('Graph Overview')
     expect(normalizedText(element)).toContain('Checkout V2')
+    expect(normalizedText(element)).toContain('total 3')
+    expect(normalizedText(element)).toContain('running 0')
+    expect(normalizedText(element)).toContain('completed 1')
+    expect(normalizedText(element)).toContain('failed 0')
     expect(normalizedText(element)).toContain('release-approval')
     expect(normalizedText(element)).toContain('Selected Node Detail')
     expect(normalizedText(element)).toContain('Implementation is ready. Waiting for release approval.')
+    expect(normalizedText(element)).toContain('Review: security: revise - Missing rollback handling.')
+    expect(normalizedText(element)).toContain('Arbitration: Decision: revise - Need another cycle after rollback fixes.')
     expect(normalizedText(element)).toContain('Linked session: loop loop-ship paused_for_human')
     expect(normalizedText(element)).toContain('Actions')
     expect(normalizedText(element)).toContain('Approve pending gate for release-approval.')
+    expect(normalizedText(element)).toContain('Approve release [press Enter again]')
     expect(normalizedText(element)).toContain('Attention and Events')
     expect(normalizedText(element)).toContain('Approval rejected for release-approval.')
   })

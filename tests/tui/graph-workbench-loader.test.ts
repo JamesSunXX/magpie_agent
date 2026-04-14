@@ -181,9 +181,14 @@ describe('graph workbench loader', () => {
       title: 'Checkout V2',
       status: 'active',
       rollup: {
+        total: 3,
         ready: 0,
+        running: 0,
         waitingApproval: 1,
+        waitingRetry: 0,
         blocked: 1,
+        completed: 1,
+        failed: 0,
       },
     })
     expect(workbench.nodes.map((node) => node.id)).toEqual(['design-api', 'release-approval', 'deploy-ui'])
@@ -334,6 +339,132 @@ describe('graph workbench loader', () => {
     ])
   })
 
+  it('surfaces retry attention and fallback event summaries for recent graph changes', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-workbench-repo-'))
+    const harnessDir = join(repoDir, '.magpie', 'sessions', 'harness', 'harness-graph-events')
+    const graphPath = join(harnessDir, 'graph.json')
+    const eventsPath = join(harnessDir, 'events.jsonl')
+
+    mkdirSync(harnessDir, { recursive: true })
+
+    writeFileSync(join(harnessDir, 'session.json'), JSON.stringify({
+      id: 'harness-graph-events',
+      capability: 'harness',
+      title: 'Graph events',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'waiting_retry',
+      currentStage: 'reviewing',
+      summary: 'Waiting to retry review cycle.',
+      artifacts: {
+        graphPath,
+        eventsPath,
+      },
+    }), 'utf-8')
+
+    writeFileSync(graphPath, JSON.stringify({
+      version: 1,
+      graphId: 'graph-events',
+      title: 'Graph events',
+      goal: 'Observe recent changes',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T12:00:00.000Z',
+      status: 'active',
+      approvalGates: [],
+      rollup: {
+        total: 3,
+        pending: 0,
+        ready: 0,
+        running: 0,
+        waitingRetry: 1,
+        waitingApproval: 1,
+        blocked: 1,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'approve-release',
+          title: 'Approve release',
+          goal: 'Wait for release approval',
+          type: 'approval',
+          dependencies: [],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for graph approval',
+        },
+        {
+          id: 'retry-review',
+          title: 'Retry review',
+          goal: 'Retry the failed review',
+          type: 'feature',
+          dependencies: [],
+          state: 'waiting_retry',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Retry scheduled after transient provider failure',
+        },
+        {
+          id: 'blocked-deploy',
+          title: 'Blocked deploy',
+          goal: 'Wait for review retry',
+          type: 'feature',
+          dependencies: ['retry-review'],
+          state: 'blocked',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Blocked by dependency: retry-review',
+        },
+      ],
+    }), 'utf-8')
+
+    writeFileSync(eventsPath, [
+      JSON.stringify({
+        timestamp: '2026-03-19T11:45:00.000Z',
+        type: 'workflow_failed',
+        summary: 'Review cycle failed before retry.',
+      }),
+      JSON.stringify({
+        timestamp: '2026-03-19T11:50:00.000Z',
+        type: 'waiting_retry',
+      }),
+      JSON.stringify({
+        timestamp: '2026-03-19T11:55:00.000Z',
+        type: 'workflow_completed',
+      }),
+      '',
+    ].join('\n'), 'utf-8')
+
+    const workbench = await loadGraphWorkbench({
+      cwd: repoDir,
+      sessionId: 'harness-graph-events',
+    })
+
+    expect(workbench.attention).toEqual([
+      'Waiting approval: approve-release - Waiting for graph approval',
+      'Blocked: blocked-deploy - Blocked by dependency: retry-review',
+      'Retrying soon: retry-review - Retry scheduled after transient provider failure',
+    ])
+    expect(workbench.events).toEqual([
+      {
+        id: '2026-03-19T11:55:00.000Z:workflow_completed:2',
+        timestamp: '2026-03-19T11:55:00.000Z',
+        summary: 'Workflow completed.',
+      },
+      {
+        id: '2026-03-19T11:50:00.000Z:waiting_retry:1',
+        timestamp: '2026-03-19T11:50:00.000Z',
+        summary: 'Retry scheduled.',
+      },
+      {
+        id: '2026-03-19T11:45:00.000Z:workflow_failed:0',
+        timestamp: '2026-03-19T11:45:00.000Z',
+        summary: 'Review cycle failed before retry.',
+      },
+    ])
+  })
+
   it('builds jump actions for linked harness sessions using existing entrypoints', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-workbench-repo-'))
     const harnessDir = join(repoDir, '.magpie', 'sessions', 'harness', 'parent-graph')
@@ -423,7 +554,7 @@ describe('graph workbench loader', () => {
       id: 'jump:harness:child-harness',
       kind: 'jump',
       label: 'Open linked harness session',
-      description: 'Inspect linked harness session child-harness.',
+      description: 'Attach linked harness session child-harness.',
       command: ['harness', 'attach', 'child-harness', '--once'],
       requiresConfirmation: false,
     })
@@ -557,6 +688,19 @@ describe('graph workbench loader', () => {
 
     writeFileSync(join(roleRoundsDir, 'cycle-1.json'), JSON.stringify({
       finalAction: 'revise',
+      reviewResults: [
+        {
+          reviewerRoleId: 'reviewer-1',
+          summary: 'security: revise - Missing rollback handling.',
+        },
+        {
+          reviewerRoleId: 'reviewer-2',
+          summary: 'qa: pass - No additional risks.',
+        },
+      ],
+      arbitrationResult: {
+        summary: 'Decision: revise - Need another cycle after rollback fixes.',
+      },
       openIssues: [
         { title: 'Missing rollback handling', severity: 'high', sourceRole: 'reviewer-1' },
         { title: 'No retry limit', severity: 'medium', sourceRole: 'reviewer-2' },
@@ -611,5 +755,12 @@ describe('graph workbench loader', () => {
       '[high] reviewer-1: Missing rollback handling',
       '[medium] reviewer-2: No retry limit',
     ])
+    expect(workbench.selectedNode?.reviewerSummaries).toEqual([
+      'security: revise - Missing rollback handling.',
+      'qa: pass - No additional risks.',
+    ])
+    expect(workbench.selectedNode?.arbitrationSummary).toBe(
+      'Decision: revise - Need another cycle after rollback fixes.'
+    )
   })
 })

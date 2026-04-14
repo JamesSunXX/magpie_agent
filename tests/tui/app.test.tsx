@@ -559,12 +559,26 @@ describe('App', () => {
         title: 'Checkout V2',
         status: 'active',
         rollup: {
+          total: 2,
           ready: 1,
+          running: 0,
           waitingApproval: 0,
+          waitingRetry: 0,
           blocked: 0,
+          completed: 1,
+          failed: 0,
         },
       },
-      nodes: [],
+      nodes: [
+        {
+          id: 'release-approval',
+          title: 'Release approval',
+          type: 'approval',
+          state: 'completed',
+          approvalPending: false,
+        },
+      ],
+      selectedNodeId: 'release-approval',
       actions: [],
       attention: [],
       events: [],
@@ -575,6 +589,7 @@ describe('App', () => {
       graphWorkbench: {
         sessionId: 'harness-graph-1',
         focusedPanel: 'actions',
+        selectedNodeId: 'release-approval',
         selectedActionIndex: 0,
         data: {
           graph: {
@@ -583,12 +598,26 @@ describe('App', () => {
             title: 'Checkout V2',
             status: 'active',
             rollup: {
+              total: 2,
               ready: 0,
+              running: 0,
               waitingApproval: 1,
+              waitingRetry: 0,
               blocked: 1,
+              completed: 0,
+              failed: 0,
             },
           },
-          nodes: [],
+          nodes: [
+            {
+              id: 'release-approval',
+              title: 'Release approval',
+              type: 'approval',
+              state: 'waiting_approval',
+              approvalPending: true,
+            },
+          ],
+          selectedNodeId: 'release-approval',
           actions: [
             {
               id: 'approve:release',
@@ -631,8 +660,15 @@ describe('App', () => {
     expect(loadGraphWorkbench).toHaveBeenCalledWith({
       cwd: '/repo',
       sessionId: 'harness-graph-1',
-      selectedNodeId: undefined,
+      selectedNodeId: 'release-approval',
     })
+
+    const refreshedState = setState.mock.calls
+      .map((call) => call[0](state) as AppState)
+      .find((next) => next.graphWorkbench?.data?.selectedNodeId === 'release-approval')
+
+    expect(refreshedState?.graphWorkbench?.selectedNodeId).toBe('release-approval')
+    expect(refreshedState?.graphWorkbench?.focusedPanel).toBe('actions')
   })
 
   it('shows a loading state and requests graph workbench data when route is opened without cached data', async () => {
@@ -647,9 +683,14 @@ describe('App', () => {
         title: 'Checkout V2',
         status: 'active',
         rollup: {
+          total: 2,
           ready: 0,
+          running: 0,
           waitingApproval: 1,
+          waitingRetry: 0,
           blocked: 1,
+          completed: 0,
+          failed: 0,
         },
       },
       nodes: [],
@@ -698,9 +739,14 @@ describe('App', () => {
             title: 'Checkout V2',
             status: 'active',
             rollup: {
+              total: 2,
               ready: 0,
+              running: 0,
               waitingApproval: 1,
+              waitingRetry: 0,
               blocked: 1,
+              completed: 0,
+              failed: 0,
             },
           },
           nodes: [],
@@ -742,6 +788,73 @@ describe('App', () => {
       .find((next) => next.graphWorkbench?.message === 'Approve release failed.')
 
     expect(messageUpdate?.graphWorkbench?.message).toBe('Approve release failed.')
+  })
+
+  it('marks reject actions as failed with the matching action label', async () => {
+    const setState = vi.fn()
+    const state: AppState = {
+      route: 'graph-workbench',
+      selectedIndex: 0,
+      graphWorkbench: {
+        sessionId: 'harness-graph-1',
+        focusedPanel: 'actions',
+        selectedActionIndex: 0,
+        data: {
+          graph: {
+            sessionId: 'harness-graph-1',
+            graphId: 'checkout-v2',
+            title: 'Checkout V2',
+            status: 'active',
+            rollup: {
+              total: 2,
+              ready: 0,
+              running: 0,
+              waitingApproval: 1,
+              waitingRetry: 0,
+              blocked: 1,
+              completed: 0,
+              failed: 0,
+            },
+          },
+          nodes: [],
+          actions: [
+            {
+              id: 'reject:release',
+              kind: 'reject',
+              label: 'Reject release',
+              description: 'Reject pending gate for release-approval.',
+              command: ['harness', 'reject', 'harness-graph-1', '--node', 'release-approval', '--gate', 'approve-release'],
+              requiresConfirmation: false,
+            },
+          ],
+          attention: [],
+          events: [],
+        },
+      },
+      sessions: { continue: [], recent: [] },
+    }
+    mockUseState.mockReturnValue([state, setState])
+    run.mockImplementation((_command: BuiltCommand, _options: Record<string, unknown>, handlers?: { onUpdate?: (run: RunState) => void }) => {
+      handlers?.onUpdate?.({
+        command: _command,
+        display: _command.display,
+        logs: ['failed\n'],
+        status: 'failed',
+        exitCode: 1,
+        artifacts: {},
+      })
+    })
+
+    const { App } = await import('../../src/tui/app.js')
+    App({ cwd: '/repo' })
+
+    capturedInput?.('', { return: true })
+
+    const messageUpdate = setState.mock.calls
+      .map((call) => call[0](state) as AppState)
+      .find((next) => next.graphWorkbench?.message === 'Reject release failed.')
+
+    expect(messageUpdate?.graphWorkbench?.message).toBe('Reject release failed.')
   })
 
   it('exits immediately on Ctrl+C', async () => {

@@ -14,7 +14,7 @@
 | Harness 后台服务 | `magpie harness-server start|status|stop` | `src/cli/commands/harness-server.ts`、`src/capabilities/workflows/harness-server/` | 常驻队列宿主；负责接单、串行执行当前仓库任务、失败重试和服务重启后的会话恢复；中断中的任务会重新入队并从上一个已保存节点继续 |
 | Workflow | `magpie workflow issue-fix|docs-sync|harness|post-merge-regression` | `src/cli/commands/workflow.ts`、`src/capabilities/workflows/` | `workflow harness` 为兼容入口，`docs-sync` 依赖当前可用配置；`workflow issue-fix` 的规划和执行如果命中已知的 Gemini 模型不存在错误，也会自动切到 Kiro 重试当前步骤 |
 | 记忆 | `magpie memory show|edit|promote` | `src/cli/commands/memory.ts`、`src/knowledge/`、`src/memory/` | 查看、编辑、提炼长期记忆 |
-| TUI | `magpie tui` | `src/cli/commands/tui.ts`、`src/tui/` | 任务工作台；会显示 `harness` 会话的轮次摘要、短原因和选中后的补充摘要；带图谱的 `harness` 会话按 `Enter` 会进入独立图谱工作台，可在里面浏览节点详情、查看当前注意项和最近事件，并直接执行常见批准/拒绝动作或跳到关联会话入口 |
+| TUI | `magpie tui` | `src/cli/commands/tui.ts`、`src/tui/` | 任务工作台；会显示 `harness` 会话的轮次摘要、短原因和选中后的补充摘要；带图谱的 `harness` 会话按 `Enter` 会进入独立图谱工作台，可在里面看整张图的状态分布、逐个浏览节点详情、看到评审/仲裁线索、查看当前注意项和最近事件，并直接执行常见批准/拒绝动作或跳到关联会话入口 |
 | 初始化 | `magpie init` | `src/cli/commands/init.ts`、`src/platform/config/` | 生成或升级配置 |
 | 统计 | `magpie stats` | `src/cli/commands/stats.ts`、`src/capabilities/stats/` | 当前仍偏轻量 |
 

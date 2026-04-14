@@ -43,6 +43,13 @@ interface PersistedWorkflowEvent {
 }
 
 interface HarnessRoleRoundSummary {
+  reviewResults?: Array<{
+    reviewerRoleId?: string
+    summary?: string
+  }>
+  arbitrationResult?: {
+    summary?: string
+  }
   openIssues?: Array<{
     title?: string
     severity?: 'critical' | 'high' | 'medium' | 'low'
@@ -86,18 +93,23 @@ function getDefaultSelectedNodeId(graph: HarnessGraphArtifact): string | undefin
 }
 
 function buildAttention(graph: HarnessGraphArtifact): string[] {
-  const items: string[] = []
+  const waitingApprovalItems: string[] = []
+  const blockedItems: string[] = []
+  const retryItems: string[] = []
 
   for (const node of graph.nodes) {
     if (node.state === 'waiting_approval' && node.statusReason) {
-      items.push(`Waiting approval: ${node.id} - ${node.statusReason}`)
+      waitingApprovalItems.push(`Waiting approval: ${node.id} - ${node.statusReason}`)
     }
     if (node.state === 'blocked' && node.statusReason) {
-      items.push(`Blocked: ${node.id} - ${node.statusReason}`)
+      blockedItems.push(`Blocked: ${node.id} - ${node.statusReason}`)
+    }
+    if (node.state === 'waiting_retry' && node.statusReason) {
+      retryItems.push(`Retrying soon: ${node.id} - ${node.statusReason}`)
     }
   }
 
-  return items
+  return [...waitingApprovalItems, ...blockedItems, ...retryItems]
 }
 
 function buildLoopCommand(session: LoopSessionFile): string[] {
@@ -178,10 +190,16 @@ async function buildSelectedNodeDetail(
 
   const linkedExecution = await loadLinkedExecution(cwd, node)
   let unresolvedIssues: string[] = []
+  let reviewerSummaries: string[] = []
+  let arbitrationSummary: string | undefined
 
   if (node.execution?.capability === 'harness') {
     const harnessSession = await loadWorkflowSession(cwd, 'harness', node.execution.sessionId)
     const latestRound = await loadLatestHarnessRoleRoundSummary(harnessSession?.artifacts.roleRoundsDir)
+    reviewerSummaries = (latestRound?.reviewResults || [])
+      .map((item) => item.summary?.trim())
+      .filter((summary): summary is string => Boolean(summary))
+    arbitrationSummary = latestRound?.arbitrationResult?.summary?.trim() || undefined
     unresolvedIssues = (latestRound?.openIssues || [])
       .filter((issue) => issue.title)
       .map((issue) => `[${issue.severity || 'unknown'}] ${issue.sourceRole || 'reviewer'}: ${issue.title}`.trim())
@@ -197,6 +215,8 @@ async function buildSelectedNodeDetail(
     approvalPending: node.approvalGates.some((gate) => gate.status === 'pending'),
     ...(linkedExecution?.summary ? { latestSummary: linkedExecution.summary } : {}),
     ...(linkedExecution?.nextStep ? { nextStep: linkedExecution.nextStep } : {}),
+    reviewerSummaries,
+    ...(arbitrationSummary ? { arbitrationSummary } : {}),
     unresolvedIssues,
     ...(linkedExecution ? { linkedExecution } : {}),
   }
@@ -270,11 +290,16 @@ function buildSelectedNodeActions(
   }
 
   if (linkedExecution) {
+    const commandVerb = linkedExecution.command[1] === 'resume'
+      ? 'Resume'
+      : linkedExecution.command[1] === 'attach'
+        ? 'Attach'
+        : 'Inspect'
     actions.push({
       id: `jump:${linkedExecution.capability}:${linkedExecution.sessionId}`,
       kind: 'jump',
       label: `Open linked ${linkedExecution.capability} session`,
-      description: `${linkedExecution.command[1] === 'resume' ? 'Resume' : 'Inspect'} linked ${linkedExecution.capability} session ${linkedExecution.sessionId}.`,
+      description: `${commandVerb} linked ${linkedExecution.capability} session ${linkedExecution.sessionId}.`,
       command: [...linkedExecution.command],
       requiresConfirmation: false,
     })
@@ -313,10 +338,13 @@ function summarizeEvent(event: PersistedWorkflowEvent): string | undefined {
     case 'stage_paused':
       return `Stage paused: ${event.stage || 'unknown'}. ${event.summary || ''}`.trim()
     case 'cycle_completed':
-    case 'workflow_completed':
-    case 'workflow_failed':
-    case 'waiting_retry':
       return event.summary
+    case 'workflow_completed':
+      return event.summary || 'Workflow completed.'
+    case 'workflow_failed':
+      return event.summary || 'Workflow failed.'
+    case 'waiting_retry':
+      return event.summary || 'Retry scheduled.'
     default:
       return undefined
   }
@@ -371,9 +399,14 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
         title: options.sessionId,
         status: 'missing',
         rollup: {
+          total: 0,
           ready: 0,
+          running: 0,
           waitingApproval: 0,
+          waitingRetry: 0,
           blocked: 0,
+          completed: 0,
+          failed: 0,
         },
       },
       nodes: [],
@@ -393,9 +426,14 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
         title: options.sessionId,
         status: 'error',
         rollup: {
+          total: 0,
           ready: 0,
+          running: 0,
           waitingApproval: 0,
+          waitingRetry: 0,
           blocked: 0,
+          completed: 0,
+          failed: 0,
         },
       },
       nodes: [],
@@ -420,9 +458,14 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
       title: graph.title,
       status: graph.status,
       rollup: {
+        total: graph.rollup.total,
         ready: graph.rollup.ready,
+        running: graph.rollup.running,
         waitingApproval: graph.rollup.waitingApproval,
+        waitingRetry: graph.rollup.waitingRetry,
         blocked: graph.rollup.blocked,
+        completed: graph.rollup.completed,
+        failed: graph.rollup.failed,
       },
     },
     nodes: graph.nodes.map((node) => ({

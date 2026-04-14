@@ -124,6 +124,8 @@ export interface GraphWorkbenchNodeDetail {
   approvalPending: boolean
   latestSummary?: string
   nextStep?: string
+  reviewerSummaries: string[]
+  arbitrationSummary?: string
   unresolvedIssues: string[]
   linkedExecution?: GraphWorkbenchLinkedExecution
 }
@@ -150,9 +152,14 @@ export interface GraphWorkbenchData {
     title: string
     status: string
     rollup: {
+      total: number
       ready: number
+      running: number
       waitingApproval: number
+      waitingRetry: number
       blocked: number
+      completed: number
+      failed: number
     }
   }
   nodes: GraphWorkbenchNodeSummary[]
