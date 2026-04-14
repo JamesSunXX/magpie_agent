@@ -272,6 +272,7 @@ describe('TUI components', () => {
     })
 
     expect(normalizedText(element)).toContain('Graph Overview')
+    expect(normalizedText(element)).toContain('Actions [focus]')
     expect(normalizedText(element)).toContain('Checkout V2')
     expect(normalizedText(element)).toContain('total 3')
     expect(normalizedText(element)).toContain('running 0')
@@ -287,6 +288,7 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('Approve pending gate for release-approval.')
     expect(normalizedText(element)).toContain('Approve release [press Enter again]')
     expect(normalizedText(element)).toContain('Attention and Events')
+    expect(normalizedText(element)).toContain('2026-03-19 12:00 Approval rejected for release-approval.')
     expect(normalizedText(element)).toContain('Approval rejected for release-approval.')
   })
 

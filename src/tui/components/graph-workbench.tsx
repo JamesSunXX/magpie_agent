@@ -4,6 +4,19 @@ import type { GraphWorkbenchData, GraphWorkbenchState } from '../types.js'
 import { buildCommandDisplay } from '../command-builder.js'
 import { Section } from './common.js'
 
+function renderPanelTitle(title: string, focused: boolean) {
+  return focused ? `${title} [focus]` : title
+}
+
+function formatEventTimestamp(timestamp: string) {
+  const match = timestamp.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
+  if (!match) {
+    return timestamp
+  }
+
+  return `${match[1]} ${match[2]}`
+}
+
 function renderNodeLine(
   node: GraphWorkbenchData['nodes'][number],
   selectedNodeId: string | undefined,
@@ -33,7 +46,7 @@ export function GraphWorkbench(props: {
 }) {
   const selectedNode = props.workbench.selectedNode
   const overviewSection = Section({
-    title: 'Graph Overview',
+    title: renderPanelTitle('Graph Overview', props.focusedPanel === 'overview'),
     children: (
       <>
         <Text>
@@ -89,7 +102,7 @@ export function GraphWorkbench(props: {
     ),
   })
   const actionsSection = Section({
-    title: 'Actions',
+    title: renderPanelTitle('Actions', props.focusedPanel === 'actions'),
     children: props.workbench.actions.length > 0 ? props.workbench.actions.map((action, index) => {
       const selected = index === props.selectedActionIndex
       const prefix = selected ? '› ' : '  '
@@ -112,7 +125,7 @@ export function GraphWorkbench(props: {
     }) : <Text color="gray">No direct actions for the selected node.</Text>,
   })
   const attentionSection = Section({
-    title: 'Attention and Events',
+    title: renderPanelTitle('Attention and Events', props.focusedPanel === 'events'),
     children: (
       <>
         {props.workbench.attention.length > 0 ? props.workbench.attention.map((item) => (
@@ -120,7 +133,7 @@ export function GraphWorkbench(props: {
         )) : <Text color="gray">No active attention items.</Text>}
         {props.workbench.events.length > 0 ? props.workbench.events.map((event) => (
           <Text key={event.id} color="gray">
-            {event.timestamp}  {event.summary}
+            {formatEventTimestamp(event.timestamp)}  {event.summary}
           </Text>
         )) : <Text color="gray">No recent events.</Text>}
       </>
