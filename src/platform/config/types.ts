@@ -83,6 +83,7 @@ export interface DefaultsConfig {
 
 export interface ContextGathererConfigOptions {
   enabled: boolean
+  tool?: string
   agent?: string
   callChain?: {
     maxDepth?: number
