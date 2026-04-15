@@ -298,6 +298,73 @@ describe('top-level harness CLI command', () => {
     }
   })
 
+  it('resumes an older failed harness session when the last reliable point stayed in development', async () => {
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = 'harness-legacy-1'
+    loadWorkflowSession
+      .mockResolvedValueOnce({
+        id: 'harness-legacy-1',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStage: 'failed',
+        summary: 'Harness failed during loop development stage.',
+        artifacts: {
+          loopSessionId: 'loop-legacy-1',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+          },
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        id: 'loop-legacy-1',
+        capability: 'loop',
+        title: 'Loop session',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStage: 'code_development',
+        summary: 'Loop can resume from current workspace.',
+        artifacts: {
+          workspacePath: '/tmp/workspace',
+          nextRoundInputPath: '/tmp/next.md',
+          redTestResultPath: '/tmp/red.json',
+        },
+      })
+    isRecoverableHarnessSession.mockImplementation((session) => session.currentStage === 'developing')
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-legacy-1'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).toHaveBeenCalledWith(
+        { name: 'harness' },
+        expect.objectContaining({
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        }),
+        expect.any(Object)
+      )
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+    }
+  })
+
   it('queues submit through the harness server when the background service is running', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     isHarnessServerRunning.mockResolvedValue(true)
@@ -494,6 +561,71 @@ describe('top-level harness CLI command', () => {
       })
     )
     expect(logSpy).toHaveBeenCalledWith('Resuming recoverable harness session: harness-old-2')
+    logSpy.mockRestore()
+  })
+
+  it('reconnects submit to an older failed session when its last reliable point stayed in development', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isRecoverableHarnessSession.mockImplementation((session) => session.currentStage === 'developing')
+    listWorkflowSessions.mockResolvedValue([
+      {
+        id: 'harness-legacy-submit',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+        status: 'failed',
+        currentStage: 'failed',
+        summary: 'Recoverable failed session.',
+        artifacts: {
+          loopSessionId: 'loop-legacy-submit',
+          workspacePath: '/tmp/workspace',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+          },
+          configPath: '/tmp/persisted.yaml',
+          runtime: {
+            lastReliablePoint: 'developing',
+          },
+        },
+      },
+    ])
+    loadWorkflowSession.mockResolvedValue({
+      id: 'loop-legacy-submit',
+      capability: 'loop',
+      title: 'loop',
+      createdAt: new Date('2026-04-10T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T11:00:00.000Z'),
+      status: 'failed',
+      currentStage: 'code_development',
+      summary: 'Loop can resume from current workspace.',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+        redTestResultPath: '/tmp/red.json',
+      },
+    })
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: '/tmp/prd.md',
+      }),
+      expect.objectContaining({
+        configPath: '/tmp/persisted.yaml',
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Resuming recoverable harness session: harness-legacy-submit')
     logSpy.mockRestore()
   })
 

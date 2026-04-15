@@ -690,7 +690,7 @@ async function findRecoverableHarnessSession(
     const loopSession = session.artifacts.loopSessionId
       ? await loadWorkflowSession(process.cwd(), 'loop', session.artifacts.loopSessionId)
       : null
-    if (!isRecoverableHarnessSession(session, loopSession || undefined)) {
+    if (!canResumeFailedDevelopmentSession(session, loopSession)) {
       continue
     }
 
@@ -794,6 +794,27 @@ function extractHarnessResumeInput(session: WorkflowSession): {
     input: evidence.input,
     ...(evidence.configPath ? { configPath: evidence.configPath } : {}),
   }
+}
+
+function canResumeFailedDevelopmentSession(
+  session: WorkflowSession,
+  loopSession: WorkflowSession | null
+): boolean {
+  if (isRecoverableHarnessSession(session, loopSession || undefined)) {
+    return true
+  }
+
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  if (session.status !== 'failed' || evidence?.runtime?.lastReliablePoint !== 'developing') {
+    return false
+  }
+
+  // Some older failed harness sessions persisted the terminal stage after the
+  // loop had already left a trustworthy development checkpoint.
+  return isRecoverableHarnessSession({
+    ...session,
+    currentStage: 'developing',
+  }, loopSession || undefined)
 }
 
 export const harnessCommand = new Command('harness')
@@ -1024,7 +1045,7 @@ harnessCommand
       const loopSession = session.artifacts.loopSessionId
         ? await loadWorkflowSession(process.cwd(), 'loop', session.artifacts.loopSessionId)
         : null
-      if (!isRecoverableHarnessSession(session, loopSession || undefined)) {
+      if (!canResumeFailedDevelopmentSession(session, loopSession)) {
         console.error(
           `Harness session ${sessionId} cannot be resumed because its linked recovery checkpoint is not recoverable.`
         )
