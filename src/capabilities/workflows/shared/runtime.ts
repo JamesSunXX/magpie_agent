@@ -99,6 +99,8 @@ const DEFAULT_DANGEROUS_COMMAND_PATTERNS = [
   'git clean -xdf',
 ]
 
+// These checkpoints correspond to artifacts we know how to reuse safely after a
+// failed loop run. Anything earlier can leave the session without enough context.
 const RECOVERABLE_LOOP_POINTS = new Set<LoopReliablePoint>([
   'constraints_validated',
   'red_test_confirmed',
@@ -150,6 +152,10 @@ function hasLoopContinuationHint(session: RecoverableLoopSessionLike): boolean {
   )
 }
 
+/**
+ * A loop session is only recoverable when it stopped during development and left
+ * behind both a workspace snapshot and enough artifacts to resume the next round.
+ */
 export function isRecoverableLoopSession(session: RecoverableLoopSessionLike | null | undefined): boolean {
   if (!session) {
     return false
@@ -183,6 +189,10 @@ export function isRecoverableLoopSession(session: RecoverableLoopSessionLike | n
   return true
 }
 
+/**
+ * Harness recovery is broader than loop recovery for queued or waiting states, but
+ * failed development sessions still need loop-specific evidence before resuming.
+ */
 export function isRecoverableHarnessSession(
   session: WorkflowSession,
   loopSession?: RecoverableLoopSessionLike | null
@@ -217,6 +227,8 @@ export async function persistWorkflowSession(cwd: string, session: WorkflowSessi
   try {
     const existingRaw = await readFile(sessionPath, 'utf-8')
     const existing = JSON.parse(existingRaw) as { artifacts?: Record<string, string> }
+    // Multiple stages add artifacts incrementally; preserve older paths unless the
+    // current write is intentionally replacing the same key.
     session.artifacts = {
       ...(existing.artifacts || {}),
       ...session.artifacts,
@@ -282,11 +294,17 @@ export async function appendWorkflowEvent(
   return eventsPath
 }
 
+/**
+ * Parse commands into argv without invoking a shell so workflow actions cannot
+ * smuggle pipelines, redirects, or command substitution through config.
+ */
 export function parseCommandArgs(command: string): string[] {
   const trimmed = command.trim()
   if (!trimmed) {
     throw new Error('Command must not be empty')
   }
+  // execFileSync executes a single program directly; reject shell metacharacters so
+  // callers cannot assume unsupported shell behavior or bypass safety review.
   if (/[|&;<>`$]/.test(trimmed)) {
     throw new Error('Unsupported shell metacharacters in command')
   }
@@ -372,6 +390,8 @@ export function classifyDangerousCommand(
 
 function promptDangerousCommandConfirmation(command: string, matchedPattern: string): boolean {
   try {
+    // Prompt against the controlling TTY so confirmation still works even when the
+    // workflow command captures stdio for logs or runs under a spinner.
     const inputFd = openSync('/dev/tty', 'rs')
     const outputFd = openSync('/dev/tty', 'w')
     try {
@@ -390,6 +410,10 @@ function promptDangerousCommandConfirmation(command: string, matchedPattern: str
   }
 }
 
+/**
+ * Stop obviously destructive commands before execution unless an interactive user
+ * explicitly confirms them on the TTY.
+ */
 export function enforceCommandSafety(
   command: string,
   options: CommandExecutionOptions = {}
@@ -414,6 +438,10 @@ export function enforceCommandSafety(
   }
 }
 
+/**
+ * Execute workflow commands through execFileSync so the stored command string maps
+ * directly to argv parsing, safety checks, and captured output.
+ */
 export function runSafeCommand(
   cwd: string,
   command: string,

@@ -6,6 +6,8 @@ import { getRepoRoot } from '../../platform/paths.js'
 import { extractJsonBlock } from '../../trd/renderer.js'
 
 const FORMAL_DOC_TYPES = ['prd', 'story', 'trd', 'api_design', 'task', 'feature_plan'] as const
+// These stages only produce working notes, evidence, or checkpoints. Even if the
+// model suggests a docs path, they must stay under the session artifact area.
 const PROCESS_ARTIFACT_STAGES = new Set([
   'prd_review',
   'domain_partition',
@@ -216,9 +218,15 @@ function normalizePlanPath(
     return normalized
   }
 
+  // When a persisted plan is copied into another checkout, keep relative intent but
+  // re-anchor paths inside the current repository before validating them again.
   return resolve(repoRoot, relative(sourceRepoRoot, normalized))
 }
 
+/**
+ * Fallback mode keeps every generated document inside `.magpie/` until the repo
+ * proves there is a safe, stable project-doc destination for formal outputs.
+ */
 export function createFallbackDocumentPlan(identity: DocumentPlanIdentity): DocumentPlan {
   const fallbackRoot = fallbackFormalDocsRoot(identity.repoRoot, identity.sessionId)
   return {
@@ -235,6 +243,10 @@ export function createFallbackDocumentPlan(identity: DocumentPlanIdentity): Docu
   }
 }
 
+/**
+ * Validate any planner output before the rest of the workflow trusts it. This is
+ * the gate that prevents process artifacts from leaking into project docs.
+ */
 export function validateDocumentPlan(
   input: DocumentPlan,
   identity: DocumentPlanIdentity
@@ -256,6 +268,8 @@ export function validateDocumentPlan(
     }
   }
 
+  // Low-confidence project-doc answers fall back immediately; a wrong docs target
+  // is more expensive than storing one session under the temporary fallback root.
   if (confidence < MIN_PROJECT_DOC_CONFIDENCE) {
     return {
       ...fallbackBecause(`Model confidence ${confidence.toFixed(2)} is below ${MIN_PROJECT_DOC_CONFIDENCE.toFixed(2)}.`, identity, confidence),
@@ -457,6 +471,10 @@ export async function loadDocumentPlan(path: string): Promise<DocumentPlan | nul
   }
 }
 
+/**
+ * Resolve the session's document routing once, persist it, and reuse it on later
+ * retries so all stages write to the same approved destinations.
+ */
 export async function generateDocumentPlan(options: GenerateDocumentPlanOptions): Promise<{
   plan: DocumentPlan
   planPath: string
@@ -517,6 +535,10 @@ export async function generateDocumentPlan(options: GenerateDocumentPlanOptions)
   return { plan: nextPlan, planPath }
 }
 
+/**
+ * Only a small subset of stages may emit a formal project document; everything
+ * else is treated as a process artifact even when it produces markdown.
+ */
 export function resolveFormalDocTargetForStage(
   stage: string,
   plan: DocumentPlan
@@ -530,6 +552,10 @@ export function resolveFormalDocTargetForStage(
   return targetPath ? { type: docType, path: targetPath } : null
 }
 
+/**
+ * Classify every generated file before writing so stage-specific evidence cannot
+ * accidentally escape into long-lived project documentation.
+ */
 export function classifyArtifact(
   stage: string,
   fileName: string,
@@ -544,6 +570,10 @@ export function classifyArtifact(
   return resolveFormalDocTargetForStage(stage, plan) ? 'formal' : 'process'
 }
 
+/**
+ * Provide a short, stage-local rule block that tells providers where they may
+ * write formal docs and where they must keep temporary artifacts.
+ */
 export function renderDocumentPlanForStage(stage: string, plan: DocumentPlan): string {
   const target = resolveFormalDocTargetForStage(stage, plan)
   const lines = [

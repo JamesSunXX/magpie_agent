@@ -45,6 +45,8 @@ const DEFAULT_EXECUTION_BINDINGS: Record<ComplexityTier, ModelRouteBinding> = {
   complex: { tool: 'kiro', agent: 'dev' },
 }
 
+// Keep fallback chains close to the preferred tier so degraded routing still lands
+// on a tool that can reasonably finish the same class of work.
 const DEFAULT_FALLBACK_CHAIN = {
   planning: {
     simple: [{ tool: 'codex' }],
@@ -142,6 +144,8 @@ function dedupeBindings(bindings: ModelRouteBinding[]): ModelRouteBinding[] {
   return unique
 }
 
+// Routing config can name tools that are temporarily disabled or unavailable; this
+// walks the preferred binding plus fallbacks and records when we had to degrade.
 function isBindingAvailable(config: MagpieConfigV2, binding: ModelRouteBinding): boolean {
   const providerName = binding.tool
     ? getProviderForTool(binding.tool)
@@ -291,6 +295,8 @@ function scoreRollout(text: string): number {
   return Math.min(2, markers.filter(marker => source.includes(marker)).length)
 }
 
+// Keep routing explainable: every signal is a small additive heuristic that can be
+// surfaced back to the user instead of hiding the decision behind one opaque score.
 function scoreSignals(
   text: string,
   tasks: LoopTask[] | undefined,
@@ -407,6 +413,10 @@ export function getRouteBindings(config: MagpieConfigV2, tier: ComplexityTier): 
   }
 }
 
+/**
+ * Build a routing decision from visible work signals so loop/harness can choose
+ * planning, execution, and review providers without hard-coding one provider.
+ */
 export function createRoutingDecision(input: CreateRoutingDecisionInput): RoutingDecision {
   if (input.overrideTier) {
     return buildDecision(
@@ -440,6 +450,10 @@ function nextTier(tier: ComplexityTier): ComplexityTier {
   return 'complex'
 }
 
+/**
+ * Escalation only moves upward. Once runtime evidence says the work is harder
+ * than expected, later stages should not quietly downgrade the route again.
+ */
 export function escalateRoutingDecision(
   current: RoutingDecision,
   config: MagpieConfigV2,
@@ -479,6 +493,10 @@ export interface EscalationSignalInput {
   providerFailure?: boolean
 }
 
+/**
+ * Convert concrete runtime outcomes into one coarse escalation reason so logs and
+ * persisted decisions stay stable even if the calling capability changes shape.
+ */
 export function getEscalationReason(input: EscalationSignalInput): string | null {
   if ((input.blockingIssueCount || 0) > 0) return 'high_severity_issue'
   if (input.testsPassed === false) return 'tests_failed'

@@ -23,6 +23,7 @@
 - When changing commands, capabilities, or project structure, update the matching docs and run `npm run check:docs`.
 - Planning and design docs live in `docs/plans/` and use `YYYY-MM-DD-<topic>.md`.
 - Keep comments focused on why, not what.
+- New or changed non-trivial code must include maintainable comments where future readers would otherwise need to infer hidden rules. Explain constraints, fallbacks, state transitions, and safety boundaries; do not add comments that only restate obvious code.
 
 ## Development Commands
 

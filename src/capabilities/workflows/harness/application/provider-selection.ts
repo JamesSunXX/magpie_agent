@@ -72,6 +72,8 @@ function isTimeoutFailure(reason: string | undefined): boolean {
   return /ETIMEDOUT|timed out/i.test(reason)
 }
 
+// Harness can touch several provider bindings in one run; collect them once so a
+// single fallback decision rewrites every Claude-backed role consistently.
 function collectModelBindings(config: MagpieConfigV2, reviewerIds: string[]): ModelBinding[] {
   const providerFromBinding = (tool?: string, model?: string): string | undefined => {
     if (tool) {
@@ -257,6 +259,10 @@ function checkKiro(cwd: string): ProbeRecord {
   }
 }
 
+/**
+ * Prefer keeping Claude when auth and a lightweight probe both succeed. Fall back
+ * to Kiro only when Claude is clearly unusable for this harness run.
+ */
 export function selectHarnessProviders(
   config: MagpieConfigV2,
   reviewerIds: string[],
@@ -300,6 +306,8 @@ export function selectHarnessProviders(
     return { record }
   }
 
+  // Treat probe timeouts as transient harness noise rather than a hard Claude
+  // failure; swapping providers on a slow probe causes unnecessary drift.
   if (record.claudeAuth.ok && isTimeoutFailure(record.claudeProbe.reason)) {
     record.decision = 'keep_claude'
     return { record }
