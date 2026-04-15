@@ -760,6 +760,68 @@ describe('loop capability', () => {
     expect(events).toContain('"event":"constraints_blocked"')
   })
 
+  it('publishes human confirmation into a Feishu thread when im integration is enabled', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":["Needs human"],"requireHumanConfirmation":true,"summary":"Explicit human confirmation required."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName.startsWith('reviewers.')) {
+        throw new Error('model reviewers should not run when evaluation requires human confirmation')
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-feishu-human-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        tenant_access_token: 'token-1',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: { message_id: 'om_root' },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        tenant_access_token: 'token-2',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: { message_id: 'om_reply_1' },
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  reviewer-a:\n    model: mock\n    prompt: review a\n  reviewer-b:\n    model: mock\n    prompt: review b\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  discuss:\n    reviewers: [reviewer-a, reviewer-b]\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.9\n    retries_per_stage: 1\n    max_iterations: 1\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "multi_model"\n      poll_interval_sec: 1\n      max_model_revisions: 1\nintegrations:\n  notifications:\n    enabled: false\n  im:\n    enabled: true\n    default_provider: feishu_main\n    providers:\n      feishu_main:\n        type: feishu-app\n        app_id: app-id\n        app_secret: app-secret\n        verification_token: verify-token\n        default_chat_id: oc_chat\n        approval_whitelist_open_ids:\n          - ou_operator\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('paused')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+
+    const mapping = readFileSync(join(dir, '.magpie', 'im', 'thread-mappings.json'), 'utf-8')
+    expect(mapping).toContain('"sessionId"')
+    expect(mapping).toContain('"chatId": "oc_chat"')
+  })
+
   it('confirms a red test before code development for TDD-eligible tasks', async () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {

@@ -19,6 +19,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
+- `im-server`：接收飞书回调并驱动人工确认
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
@@ -95,13 +96,16 @@ magpie harness status <session-id> --node build-ui
 magpie harness approve <session-id> --node release-approval --by operator
 magpie harness reject <session-id> --by operator --note "Need safer split"
 
-# 12) 需要后台托管时显式交给 tmux
+# 12) 启动飞书 IM 回调服务（第一阶段先支持人工确认）
+magpie im-server start --foreground
+
+# 13) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 13) 跑工程 workflow
+# 14) 跑工程 workflow
 magpie workflow docs-sync
 
-# 14) 查看长期记忆
+# 15) 查看长期记忆
 magpie memory show --project
 ```
 
@@ -117,7 +121,25 @@ magpie memory show --project
 
 `harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。评审、仲裁和附加检查如果命中已知的 Gemini 模型不存在错误，会自动切到 Kiro 重试当前步骤，避免整轮直接挂掉。`harness` 进入内层 `loop` 前仍会把内层确认策略压成 `manual_only`，避免外层多模型评审和内层阶段确认叠两次。现在如果内层 `loop` 失败但已经留下可继续的工作区和下一步线索，外层 `harness` 会停在 `blocked`，后续直接 `harness resume` 就会沿用同一个开发现场继续；重新执行同样的 `harness submit` 也会优先接回最近一条同目标、同 PRD 的可恢复会话，而不是再开一条重复会话。人工确认不再要求手改 `human_confirmation.md`：可以直接用 `magpie harness confirm <session-id> --approve` 或 `--reject --reason "..."` 处理关联的内层 loop 决策，批准后会自动恢复 harness，驳回后会自动发起 discuss 并生成新的短决策卡。真正的确认状态保存在关联 loop 会话里，`human_confirmation.md` 只保留成摘要和旧会话兼容层。每一轮会把参与者、评审结论、仲裁结果和下一步单独落盘，所以 `status`、`inspect`、`attach` 和 TUI 都能直接看最近一轮，`status/inspect` 也可以用 `--cycle` 指定回看某一轮。图谱会话已经能在 `status`、`inspect` 和 `list` 里看到图谱总览；需要钻到单个节点时，可以用 `status --node <id>` 或 `inspect --node <id>`。现在在 `magpie tui` 里选中带图谱的 harness 会话后按 `Enter`，会进入独立图谱工作台：可以切换节点、看节点详情、区分“当前要注意什么”和“最近发生了什么”，还可以直接批准/拒绝等待中的 gate，或者跳到关联 loop/harness 会话的现有入口。如果图谱卡在“等批准”，也可以继续用 `harness approve` 或 `harness reject` 对整张图或指定节点写入决定，结果会落盘并立刻影响后续可运行节点。
 
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
+
+## Feishu IM 控制
+
+第一阶段已经支持把 `loop` 的人工确认卡点发到飞书线程里处理。当前做法是：
+
+1. 在配置里打开 `integrations.im`
+2. 配好飞书应用的 `app_id`、`app_secret`、`verification_token`
+3. 配一个接收任务线程的默认群 `default_chat_id`
+4. 启动回调服务：`magpie im-server start --foreground`
+
+当任务进入人工确认时，Magpie 会：
+
+- 在默认飞书群里为这个任务创建或复用一条线程
+- 把当前确认卡点发到这条线程里
+- 允许白名单里的飞书用户直接批准或拒绝
+- 把补充说明一并写回原任务，再继续跑
+
+更完整的接入说明见 [`docs/channels/feishu-im.md`](./docs/channels/feishu-im.md)。
 
 从源码运行：
 

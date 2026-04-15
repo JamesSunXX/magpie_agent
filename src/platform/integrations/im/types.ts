@@ -5,6 +5,7 @@ export type ConfirmationAction =
 export interface ConfirmationActionEvent {
   kind: 'confirmation_action'
   action: ConfirmationAction
+  eventId?: string
   actorOpenId: string
   sessionId: string
   confirmationId: string
@@ -21,5 +22,6 @@ export interface ImServerStatus {
   status: 'running' | 'stopped'
   port: number
   path: string
+  processId?: number
   updatedAt: string
 }

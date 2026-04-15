@@ -44,6 +44,8 @@ describe('parseFeishuEvent', () => {
             action: 'reject_confirmation',
             session_id: 'loop-123',
             confirmation_id: 'confirm-1',
+          },
+          form_value: {
             rejection_reason: 'Need stronger rollback evidence',
             extra_instruction: 'Add a rollback rehearsal before continuing.',
           },
