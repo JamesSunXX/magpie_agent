@@ -540,6 +540,133 @@ integrations:
     expect(readFileSync(join(cycleDir, 'validator-1-codex.json'), 'utf-8')).toContain('codex ok')
   })
 
+  it('clears stale kiro agents when harness role bindings switch review and execution to codex', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-role-binding-agents-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  codex:
+    enabled: true
+  kiro:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  alpha:
+    tool: codex
+    prompt: alpha review
+summarizer:
+  tool: kiro
+  model: kiro
+  agent: architect
+  prompt: summarize
+analyzer:
+  tool: kiro
+  model: kiro
+  agent: architect
+  prompt: analyze
+capabilities:
+  harness:
+    default_reviewers: [alpha]
+    role_bindings:
+      developer:
+        tool: codex
+      arbitrator:
+        tool: codex
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_tool: kiro
+    executor_model: kiro
+    executor_agent: dev
+  issue_fix:
+    enabled: true
+    planner_model: mock
+    executor_tool: kiro
+    executor_model: kiro
+    executor_agent: dev
+  quality:
+    unitTestEval:
+      enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-role-bindings' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Keep harness role bindings from leaking stale kiro agents into codex review.',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+      const harnessConfig = YAML.parse(readFileSync(result.session!.artifacts.harnessConfigPath, 'utf-8')) as {
+        summarizer?: { tool?: string; agent?: string }
+        analyzer?: { tool?: string; agent?: string }
+        capabilities?: {
+          loop?: { executor_tool?: string; executor_agent?: string }
+          issue_fix?: { executor_tool?: string; executor_agent?: string }
+        }
+      }
+
+      expect(result.status).toBe('completed')
+      expect(harnessConfig.capabilities?.loop?.executor_tool).toBe('codex')
+      expect(harnessConfig.capabilities?.loop?.executor_agent).toBeUndefined()
+      expect(harnessConfig.capabilities?.issue_fix?.executor_tool).toBe('codex')
+      expect(harnessConfig.capabilities?.issue_fix?.executor_agent).toBeUndefined()
+      expect(harnessConfig.summarizer?.tool).toBe('codex')
+      expect(harnessConfig.summarizer?.agent).toBeUndefined()
+      expect(harnessConfig.analyzer?.tool).toBe('codex')
+      expect(harnessConfig.analyzer?.agent).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('resumes review from persisted cycles without rerunning completed development', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-resume-review-'))
     const magpieHome = join(dir, '.magpie-home')

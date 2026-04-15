@@ -25,6 +25,7 @@ import { generateDocumentPlan, type DocumentPlan } from '../../../../core/projec
 import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
+import { getProviderForModel, getProviderForTool } from '../../../../providers/factory.js'
 import { withProviderSessionScope } from '../../../../providers/session-persistence.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
 import {
@@ -211,6 +212,26 @@ function toRoleBinding(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.agent ? { agent: input.agent } : {}),
   }
+}
+
+function resolveBindingProvider(input: {
+  tool?: string
+  model?: string
+}): string | undefined {
+  if (input.tool) {
+    return getProviderForTool(input.tool)
+  }
+  if (input.model) {
+    return getProviderForModel(input.model)
+  }
+  return undefined
+}
+
+function bindingSupportsAgent(input: {
+  tool?: string
+  model?: string
+}): boolean {
+  return resolveBindingProvider(input) === 'kiro'
 }
 
 function buildHarnessRoleRoster(
@@ -939,12 +960,12 @@ function applyBinding(
     executor_tool: execution.tool,
     executor_model: execution.model || execution.tool,
   }
-  if (planner.agent) {
+  if (bindingSupportsAgent(planner) && planner.agent) {
     next.planner_agent = planner.agent
   } else {
     delete next.planner_agent
   }
-  if (execution.agent) {
+  if (bindingSupportsAgent(execution) && execution.agent) {
     next.executor_agent = execution.agent
   } else {
     delete next.executor_agent
@@ -1025,36 +1046,57 @@ function applyHarnessConfigOverrides(
   const developerBinding = toRouteBinding(config.capabilities.harness?.role_bindings?.developer)
   if (developerBinding) {
     const loopConfig = config.capabilities.loop || {}
-    config.capabilities.loop = {
+    const nextLoopConfig = {
       ...loopConfig,
       executor_tool: developerBinding.tool,
       executor_model: developerBinding.model || developerBinding.tool || loopConfig.executor_model,
-      ...(developerBinding.agent ? { executor_agent: developerBinding.agent } : {}),
     }
+    if (bindingSupportsAgent(developerBinding) && developerBinding.agent) {
+      nextLoopConfig.executor_agent = developerBinding.agent
+    } else {
+      delete nextLoopConfig.executor_agent
+    }
+    config.capabilities.loop = nextLoopConfig
 
     const issueFixConfig = config.capabilities.issue_fix || {}
-    config.capabilities.issue_fix = {
+    const nextIssueFixConfig = {
       ...issueFixConfig,
       executor_tool: developerBinding.tool,
       executor_model: developerBinding.model || developerBinding.tool || issueFixConfig.executor_model,
-      ...(developerBinding.agent ? { executor_agent: developerBinding.agent } : {}),
     }
+    if (bindingSupportsAgent(developerBinding) && developerBinding.agent) {
+      nextIssueFixConfig.executor_agent = developerBinding.agent
+    } else {
+      delete nextIssueFixConfig.executor_agent
+    }
+    config.capabilities.issue_fix = nextIssueFixConfig
   }
 
   const arbitratorBinding = toRouteBinding(config.capabilities.harness?.role_bindings?.arbitrator)
   if (arbitratorBinding) {
-    config.summarizer = {
+    const nextSummarizer = {
       ...config.summarizer,
       tool: arbitratorBinding.tool,
       model: arbitratorBinding.model || arbitratorBinding.tool || config.summarizer.model,
-      ...(arbitratorBinding.agent ? { agent: arbitratorBinding.agent } : {}),
     }
-    config.analyzer = {
+    if (bindingSupportsAgent(arbitratorBinding) && arbitratorBinding.agent) {
+      nextSummarizer.agent = arbitratorBinding.agent
+    } else {
+      delete nextSummarizer.agent
+    }
+    config.summarizer = nextSummarizer
+
+    const nextAnalyzer = {
       ...config.analyzer,
       tool: arbitratorBinding.tool,
       model: arbitratorBinding.model || arbitratorBinding.tool || config.analyzer.model,
-      ...(arbitratorBinding.agent ? { agent: arbitratorBinding.agent } : {}),
     }
+    if (bindingSupportsAgent(arbitratorBinding) && arbitratorBinding.agent) {
+      nextAnalyzer.agent = arbitratorBinding.agent
+    } else {
+      delete nextAnalyzer.agent
+    }
+    config.analyzer = nextAnalyzer
   }
 
   return { config, reviewerIds }
