@@ -36,7 +36,7 @@ export interface HarnessPreparedInput extends HarnessInput {
   reviewRounds: number
   models: string[]
   modelsExplicit: boolean
-  config: MagpieConfigV2
+  config?: MagpieConfigV2
 }
 
 export interface HarnessValidatorCheckArtifact {
