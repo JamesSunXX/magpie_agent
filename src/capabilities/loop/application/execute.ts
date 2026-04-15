@@ -33,6 +33,7 @@ import {
   buildPlanningContextBlock,
   extractPlanningItemKey,
 } from '../../../platform/integrations/planning/index.js'
+import { publishFeishuHumanConfirmationFromConfig } from '../../../platform/integrations/im/feishu/human-confirmation.js'
 import {
   appendWorkflowFailure,
   buildCommandSafetyConfig,
@@ -1953,6 +1954,22 @@ async function requestHumanConfirmation(input: {
     lineNumber ?? 1,
     clickTarget
   )
+
+  try {
+    await publishFeishuHumanConfirmationFromConfig(input.runCwd, input.config, {
+      capability: 'loop',
+      sessionId: input.session.id,
+      title: `Magpie Loop需要人工确认 (${input.stage})`,
+      summary: confirmationItem.reason,
+      confirmationId: confirmationItem.id,
+    })
+  } catch (error) {
+    await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+      event: 'im_notification_failed',
+      stage: input.stage,
+      reason: error instanceof Error ? error.message : String(error),
+    }, input.progressObserver)
+  }
 
   const event: NotificationEvent = {
     type: 'human_confirmation_required',

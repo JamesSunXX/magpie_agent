@@ -29,6 +29,7 @@
 | [`./plans/2026-04-14-panoramic-workbench-interaction-spec.md`](./plans/2026-04-14-panoramic-workbench-interaction-spec.md) | 全景工作台交互规格，锁定浏览、详情、动作和事件区规则 |
 | [`./plans/2026-04-14-panoramic-workbench-implementation-plan.md`](./plans/2026-04-14-panoramic-workbench-implementation-plan.md) | 全景工作台具体落地计划，按阶段拆到可执行任务和验证命令 |
 | [`./channels/`](./channels/) | 渠道或集成的专项说明 |
+| [`./channels/feishu-im.md`](./channels/feishu-im.md) | 飞书 IM 人工确认接入说明 |
 | [`./superpowers/`](./superpowers/) | 更细的内部设计资料 |
 
 ## 什么时候更新哪份文档

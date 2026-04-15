@@ -85,6 +85,21 @@ describe('Config Init', () => {
     expect(content).toContain('type: "local-commands"')
   })
 
+  it('should include feishu im control defaults', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    initConfig(testDir)
+
+    const content = readFileSync(configPath, 'utf-8')
+    expect(content).toContain('im:')
+    expect(content).toContain('type: "feishu-app"')
+    expect(content).toContain('app_id: ${FEISHU_APP_ID}')
+    expect(content).toContain('app_secret: ${FEISHU_APP_SECRET}')
+    expect(content).toContain('verification_token: ${FEISHU_VERIFICATION_TOKEN}')
+    expect(content).toContain('default_chat_id: ${FEISHU_DEFAULT_CHAT_ID}')
+    expect(content).toContain('approval_whitelist_open_ids:')
+    expect(content).toContain('- "ou_xxx_operator"')
+  })
+
   it('should backup existing config before writing a new one', () => {
     const configPath = join(testDir, '.magpie', 'config.yaml')
     const magpieDir = join(testDir, '.magpie')

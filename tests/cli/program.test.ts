@@ -82,6 +82,19 @@ describe('CLI program', () => {
     ])
   })
 
+  it('registers top-level im-server command with start, status, and stop subcommands', () => {
+    const program = createProgram()
+    const imServer = program.commands.find((command) => command.name() === 'im-server')
+
+    expect(imServer).toBeTruthy()
+    expect(imServer?.commands.map((subcommand) => subcommand.name())).toEqual([
+      'start',
+      'status',
+      'stop',
+      'run',
+    ])
+  })
+
   it('registers loop inspect alongside run, resume, confirm, and list', () => {
     const program = createProgram()
     const loop = program.commands.find((command) => command.name() === 'loop')

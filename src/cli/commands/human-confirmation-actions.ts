@@ -23,6 +23,7 @@ export interface ConfirmationDecisionOptions {
   approve?: boolean
   reject?: boolean
   reason?: string
+  extraInstruction?: string
   config?: string
 }
 
@@ -190,11 +191,21 @@ export async function applyLoopConfirmationDecision(
   }
 
   const now = new Date()
+  const extraInstruction = options.extraInstruction?.trim()
+  const decisionRationale = decision.approve
+    ? [
+        'Approved via confirm command.',
+        extraInstruction ? `Operator instruction: ${extraInstruction}` : '',
+      ].filter(Boolean).join(' ')
+    : [
+        decision.rejectReason,
+        extraInstruction ? `Operator instruction: ${extraInstruction}` : '',
+      ].filter(Boolean).join('\n')
   const resolvedItem: HumanConfirmationItem = {
     ...pendingItem,
     decision: decision.approve ? 'approved' : 'rejected',
     status: decision.approve ? 'approved' : 'rejected',
-    rationale: decision.approve ? 'Approved via confirm command.' : decision.rejectReason,
+    rationale: decisionRationale,
     updatedAt: now,
   }
 
@@ -202,7 +213,7 @@ export async function applyLoopConfirmationDecision(
 
   let followUpItem: HumanConfirmationItem | undefined
   if (!decision.approve) {
-    const rejectReason = decision.rejectReason
+    const rejectReason = decisionRationale
     const discussionOutputPath = join(loopSession.artifacts.sessionDir, `human-confirmation-${pendingItem.id}-discussion.md`)
     const discussion = await runAutoDiscuss(
       cwd,

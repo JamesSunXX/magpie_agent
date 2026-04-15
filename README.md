@@ -19,6 +19,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
+- `im-server`：接收飞书回调并驱动人工确认
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
@@ -99,12 +100,16 @@ magpie harness reject <session-id> --by operator --note "Need safer split"
 前台运行的 `magpie harness submit` 如果被 `Ctrl+C`、终端挂断或系统终止打断，会先把当前会话改成可恢复状态，再退出；之后直接用 `magpie harness resume <session-id>` 接着跑。如果前台进程已经没了但会话还挂着“进行中”，`status`、`list`、`resume`、`attach` 和 `inspect` 也会先自动把它收成可恢复状态。
 
 # 10) 需要后台托管时显式交给 tmux
+# 12) 启动飞书 IM 回调服务（第一阶段先支持人工确认）
+magpie im-server start --foreground
+
+# 13) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 13) 跑工程 workflow
+# 14) 跑工程 workflow
 magpie workflow docs-sync
 
-# 14) 查看长期记忆
+# 15) 查看长期记忆
 magpie memory show --project
 ```
 
@@ -126,6 +131,25 @@ magpie memory show --project
 如果开启阶段通知里的 `stage_ai` 摘要，可以用 `integrations.notifications.stage_ai.timeout_ms` 控制它最长等多久；超时后会直接回退到内置摘要，不会卡住主流程。
 
 `trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
+
+## Feishu IM 控制
+
+第一阶段已经支持把 `loop` 的人工确认卡点发到飞书线程里处理。当前做法是：
+
+1. 在配置里打开 `integrations.im`
+2. 配好飞书应用的 `app_id`、`app_secret`、`verification_token`
+3. 配一个接收任务线程的默认群 `default_chat_id`
+4. 启动回调服务：`magpie im-server start --foreground`
+
+当任务进入人工确认时，Magpie 会：
+
+- 在默认飞书群里为这个任务创建或复用一条线程
+- 把当前确认卡点发到这条线程里
+- 允许白名单里的飞书用户直接批准或拒绝
+- 把补充说明一并写回原任务，再继续跑
+
+更完整的接入说明见 [`docs/channels/feishu-im.md`](./docs/channels/feishu-im.md)。
 
 失败职责现在也固定下来了：`loop` 负责判断自己内部阶段失败，`harness` 负责补齐整个交付流程的外层失败，`harness-server` 只负责后台托管、重试和服务级恢复。三者都会把失败细节落到各自会话目录下的 `failures/`，并把仓库级聚合写到 `.magpie/failure-index.json`，排查时先看会话目录，再看仓库索引。
 

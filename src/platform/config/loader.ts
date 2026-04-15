@@ -19,7 +19,7 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 16
+export const CURRENT_CONFIG_VERSION = 17
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 
