@@ -114,7 +114,7 @@ describe('ClawProvider', () => {
   it('runs claw command with prompt over stdin and returns trimmed output', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('review-ok\n'))
+        child.stdout.emit('data', Buffer.from('{"message":"review-ok"}\n'))
         setImmediate(() => child.emit('close', 0))
       }
     })
@@ -129,16 +129,30 @@ describe('ClawProvider', () => {
     expect(result).toBe('review-ok')
     expect(spawnCalls).toHaveLength(1)
     expect(spawnCalls[0].cmd).toBe('claw')
-    expect(spawnCalls[0].args).toEqual(['--model', 'openai/gemma-4-26b-a4b', '-p', '-'])
+    expect(spawnCalls[0].args).toEqual(['--model', 'openai/gemma-4-26b-a4b', '--output-format', 'json', '-p', '-'])
     expect(spawnCalls[0].cwd).toBe('/tmp/claw-cwd')
     expect(spawnCalls[0].prompt).toContain('System: system prompt')
     expect(spawnCalls[0].prompt).toContain('user: 请做 code review')
   })
 
+  it('returns the message field from claw JSON output by default', async () => {
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from('{"message":"admin-cancel-audit-sync","model":"openai/gemma-4-26b-a4b"}\n'))
+        setImmediate(() => child.emit('close', 0))
+      }
+    })
+
+    const provider = new ClawProvider()
+    await expect(provider.chat([{ role: 'user', content: '生成分支名' }]))
+      .resolves.toBe('admin-cancel-audit-sync')
+    expect(spawnCalls[0].args).toEqual(['--model', 'openai/gemma-4-26b-a4b', '--output-format', 'json', '-p', '-'])
+  })
+
   it('applies alias-style env defaults for claw when not explicitly set', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('ok'))
+        child.stdout.emit('data', Buffer.from('{"message":"ok"}'))
         setImmediate(() => child.emit('close', 0))
       }
     })
@@ -158,7 +172,7 @@ describe('ClawProvider', () => {
 
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('ok'))
+        child.stdout.emit('data', Buffer.from('{"message":"ok"}'))
         setImmediate(() => child.emit('close', 0))
       }
     })
@@ -168,7 +182,7 @@ describe('ClawProvider', () => {
 
     expect(spawnCalls[0].env?.OPENAI_API_KEY).toBe('custom-key')
     expect(spawnCalls[0].env?.OPENAI_BASE_URL).toBe('http://custom-host:9000/v1')
-    expect(spawnCalls[0].args).toEqual(['--model', 'openai/custom-model', '-p', '-'])
+    expect(spawnCalls[0].args).toEqual(['--model', 'openai/custom-model', '--output-format', 'json', '-p', '-'])
   })
 
   it('prefers CLAW_MODEL when provided', async () => {
@@ -176,7 +190,7 @@ describe('ClawProvider', () => {
 
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('ok'))
+        child.stdout.emit('data', Buffer.from('{"message":"ok"}'))
         setImmediate(() => child.emit('close', 0))
       }
     })
@@ -184,13 +198,13 @@ describe('ClawProvider', () => {
     const provider = new ClawProvider()
     await provider.chat([{ role: 'user', content: 'hello' }])
 
-    expect(spawnCalls[0].args).toEqual(['--model', 'openai/custom-model-v2', '-p', '-'])
+    expect(spawnCalls[0].args).toEqual(['--model', 'openai/custom-model-v2', '--output-format', 'json', '-p', '-'])
   })
 
   it('injects image references into prompt when images are provided', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('ok'))
+        child.stdout.emit('data', Buffer.from('{"message":"ok"}'))
         setImmediate(() => child.emit('close', 0))
       }
     })

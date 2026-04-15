@@ -20,6 +20,13 @@ describe('generateAutoBranchName', () => {
       slug: 'admin-cancel-audit-sync',
       source: 'ai',
     })
+
+    expect(provider.chat).toHaveBeenCalledWith([
+      {
+        role: 'user',
+        content: '任务目标：补齐管理后台接口、控制面能力和数据面支撑\nPRD 路径：/repo/docs/current/admin_backend/PRD.md',
+      },
+    ], expect.any(String), { disableTools: true })
   })
 
   it('falls back to the PRD path when the AI output is not usable', async () => {

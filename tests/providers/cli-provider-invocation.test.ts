@@ -483,7 +483,7 @@ describe('CLI provider invocation smoke tests', () => {
   it('invokes claw with expected command, args, cwd, and prompt', async () => {
     scenarios.push({
       onStdinEnd: (child) => {
-        child.stdout.emit('data', Buffer.from('claw ok'))
+        child.stdout.emit('data', Buffer.from('{"message":"claw ok"}'))
         setImmediate(() => child.emit('close', 0))
       },
     })
@@ -503,6 +503,8 @@ describe('CLI provider invocation smoke tests', () => {
     expect(spawnCalls[0]?.args).toEqual([
       '--model',
       'openai/gpt-5.4',
+      '--output-format',
+      'json',
       '-p',
       '-',
     ])

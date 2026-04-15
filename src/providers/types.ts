@@ -23,6 +23,8 @@ export interface ProviderProgressEvent {
 export interface ChatOptions {
   /** Disable tool use for this call (e.g., for pure text extraction) */
   disableTools?: boolean
+  /** Optional provider-native output format hint */
+  outputFormat?: 'text' | 'json'
   /** Optional images for multimodal models */
   images?: ChatImageInput[]
   /** Optional callback for provider-native progress events */

@@ -35,7 +35,7 @@ export class ClawProvider implements AIProvider {
       this.promptHelper.buildPrompt(messages, systemPrompt),
       options
     )
-    return this.runClaw(prompt)
+    return this.runClaw(prompt, options)
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
@@ -56,9 +56,23 @@ export class ClawProvider implements AIProvider {
     return `${prompt}\n\n请结合以下图片引用进行分析：\n${refs}`
   }
 
-  private runClaw(prompt: string): Promise<string> {
+  private parseJsonMessage(output: string): string {
+    const trimmed = output.trim()
+    if (!trimmed) {
+      return ''
+    }
+
+    const parsed = JSON.parse(trimmed) as { message?: unknown }
+    return typeof parsed.message === 'string'
+      ? parsed.message.trim()
+      : ''
+  }
+
+  private runClaw(prompt: string, options?: ChatOptions): Promise<string> {
     return new Promise((resolve, reject) => {
-      const child = spawn('claw', ['--model', this.model, '-p', '-'], {
+      const outputFormat = options?.outputFormat === 'text' ? 'text' : 'json'
+      const args = ['--model', this.model, ...(outputFormat === 'json' ? ['--output-format', 'json'] : []), '-p', '-']
+      const child = spawn('claw', args, {
         cwd: this.cwd,
         env: this.buildEnv(),
         stdio: ['pipe', 'pipe', 'pipe']
@@ -95,6 +109,15 @@ export class ClawProvider implements AIProvider {
           reject(new Error(`Claw CLI exited with code ${code}: ${error}`))
           return
         }
+        if (outputFormat === 'json') {
+          try {
+            resolve(this.parseJsonMessage(output))
+          } catch (parseError) {
+            reject(new Error(`Failed to parse claw JSON output: ${parseError instanceof Error ? parseError.message : String(parseError)}`))
+          }
+          return
+        }
+
         resolve(output.trim())
       })
 

@@ -109,7 +109,7 @@ magpie memory show --project
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。
 
-`loop` 在需要新开分支时也会优先让 AI 生成带语义的分支名，并自动在末尾保留时间戳；默认走 `capabilities.loop.branch_naming.tool = claw`，也可以单独关闭或改成别的工具/模型。
+`loop` 在需要新开分支时也会优先让 AI 生成带语义的分支名，并自动在末尾保留时间戳；默认走 `capabilities.loop.branch_naming.tool = claw`，读取 `claw` 的结构化输出避免把进度字样混进分支名，也可以单独关闭或改成别的工具/模型。
 
 `loop` 也可以通过 `capabilities.loop.mr.enabled` 控制是否在整条开发和验证成功结束后自动创建 1 个 GitLab MR。MR 创建失败不会把开发结果改成失败，但会把“需要人工补做 MR”的结果单独落盘并发通知。
 
