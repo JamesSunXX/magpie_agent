@@ -161,12 +161,23 @@ export class KiroProvider implements AIProvider {
         const agent = await this.resolveAgent()
 
         return new Promise((resolve, reject) => {
-            const args = this.buildKiroArgs(agent)
+            // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
+            const args = ['chat', '--no-interactive', '--trust-all-tools']
+            args.push(...this.getModelArgs())
+            args.push('--agent', agent)
+            if (this.session.sessionId && !this.session.isFirstMessage) {
+                args.push('--resume')
+            }
+            // Pass prompt via stdin to avoid E2BIG when prompt is large
 
             const child = spawn('kiro-cli', args, {
                 cwd: this.cwd,
                 stdio: ['pipe', 'pipe', 'pipe']
             })
+
+            // Write prompt to stdin
+            child.stdin.write(prompt)
+            child.stdin.end()
 
             let output = ''
             let error = ''
@@ -241,12 +252,23 @@ export class KiroProvider implements AIProvider {
     private async *runKiroStreamOnce(prompt: string): AsyncGenerator<string, void, unknown> {
         const agent = await this.resolveAgent()
 
-        const args = this.buildKiroArgs(agent)
+        // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
+        const args = ['chat', '--no-interactive', '--trust-all-tools']
+        args.push(...this.getModelArgs())
+        args.push('--agent', agent)
+        if (this.session.sessionId && !this.session.isFirstMessage) {
+            args.push('--resume')
+        }
+        // Pass prompt via stdin to avoid E2BIG when prompt is large
 
         const child = spawn('kiro-cli', args, {
             cwd: this.cwd,
             stdio: ['pipe', 'pipe', 'pipe']
         })
+
+        // Write prompt to stdin
+        child.stdin.write(prompt)
+        child.stdin.end()
 
         const chunks: string[] = []
         let resolveNext: ((value: { chunk: string | null }) => void) | null = null

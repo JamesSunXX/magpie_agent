@@ -408,7 +408,7 @@ export async function runReviewFlow(input: RunReviewFlowInput): Promise<ReviewFl
         contextGatherer = new ContextGatherer({
           provider: createConfiguredProvider({
             logicalName: 'contextGatherer',
-            tool: contextBinding.tool,
+            tool: contextBinding.tool || config.contextGatherer?.tool || config.analyzer.tool,
             model: contextBinding.model,
             agent: contextBinding.agent,
           }, config),
