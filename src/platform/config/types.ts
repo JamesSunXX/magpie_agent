@@ -325,10 +325,32 @@ export interface OperationsIntegrationConfig {
   providers?: Record<string, OperationsProviderConfig>
 }
 
+export interface FeishuAppImProviderConfig {
+  type: 'feishu-app'
+  enabled?: boolean
+  app_id: string
+  app_secret: string
+  verification_token: string
+  encrypt_key?: string
+  default_chat_id: string
+  approval_whitelist_open_ids: string[]
+  callback_port?: number
+  callback_path?: string
+}
+
+export type ImProviderConfig = FeishuAppImProviderConfig
+
+export interface ImIntegrationConfig {
+  enabled?: boolean
+  default_provider?: string
+  providers?: Record<string, ImProviderConfig>
+}
+
 export interface IntegrationsConfig {
   notifications?: NotificationsIntegrationConfig
   planning?: PlanningIntegrationConfig
   operations?: OperationsIntegrationConfig
+  im?: ImIntegrationConfig
 }
 
 export interface ReviewConfig {

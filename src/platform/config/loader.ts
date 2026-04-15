@@ -18,7 +18,7 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 14
+export const CURRENT_CONFIG_VERSION = 15
 
 export interface ConfigVersionStatus {
   path: string

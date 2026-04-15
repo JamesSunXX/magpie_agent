@@ -226,6 +226,13 @@ function buildDefaultNotificationsConfig() {
   }
 }
 
+function buildDefaultImConfig() {
+  return {
+    enabled: false,
+    default_provider: 'feishu_main',
+  }
+}
+
 function buildDefaultHarnessConfig(defaultReviewers: string[]) {
   return {
     default_reviewers: defaultReviewers,
@@ -532,6 +539,13 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     changes.push('Added integrations.notifications defaults.')
   } else if (deepMergeMissing(integrations.notifications, buildDefaultNotificationsConfig())) {
     changes.push('Filled missing integrations.notifications defaults.')
+  }
+
+  if (!isObjectRecord(integrations.im)) {
+    integrations.im = buildDefaultImConfig()
+    changes.push('Added integrations.im defaults.')
+  } else if (deepMergeMissing(integrations.im, buildDefaultImConfig())) {
+    changes.push('Filled missing integrations.im defaults.')
   }
 
   if (!isObjectRecord(capabilities.routing)) {
@@ -929,6 +943,21 @@ ${jiraCredentialLines}
         type: "local-commands"
         timeout_ms: ${operations.timeoutMs}
         max_buffer_bytes: ${operations.maxBufferBytes}
+  im:
+    enabled: false
+    default_provider: "feishu_main"
+    providers:
+      feishu_main:
+        type: "feishu-app"
+        app_id: ${yamlStringOrEnvRef('${FEISHU_APP_ID}')}
+        app_secret: ${yamlStringOrEnvRef('${FEISHU_APP_SECRET}')}
+        verification_token: ${yamlStringOrEnvRef('${FEISHU_VERIFICATION_TOKEN}')}
+        encrypt_key: ${yamlStringOrEnvRef('${FEISHU_ENCRYPT_KEY}')}
+        default_chat_id: ${yamlStringOrEnvRef('${FEISHU_DEFAULT_CHAT_ID}')}
+        approval_whitelist_open_ids:
+          - "ou_xxx_operator"
+        callback_port: 9321
+        callback_path: "/callbacks/feishu"
 `
 }
 
