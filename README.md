@@ -1,6 +1,6 @@
 # Magpie
 
-Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术讨论、TRD 生成、目标闭环执行和工程 workflow 收到一个本地入口里。
+Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术讨论、TRD 生成、目标闭环执行、测试质量检查和工程 workflow 收进一个本地入口里。
 
 ## 先看哪里
 
@@ -12,15 +12,17 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 ## 核心能力
 
 - `review`：多 AI 代码评审
+- `reviewers`：查看当前配置里的评审人
 - `discuss`：多模型讨论
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
+- `quality unit-test-eval`：检查单测质量，可选顺手跑测试
 - `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
-- `init`、`reviewers list`、`stats`
+- `init`、`stats`
 
 更细的命令入口和代码位置见 [`docs/references/capabilities.md`](./docs/references/capabilities.md)。
 
@@ -58,25 +60,31 @@ magpie init
 # 2) 打开任务入口
 magpie tui
 
-# 3) 评审本地改动
+# 3) 看当前配置里的评审人
+magpie reviewers list
+
+# 4) 评审本地改动
 magpie review --local
 
-# 4) 多模型讨论
+# 5) 多模型讨论
 magpie discuss "Should this repo fully migrate review to capability runtime?"
 
-# 5) 生成 TRD
+# 6) 生成 TRD
 magpie trd ./docs/prd.md
 
-# 6) 目标闭环执行
+# 7) 评估当前仓库的单测质量
+magpie quality unit-test-eval . --run-tests
+
+# 8) 目标闭环执行
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
 
-# 7) 启动后台 harness 队列（需要长期跑任务时）
+# 9) 启动后台 harness 队列（需要长期跑任务时）
 magpie harness-server start
 
-# 8) harness 闭环
+# 10) harness 闭环
 magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
 
-# 9) 查看后台状态或接回输出
+# 11) 查看后台状态或接回输出
 magpie harness-server status
 magpie harness attach <session-id>
 magpie harness resume <session-id>
@@ -85,10 +93,13 @@ magpie harness status <session-id> --node build-ui
 magpie harness approve <session-id> --node release-approval --by operator
 magpie harness reject <session-id> --by operator --note "Need safer split"
 
-# 10) 需要后台托管时显式交给 tmux
+# 12) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 11) 查看长期记忆
+# 13) 跑工程 workflow
+magpie workflow docs-sync
+
+# 14) 查看长期记忆
 magpie memory show --project
 ```
 
