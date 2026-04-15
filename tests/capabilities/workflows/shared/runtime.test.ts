@@ -227,6 +227,29 @@ describe('workflow shared runtime helpers', () => {
     })).toBe(false)
   })
 
+  it('treats a failed verification stage with a saved rerun brief as recoverable', () => {
+    expect(isRecoverableLoopSession({
+      status: 'failed',
+      currentStageIndex: 1,
+      stages: ['code_development', 'unit_mock_test'],
+      lastReliablePoint: 'constraints_validated',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+      },
+      stageResults: [{
+        stage: 'unit_mock_test',
+        success: false,
+        confidence: 0.4,
+        summary: 'Mock tests failed and need another pass.',
+        risks: ['rerun after fixing the failing mock setup'],
+        retryCount: 0,
+        artifacts: ['/tmp/unit-mock-test.md'],
+        timestamp: new Date('2026-04-15T00:00:00.000Z'),
+      }],
+    })).toBe(true)
+  })
+
   it('requires a recoverable inner loop session before failed harness development can resume', () => {
     const failedHarnessSession = {
       id: 'harness-1',

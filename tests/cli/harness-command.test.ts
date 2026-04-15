@@ -13,6 +13,7 @@ const loadWorkflowSession = vi.fn()
 const persistWorkflowSession = vi.fn()
 const appendWorkflowEvent = vi.fn()
 const isRecoverableHarnessSession = vi.fn()
+const isRecoverableLoopSession = vi.fn()
 const launchMagpieInTmux = vi.fn()
 const enqueueHarnessSession = vi.fn()
 const isHarnessServerRunning = vi.fn()
@@ -44,6 +45,7 @@ vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   persistWorkflowSession,
   appendWorkflowEvent,
   isRecoverableHarnessSession,
+  isRecoverableLoopSession,
 }))
 
 vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
@@ -295,6 +297,85 @@ describe('top-level harness CLI command', () => {
       )
     } finally {
       errorSpy.mockRestore()
+    }
+  })
+
+  it('resumes a failed harness session when the linked loop preserved a late-stage rerun checkpoint', async () => {
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = 'harness-late-stage-1'
+    loadWorkflowSession
+      .mockResolvedValueOnce({
+        id: 'harness-late-stage-1',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStage: 'failed',
+        summary: 'Harness failed during loop development stage.',
+        artifacts: {
+          loopSessionId: 'loop-late-stage-1',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+          },
+          runtime: {
+            lastReliablePoint: 'constraints_validated',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        id: 'loop-late-stage-1',
+        capability: 'loop',
+        title: 'Loop session',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStageIndex: 1,
+        stages: ['code_development', 'unit_mock_test'],
+        summary: 'Loop failed during unit mock verification.',
+        artifacts: {
+          workspacePath: '/tmp/workspace',
+          nextRoundInputPath: '/tmp/next.md',
+        },
+        stageResults: [{
+          stage: 'unit_mock_test',
+          success: false,
+          confidence: 0.4,
+          summary: 'Mock tests failed and need another pass.',
+          risks: ['rerun after fixing the failing mock setup'],
+          retryCount: 0,
+          artifacts: ['/tmp/unit-mock-test.md'],
+          timestamp: new Date('2026-04-10T09:29:00.000Z'),
+        }],
+      })
+    isRecoverableHarnessSession.mockReturnValue(false)
+    isRecoverableLoopSession.mockReturnValue(true)
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-late-stage-1'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).toHaveBeenCalledWith(
+        { name: 'harness' },
+        expect.objectContaining({
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        }),
+        expect.any(Object)
+      )
+      expect(process.env.MAGPIE_SESSION_ID).toBe('harness-late-stage-1')
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
     }
   })
 

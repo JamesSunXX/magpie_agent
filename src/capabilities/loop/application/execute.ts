@@ -18,7 +18,13 @@ import { getRepoSessionDir } from '../../../platform/paths.js'
 import { createConfiguredProvider } from '../../../platform/providers/index.js'
 import type { AIProvider, Message } from '../../../platform/providers/index.js'
 import { withProviderSessionScope } from '../../../providers/session-persistence.js'
-import type { ComplexityTier, LoopConfig, LoopStageName, MagpieConfig } from '../../../config/types.js'
+import type {
+  ComplexityTier,
+  LoopConfig,
+  LoopStageName,
+  LoopVerificationStepConfig,
+  MagpieConfig,
+} from '../../../config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
 import { dispatchStageNotification } from '../../../platform/integrations/notifications/stage-dispatch.js'
@@ -130,6 +136,10 @@ interface LoopRuntimeConfig {
     unitTest: string
     mockTest?: string
     integrationTest: string
+    unitMockTestSteps?: Array<{
+      label: string
+      command: string
+    }>
   }
   executionTimeout: {
     defaultMs: number
@@ -152,6 +162,7 @@ interface StageRunResult {
   stageResult: LoopStageResult
   paused: boolean
   failed: boolean
+  pauseKind?: 'human_confirmation' | 'provider_retry'
   stageReport: string
   testOutput: string
 }
@@ -423,6 +434,19 @@ function generateId(): string {
   return randomBytes(6).toString('hex')
 }
 
+function resolveUnitMockTestSteps(
+  steps: LoopVerificationStepConfig[] | undefined
+): Array<{ label: string; command: string }> | undefined {
+  if (!steps || steps.length === 0) {
+    return undefined
+  }
+
+  return steps.map((step, index) => ({
+    label: step.label?.trim() || `Verification Step ${index + 1}`,
+    command: step.command.trim(),
+  }))
+}
+
 function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: string[] | undefined): LoopRuntimeConfig {
   return {
     plannerTool: config?.planner_tool,
@@ -453,6 +477,7 @@ function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: s
       unitTest: config?.commands?.unit_test || 'npm run test:run',
       mockTest: config?.commands?.mock_test?.trim() || undefined,
       integrationTest: config?.commands?.integration_test || 'npm run test:run -- tests/integration',
+      unitMockTestSteps: resolveUnitMockTestSteps(config?.commands?.unit_mock_test_steps),
     },
     executionTimeout: {
       defaultMs: config?.execution_timeout?.default_ms ?? 15 * 60 * 1000,
@@ -535,6 +560,29 @@ function runOptionalCommand(
   return {
     ...result,
     commandLabel: command,
+  }
+}
+
+function runVerificationSteps(
+  cwd: string,
+  steps: Array<{ label: string; command: string }>,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+): { passed: boolean; output: string } {
+  const results = steps.map((step) => {
+    const result = runSafeCommand(cwd, step.command, {
+      safety: commandSafety,
+      interactive: process.stdin.isTTY && process.stdout.isTTY,
+    })
+
+    return {
+      passed: result.passed,
+      output: `## ${step.label} (${step.command})\n${result.output}`,
+    }
+  })
+
+  return {
+    passed: results.every((result) => result.passed),
+    output: results.map((result) => result.output).join('\n\n'),
   }
 }
 
@@ -962,6 +1010,7 @@ function shouldGate(
 function shouldEscalateToHumanForDangerousSignals(stageReport: string, testOutput: string): boolean {
   const combined = `${stageReport}\n${testOutput}`.toLowerCase()
   return combined.includes('dangerous command blocked')
+    || combined.includes('unsupported shell metacharacters')
 }
 
 function resolveGateStrategy(
@@ -983,6 +1032,30 @@ function resolveGateStrategy(
   }
 
   return 'human'
+}
+
+function shouldReturnStageToExecutor(
+  stage: LoopStageName,
+  stageReport: string,
+  testOutput: string
+): boolean {
+  return (stage === 'unit_mock_test' || stage === 'integration_test')
+    && !shouldEscalateToHumanForDangerousSignals(stageReport, testOutput)
+}
+
+function buildProviderRetryStageResult(input: {
+  stageResult: LoopStageResult
+  stageReport: string
+  testOutput: string
+}): StageRunResult {
+  return {
+    stageResult: input.stageResult,
+    paused: true,
+    failed: false,
+    pauseKind: 'provider_retry',
+    stageReport: input.stageReport,
+    testOutput: input.testOutput,
+  }
 }
 
 function buildModelGateArtifactPath(sessionDir: string, stage: LoopStageName, sequence: number): string {
@@ -1561,21 +1634,28 @@ async function executeStageAttempt(
   let testOutput = ''
 
   if (stage === 'unit_mock_test') {
-    const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
-      safety: commandSafety,
-      interactive: process.stdin.isTTY && process.stdout.isTTY,
-    })
-    const mock = runOptionalCommand(
-      runCwd,
-      runtime.commands.mockTest,
-      'Skipped: no mock test command configured.',
-      commandSafety
-    )
-    stageSucceeded = unit.passed && mock.passed
-    testOutput = [
-      `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-      `## Mock Test (${mock.commandLabel})\n${mock.output}`,
-    ].join('\n\n')
+    // Prefer project-defined verification steps so this stage can be reused across stacks.
+    if (runtime.commands.unitMockTestSteps && runtime.commands.unitMockTestSteps.length > 0) {
+      const verification = runVerificationSteps(runCwd, runtime.commands.unitMockTestSteps, commandSafety)
+      stageSucceeded = verification.passed
+      testOutput = verification.output
+    } else {
+      const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
+        safety: commandSafety,
+        interactive: process.stdin.isTTY && process.stdout.isTTY,
+      })
+      const mock = runOptionalCommand(
+        runCwd,
+        runtime.commands.mockTest,
+        'Skipped: no mock test command configured.',
+        commandSafety
+      )
+      stageSucceeded = unit.passed && mock.passed
+      testOutput = [
+        `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
+        `## Mock Test (${mock.commandLabel})\n${mock.output}`,
+      ].join('\n\n')
+    }
   } else if (stage === 'integration_test') {
     const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
       safety: commandSafety,
@@ -1674,6 +1754,7 @@ async function requestHumanConfirmation(input: {
       stageResult: input.stageResult,
       paused: true,
       failed: false,
+      pauseKind: 'human_confirmation',
       stageReport: input.stageReport,
       testOutput: input.testOutput,
     }
@@ -1691,6 +1772,7 @@ async function requestHumanConfirmation(input: {
       stageResult: input.stageResult,
       paused: true,
       failed: false,
+      pauseKind: 'human_confirmation',
       stageReport: input.stageReport,
       testOutput: input.testOutput,
     }
@@ -1702,6 +1784,15 @@ async function requestHumanConfirmation(input: {
   confirmationItem.updatedAt = new Date()
 
   if (decided.decision === 'approved') {
+    if (!input.stageSucceeded && shouldReturnStageToExecutor(input.stage, input.stageReport, input.testOutput)) {
+      input.stageResult.success = false
+      return buildProviderRetryStageResult({
+        stageResult: input.stageResult,
+        stageReport: input.stageReport,
+        testOutput: input.testOutput,
+      })
+    }
+
     return {
       stageResult: input.stageResult,
       paused: false,
@@ -1793,6 +1884,14 @@ async function requestHumanConfirmation(input: {
     input.stageResult.risks = finalEval.risks
     input.stageResult.success = false
 
+    if (shouldReturnStageToExecutor(input.stage, finalStageReport, finalTestOutput)) {
+      return buildProviderRetryStageResult({
+        stageResult: input.stageResult,
+        stageReport: finalStageReport,
+        testOutput: finalTestOutput,
+      })
+    }
+
     return {
       stageResult: input.stageResult,
       paused: false,
@@ -1806,6 +1905,7 @@ async function requestHumanConfirmation(input: {
     stageResult: input.stageResult,
     paused: true,
     failed: false,
+    pauseKind: 'human_confirmation',
     stageReport: input.stageReport,
     testOutput: input.testOutput,
   }
@@ -1905,6 +2005,14 @@ async function runSingleStage(
   }
 
   if (gateStrategy === 'none') {
+    if (!stageSucceeded && shouldReturnStageToExecutor(stage, stageReport, testOutput)) {
+      return buildProviderRetryStageResult({
+        stageResult,
+        stageReport,
+        testOutput,
+      })
+    }
+
     return {
       stageResult,
       paused: false,
@@ -1998,6 +2106,15 @@ async function runSingleStage(
       stageResult.risks = confirmation.requiredActions.length > 0
         ? confirmation.requiredActions
         : ['Model confirmation exceeded max revision attempts.']
+
+      if (shouldReturnStageToExecutor(stage, stageReport, testOutput)) {
+        return buildProviderRetryStageResult({
+          stageResult,
+          stageReport,
+          testOutput,
+        })
+      }
+
       return {
         stageResult,
         paused: false,
@@ -2463,14 +2580,20 @@ async function continueSession(
 
     if (stageRun?.paused) {
       session.currentStageIndex = i
+      // Reuse the existing resumable pause status for both human gates and
+      // autonomous provider handoffs so resume keeps the same stage and workspace.
       session.status = 'paused_for_human'
+      session.currentLoopState = stageRun.pauseKind === 'provider_retry'
+        ? 'revising'
+        : 'blocked_for_human'
+      session.lastFailureReason = completionStageResult?.summary || undefined
       await persistLoopNextRoundInput({
         session,
         stage,
         stageIndex: i,
         reason: completionStageResult?.summary || `Stage ${stage} paused for human confirmation.`,
-        finalAction: 'requeue_or_blocked',
-        fromRole: 'architect',
+        finalAction: stageRun.pauseKind === 'provider_retry' ? 'revise' : 'requeue_or_blocked',
+        fromRole: stageRun.pauseKind === 'provider_retry' ? 'tester' : 'architect',
         toRole: 'developer',
         progressObserver,
       })
@@ -2486,18 +2609,28 @@ async function continueSession(
           capability: 'loop',
           runTitle: session.goal,
           stage,
-          summary: `阶段 ${stage} 已暂停，等待人工确认。`,
-          blocker: '等待人工确认。',
-          nextAction: '人工确认后恢复当前阶段。',
+          summary: stageRun.pauseKind === 'provider_retry'
+            ? `阶段 ${stage} 已暂停，等待执行节点继续修复。`
+            : `阶段 ${stage} 已暂停，等待人工确认。`,
+          blocker: stageRun.pauseKind === 'provider_retry'
+            ? completionStageResult?.summary || '验证阶段仍需继续修复。'
+            : '等待人工确认。',
+          nextAction: stageRun.pauseKind === 'provider_retry'
+            ? '恢复当前阶段后继续自动修复。'
+            : '人工确认后恢复当前阶段。',
           aiRoster: buildLoopAiRoster(runtime, stage),
         },
         severity: 'warning',
-        metadata: { stage },
+        metadata: {
+          stage,
+          ...(stageRun.pauseKind ? { pauseKind: stageRun.pauseKind } : {}),
+        },
         dedupeKey: `stage_paused:${session.id}:${stage}:${Date.now()}`,
       })
       await appendObservedEvent(session.artifacts.eventsPath, session.id, {
         event: 'stage_paused',
         stage,
+        ...(stageRun.pauseKind ? { pauseKind: stageRun.pauseKind } : {}),
         occurrence: pausedNotification.occurrence,
         delivered: pausedNotification.dispatch?.delivered ?? 0,
         attempted: pausedNotification.dispatch?.attempted ?? 0,
@@ -2515,7 +2648,9 @@ async function continueSession(
 
       return {
         status: 'paused',
-        summary: `Loop paused for human confirmation at stage ${stage}. Session: ${session.id}`,
+        summary: stageRun.pauseKind === 'provider_retry'
+          ? `Loop paused for provider retry at stage ${stage}. Session: ${session.id}`
+          : `Loop paused for human confirmation at stage ${stage}. Session: ${session.id}`,
         session,
       }
     }

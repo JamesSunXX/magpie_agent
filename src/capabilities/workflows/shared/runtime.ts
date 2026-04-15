@@ -114,6 +114,12 @@ const RECOVERABLE_LOOP_POINTS = new Set<LoopReliablePoint>([
   'completed',
 ])
 
+const RECOVERABLE_LOOP_STAGES = new Set([
+  'code_development',
+  'unit_mock_test',
+  'integration_test',
+])
+
 function resolveLoopStage(session: RecoverableLoopSessionLike): string | null {
   if (typeof session.currentStage === 'string' && session.currentStage.length > 0) {
     return session.currentStage
@@ -153,8 +159,9 @@ function hasLoopContinuationHint(session: RecoverableLoopSessionLike): boolean {
 }
 
 /**
- * A loop session is only recoverable when it stopped during development and left
- * behind both a workspace snapshot and enough artifacts to resume the next round.
+ * A loop session is recoverable when it stopped in a stage we know how to rerun
+ * safely and it left behind both a workspace snapshot and enough artifacts to
+ * explain what should happen next.
  */
 export function isRecoverableLoopSession(session: RecoverableLoopSessionLike | null | undefined): boolean {
   if (!session) {
@@ -162,7 +169,7 @@ export function isRecoverableLoopSession(session: RecoverableLoopSessionLike | n
   }
 
   const stage = resolveLoopStage(session)
-  if (stage !== 'code_development') {
+  if (!stage || !RECOVERABLE_LOOP_STAGES.has(stage)) {
     return false
   }
 

@@ -217,4 +217,24 @@ describe('platform config loader', () => {
       'Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy'
     )
   })
+
+  it('rejects empty custom unit mock verification commands', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.loop = {
+      enabled: true,
+      commands: {
+        unit_mock_test_steps: [
+          {
+            label: 'Java tests',
+            command: '   ',
+          },
+        ],
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.commands.unit_mock_test_steps[0].command must be a non-empty string'
+    )
+  })
 })

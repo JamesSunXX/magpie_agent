@@ -8,6 +8,7 @@ import { createCapabilityContext } from '../../../src/core/capability/context.js
 import { StateManager, type LoopSession } from '../../../src/core/state/index.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
 import type { ProviderBindingInput, AIProvider } from '../../../src/platform/providers/index.js'
+import { loadHumanConfirmationItems, updateHumanConfirmationItem } from '../../../src/capabilities/loop/domain/human-confirmation.js'
 
 const planningMocks = vi.hoisted(() => ({
   createPlanContext: vi.fn().mockResolvedValue({
@@ -1176,6 +1177,122 @@ describe('loop capability', () => {
     expect(executorCalls).toBe(1)
   })
 
+  it('resumes a failed unit mock test stage when the rerun checkpoint is still recoverable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-failed-unit-mock-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development, unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "echo unit-safe"\n      mock_test: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const sessionId = 'loop-resume-failed-unit-mock'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const eventsPath = join(sessionDir, 'events.jsonl')
+    const planPath = join(sessionDir, 'plan.json')
+    const nextRoundInputPath = join(sessionDir, 'role-rounds', 'round-2-next.md')
+    mkdirSync(join(sessionDir, 'role-rounds'), { recursive: true })
+    writeFileSync(eventsPath, '', 'utf-8')
+    writeFileSync(planPath, JSON.stringify([], null, 2), 'utf-8')
+    writeFileSync(nextRoundInputPath, '# Next Round\n\nRerun the verification stage after the mock fix.\n', 'utf-8')
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Resume failed unit mock stage',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:10:00.000Z'),
+      status: 'failed',
+      currentStageIndex: 1,
+      stages: ['code_development', 'unit_mock_test'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'code_development',
+          title: 'Implement formatter',
+          description: 'Implement a pure formatter for checkout amounts',
+          dependencies: [],
+          successCriteria: ['Formatter output matches the spec'],
+        },
+        {
+          id: 'task-2',
+          stage: 'unit_mock_test',
+          title: 'Run verification',
+          description: 'Run unit and mock verification',
+          dependencies: ['task-1'],
+          successCriteria: ['Verification succeeds'],
+        },
+      ],
+      stageResults: [{
+        stage: 'code_development',
+        success: true,
+        confidence: 0.8,
+        summary: 'Implementation completed.',
+        risks: [],
+        retryCount: 0,
+        artifacts: [join(sessionDir, 'code_development.md')],
+        timestamp: new Date('2026-04-12T00:05:00.000Z'),
+      }, {
+        stage: 'unit_mock_test',
+        success: false,
+        confidence: 0.4,
+        summary: 'Mock tests failed and need another pass.',
+        risks: ['rerun after fixing the failing mock setup'],
+        retryCount: 0,
+        artifacts: [join(sessionDir, 'unit_mock_test.md')],
+        timestamp: new Date('2026-04-12T00:09:00.000Z'),
+      }],
+      humanConfirmations: [],
+      constraintsValidated: true,
+      constraintCheckStatus: 'pass',
+      lastReliablePoint: 'constraints_validated',
+      artifacts: {
+        sessionDir,
+        repoRootPath: dir,
+        workspaceMode: 'current',
+        workspacePath: dir,
+        eventsPath,
+        planPath,
+        humanConfirmationPath: join(dir, 'human_confirmation.md'),
+        nextRoundInputPath,
+      },
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.saveLoopSession(session)
+
+    let executorCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            return '# Stage Report\n\nVerification rerun completed.\n'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.status).toBe('completed')
+    expect(result.result.session?.currentStageIndex).toBe(2)
+    expect(result.result.session?.lastReliablePoint).toBe('completed')
+    expect(executorCalls).toBe(1)
+  })
+
   it('blocks resume when the saved checkpoint is not a complete reliable point', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-invalid-checkpoint-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -2107,6 +2224,60 @@ process.exit(result.status ?? 1)
     expect(result.result.status).toBe('completed')
   })
 
+  it('runs configured unit mock verification steps when provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-custom-unit-mock-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_mock_test_steps:\n        - label: "Java Unit Tests"\n          command: "echo java-safe"\n        - label: "Shared Mock Checks"\n          command: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('## Java Unit Tests (echo java-safe)')
+    expect(artifact).toContain('java-safe')
+    expect(artifact).toContain('## Shared Mock Checks (echo mock-safe)')
+    expect(artifact).toContain('mock-safe')
+  })
+
+  it('prefers configured unit mock verification steps over legacy commands', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-custom-unit-mock-priority-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\n      mock_test: "node -e \\"process.exit(1)\\""\n      unit_mock_test_steps:\n        - label: "Shared Verification"\n          command: "echo shared-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('## Shared Verification (echo shared-safe)')
+    expect(artifact).not.toContain('process.exit(1)')
+  })
+
   it('persists runtime verification output in unit mock stage artifacts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-artifact-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -2134,6 +2305,103 @@ process.exit(result.status ?? 1)
     expect(artifact).toContain('unit-safe')
     expect(artifact).toContain('## Mock Test (echo mock-safe)')
     expect(artifact).toContain('mock-safe')
+  })
+
+  it('keeps failed unit mock verification resumable instead of marking the loop failed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-resumable-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\n      mock_test: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(result.result.session?.currentLoopState).toBe('revising')
+    expect(result.result.session?.stageResults.at(-1)?.stage).toBe('unit_mock_test')
+    expect(result.result.session?.stageResults.at(-1)?.success).toBe(false)
+    expect(result.result.session?.artifacts.nextRoundInputPath).toBeTruthy()
+    expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(false)
+    expect(events).not.toContain('"event":"stage_failed"')
+    expect(events).not.toContain('"event":"human_confirmation_required"')
+  })
+
+  it('keeps failed unit mock verification resumable after human approval to continue', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":["Hand results back to the developer provider."],"requireHumanConfirmation":true,"summary":"Verification still needs another provider pass."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-human-approve-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 5\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "always"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\n      mock_test: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const confirmationPath = join(dir, 'human_confirmation.md')
+    const approvePendingConfirmation = (async () => {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (existsSync(confirmationPath)) {
+          const items = await loadHumanConfirmationItems(confirmationPath)
+          const pending = items.find((item) => item.decision === 'pending')
+          if (pending) {
+            await updateHumanConfirmationItem(confirmationPath, pending.id, {
+              decision: 'approved',
+              status: 'approved',
+              updatedAt: new Date(),
+            })
+            return
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error('Timed out waiting for loop human confirmation file.')
+    })()
+
+    const [result] = await Promise.all([
+      runCapability(loopCapability, {
+        mode: 'run',
+        goal: 'Complete delivery flow',
+        prdPath,
+        waitHuman: true,
+        dryRun: false,
+      }, ctx),
+      approvePendingConfirmation,
+    ])
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(result.result.session?.currentLoopState).toBe('revising')
+    expect(result.result.session?.stageResults.at(-1)?.stage).toBe('unit_mock_test')
+    expect(result.result.session?.stageResults.at(-1)?.success).toBe(false)
+    expect(result.result.session?.artifacts.nextRoundInputPath).toBeTruthy()
+    expect(events).toContain('"event":"human_confirmation_required"')
+    expect(events).not.toContain('"event":"stage_failed"')
   })
 
   it('uses multi-model confirmation instead of human confirmation for low-confidence stages', async () => {

@@ -128,10 +128,16 @@ export type LoopStageName =
   | 'unit_mock_test'
   | 'integration_test'
 
+export interface LoopVerificationStepConfig {
+  label?: string
+  command: string
+}
+
 export interface LoopCommandsConfig {
   unit_test?: string
   mock_test?: string
   integration_test?: string
+  unit_mock_test_steps?: LoopVerificationStepConfig[]
 }
 
 export interface LoopExecutionTimeoutConfig {

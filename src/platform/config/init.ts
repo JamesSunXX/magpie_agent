@@ -856,6 +856,12 @@ capabilities:
       max_model_revisions: 1
     commands:
       unit_test: "npm run test:run"
+      # For non-Node repos, replace the legacy unit/mock commands with project-specific checks:
+      # unit_mock_test_steps:
+      #   - label: "Project unit tests"
+      #     command: "mvn test"
+      #   - label: "Shared mock checks"
+      #     command: "go test ./... -run TestWithMocks"
       integration_test: "npm run test:run -- tests/integration"
 
 # Integrations

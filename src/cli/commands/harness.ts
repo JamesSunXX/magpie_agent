@@ -8,6 +8,7 @@ import { createDefaultCapabilityRegistry } from '../../capabilities/index.js'
 import {
   appendWorkflowEvent,
   isRecoverableHarnessSession,
+  isRecoverableLoopSession,
   listWorkflowSessions,
   loadWorkflowSession,
   persistWorkflowSession,
@@ -801,6 +802,12 @@ function canResumeFailedDevelopmentSession(
   loopSession: WorkflowSession | null
 ): boolean {
   if (isRecoverableHarnessSession(session, loopSession || undefined)) {
+    return true
+  }
+
+  // Older harness sessions can stay marked as failed even when the linked loop
+  // already persisted a trustworthy rerun checkpoint in a later inner stage.
+  if (session.status === 'failed' && isRecoverableLoopSession(loopSession || undefined)) {
     return true
   }
 

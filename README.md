@@ -107,6 +107,8 @@ magpie memory show --project
 
 `trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；如果已经留下了可继续的工作区、测试产物和下一步提示，就会把这次结果记成“可恢复阻塞”而不是直接判死，后面可以直接 `loop resume` 接着干，不会自动清理现场。
 
+如果想把 `unit_mock_test` 复用到 Java、Go 或别的项目，不一定非要沿用默认的 `unit_test` / `mock_test` 命令名。现在可以直接在 `capabilities.loop.commands.unit_mock_test_steps` 里按顺序写项目自己的检查步骤，每一步自己起名字、自己填命令；只有没配这组步骤时，才会回退到原来的旧配置。
+
 `loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`，`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。

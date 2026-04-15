@@ -12,13 +12,14 @@ import type {
   ModelRouteBinding,
   TrdConfig,
   HarnessConfig,
+  LoopCommandsConfig,
   LoopExecutionTimeoutConfig,
   LoopStageName,
   LoopConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 14
+export const CURRENT_CONFIG_VERSION = 15
 
 export interface ConfigVersionStatus {
   path: string
@@ -314,6 +315,8 @@ function validateLoopConfig(
     validateBinding('capabilities.loop.role_bindings.developer', loop.role_bindings.developer)
   }
 
+  validateLoopCommands(loop?.commands)
+
   const humanConfirmation = loop?.human_confirmation
   if (!humanConfirmation) {
     return
@@ -341,6 +344,33 @@ function validateLoopConfig(
     : []
   if (distinctReviewerIds.length < 2) {
     throw new Error('Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy')
+  }
+}
+
+function validateLoopCommands(commands: LoopCommandsConfig | undefined): void {
+  if (!commands) return
+
+  const steps = commands.unit_mock_test_steps
+  if (steps === undefined) {
+    return
+  }
+
+  if (!Array.isArray(steps) || steps.length === 0) {
+    throw new Error('Config error: capabilities.loop.commands.unit_mock_test_steps must be a non-empty array')
+  }
+
+  for (const [index, step] of steps.entries()) {
+    if (step === null || typeof step !== 'object') {
+      throw new Error(`Config error: capabilities.loop.commands.unit_mock_test_steps[${index}] must be an object`)
+    }
+
+    if (typeof step.command !== 'string' || step.command.trim().length === 0) {
+      throw new Error(`Config error: capabilities.loop.commands.unit_mock_test_steps[${index}].command must be a non-empty string`)
+    }
+
+    if (step.label !== undefined && (typeof step.label !== 'string' || step.label.trim().length === 0)) {
+      throw new Error(`Config error: capabilities.loop.commands.unit_mock_test_steps[${index}].label must be a non-empty string when provided`)
+    }
   }
 }
 

@@ -14,6 +14,7 @@ export type {
   LoopConfig,
   LoopHumanConfirmationConfig,
   LoopStageName,
+  LoopVerificationStepConfig,
   MacosNotificationProviderConfig,
   MagpieConfigV2 as MagpieConfig,
   NotificationEventType,

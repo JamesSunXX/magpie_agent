@@ -15,7 +15,7 @@ const lintedTsFiles = [
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**'],
+    ignores: ['dist/**', 'coverage/**', '.worktrees/**'],
   },
   {
     ...js.configs.recommended,
