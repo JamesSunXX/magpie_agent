@@ -2859,6 +2859,9 @@ capabilities:
     default_reviewers:
       - primary
       - secondary
+integrations:
+  notifications:
+    enabled: false
 `, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
@@ -2889,6 +2892,10 @@ reviewers:
   secondary:
     tool: codex
     prompt: secondary review
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
 summarizer:
   model: kiro
   prompt: summarize
@@ -2900,6 +2907,9 @@ capabilities:
     default_reviewers:
       - primary
       - secondary
+integrations:
+  notifications:
+    enabled: false
 `, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })

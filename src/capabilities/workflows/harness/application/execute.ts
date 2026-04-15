@@ -22,6 +22,7 @@ import {
   sessionDirFor,
 } from '../../shared/runtime.js'
 import { generateDocumentPlan, type DocumentPlan } from '../../../../core/project-documents/document-plan.js'
+import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
@@ -1732,7 +1733,7 @@ export async function executeHarness(
   prepared: HarnessPreparedInput,
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
-  const config = prepared.config
+  const config = prepared.config || loadConfig(ctx.configPath)
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')

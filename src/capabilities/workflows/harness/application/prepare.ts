@@ -55,8 +55,8 @@ export async function prepareHarnessInput(
   const modelsExplicit = typeof input.modelsExplicit === 'boolean'
     ? input.modelsExplicit
     : Array.isArray(input.models) && input.models.length > 0
-  const config = ctx.configPath ? loadConfig(ctx.configPath) : loadConfig(undefined)
-  const configuredModels = modelsExplicit ? null : resolveConfiguredHarnessModels(config)
+  const config = ctx.configPath ? loadConfig(ctx.configPath) : undefined
+  const configuredModels = modelsExplicit || !config ? null : resolveConfiguredHarnessModels(config)
   return {
     ...input,
     preparedAt: new Date(),
@@ -64,6 +64,6 @@ export async function prepareHarnessInput(
     reviewRounds: Number.isFinite(input.reviewRounds) ? Math.max(1, input.reviewRounds as number) : 3,
     models: normalizeModels(input.models, configuredModels),
     modelsExplicit,
-    config,
+    ...(config ? { config } : {}),
   }
 }
