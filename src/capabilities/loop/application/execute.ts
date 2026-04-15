@@ -39,8 +39,9 @@ import {
 } from '../../../core/project-documents/document-plan.js'
 import { extractJsonBlock } from '../../../trd/renderer.js'
 import {
-  appendHumanConfirmationItem,
   findHumanConfirmationDecision,
+  summarizeHumanConfirmationReason,
+  syncSessionHumanConfirmationProjection,
 } from '../domain/human-confirmation.js'
 import {
   runLoopModelConfirmation,
@@ -163,12 +164,94 @@ interface StageExecutionAttemptResult {
 
 type GateStrategy = 'none' | 'model' | 'human'
 
+type LoopProviderRole = 'planner' | 'executor'
+
 function toRoleBinding(input: { tool?: string; model?: string; agent?: string }): { tool?: string; model?: string; agent?: string } | undefined {
   if (!input.tool && !input.model) return undefined
   return {
     ...(input.tool ? { tool: input.tool } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.agent ? { agent: input.agent } : {}),
+  }
+}
+
+function isCodexBinding(input: { tool?: string; model?: string } | undefined): boolean {
+  if (!input) return false
+  const tool = input.tool?.trim().toLowerCase()
+  const model = input.model?.trim().toLowerCase()
+  return tool === 'codex'
+    || model === 'codex'
+    || Boolean(model && model.startsWith('codex'))
+}
+
+function isCodexTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /codex cli timed out/i.test(message)
+}
+
+function canUseKiroFallback(config: MagpieConfig): boolean {
+  return config.providers?.kiro?.enabled !== false
+}
+
+function buildLoopKiroFallbackBinding(role: LoopProviderRole): {
+  logicalName: 'capabilities.loop.planner' | 'capabilities.loop.executor'
+  tool: 'kiro'
+  model: 'kiro'
+  agent: 'architect' | 'dev'
+} {
+  return role === 'planner'
+    ? {
+        logicalName: 'capabilities.loop.planner',
+        tool: 'kiro',
+        model: 'kiro',
+        agent: 'architect',
+      }
+    : {
+        logicalName: 'capabilities.loop.executor',
+        tool: 'kiro',
+        model: 'kiro',
+        agent: 'dev',
+      }
+}
+
+async function invokeLoopProviderWithKiroFallback<T>(input: {
+  provider: AIProvider
+  role: LoopProviderRole
+  binding: { tool?: string; model?: string }
+  stage: LoopStageName
+  session: LoopSession
+  config: MagpieConfig
+  providerSessionsPath: string
+  timeoutMs: number
+  progressObserver?: LoopProgressObserver
+  invoke: (provider: AIProvider) => Promise<T>
+}): Promise<T> {
+  try {
+    return await input.invoke(input.provider)
+  } catch (error) {
+    if (!isCodexBinding(input.binding) || !isCodexTimeoutError(error) || !canUseKiroFallback(input.config)) {
+      throw error
+    }
+
+    const fallbackBinding = buildLoopKiroFallbackBinding(input.role)
+    const fallbackProvider = await withProviderSessionScope({
+      sessionsPath: input.providerSessionsPath,
+      workflowSessionId: input.session.id,
+      namespace: 'loop',
+    }, async () => createConfiguredProvider(fallbackBinding, input.config))
+    fallbackProvider.setTimeoutMs?.(input.timeoutMs)
+
+    await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+      event: 'provider_fallback_applied',
+      stage: input.stage,
+      role: input.role,
+      from: 'codex',
+      to: 'kiro',
+      reason: error instanceof Error ? error.message : String(error),
+      fallbackAgent: fallbackBinding.agent,
+    }, input.progressObserver)
+
+    return input.invoke(fallbackProvider)
   }
 }
 
@@ -801,7 +884,15 @@ async function evaluateStage(
   planner: AIProvider,
   stage: LoopStageName,
   stageReport: string,
-  testOutput: string
+  testOutput: string,
+  options: {
+    session: LoopSession
+    config: MagpieConfig
+    providerSessionsPath: string
+    timeoutMs: number
+    progressObserver?: LoopProgressObserver
+    binding: { tool?: string; model?: string }
+  }
 ): Promise<StageEvaluation> {
   const prompt = `Evaluate this stage execution quality. Return ONLY JSON.
 
@@ -823,7 +914,18 @@ JSON schema:
 \`\`\``
 
   const messages: Message[] = [{ role: 'user', content: prompt }]
-  const response = await planner.chat(messages, undefined, { disableTools: true })
+  const response = await invokeLoopProviderWithKiroFallback({
+    provider: planner,
+    role: 'planner',
+    binding: options.binding,
+    stage,
+    session: options.session,
+    config: options.config,
+    providerSessionsPath: options.providerSessionsPath,
+    timeoutMs: options.timeoutMs,
+    progressObserver: options.progressObserver,
+    invoke: (provider) => provider.chat(messages, undefined, { disableTools: true }),
+  })
   const parsed = extractJsonBlock<StageEvaluation>(response)
 
   if (!parsed) {
@@ -1402,9 +1504,12 @@ async function executeStageAttempt(
   tasks: LoopTask[],
   documentPlan: DocumentPlan,
   executor: AIProvider,
+  config: MagpieConfig,
+  providerSessionsPath: string,
   dryRun: boolean,
   runCwd: string,
   runtime: LoopRuntimeConfig,
+  timeoutMs: number,
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
   knowledgeContext: string,
   progressObserver?: LoopProgressObserver,
@@ -1424,17 +1529,31 @@ async function executeStageAttempt(
     : stagePrompt
 
   const progressWrites: Array<Promise<void>> = []
-  const response = await executor.chat([{ role: 'user', content: prompt }], undefined, {
-    onProgress: (event) => {
-      progressWrites.push(appendObservedEvent(session.artifacts.eventsPath, session.id, {
-        event: 'provider_progress',
-        stage,
-        provider: event.provider,
-        progressType: event.kind,
-        ...(event.summary ? { summary: event.summary } : {}),
-        ...(event.details ? { details: event.details } : {}),
-      }, progressObserver))
+  const response = await invokeLoopProviderWithKiroFallback({
+    provider: executor,
+    role: 'executor',
+    binding: {
+      tool: runtime.executorTool,
+      model: runtime.executorModel,
     },
+    stage,
+    session,
+    config,
+    providerSessionsPath,
+    timeoutMs,
+    progressObserver,
+    invoke: (provider) => provider.chat([{ role: 'user', content: prompt }], undefined, {
+      onProgress: (event) => {
+        progressWrites.push(appendObservedEvent(session.artifacts.eventsPath, session.id, {
+          event: 'provider_progress',
+          stage,
+          provider: event.provider,
+          progressType: event.kind,
+          ...(event.summary ? { summary: event.summary } : {}),
+          ...(event.details ? { details: event.details } : {}),
+        }, progressObserver))
+      },
+    }),
   })
   await Promise.all(progressWrites)
 
@@ -1481,10 +1600,13 @@ async function requestHumanConfirmation(input: {
   runtime: LoopRuntimeConfig
   planner: AIProvider
   executor: AIProvider
+  config: MagpieConfig
+  providerSessionsPath: string
   tasks: LoopTask[]
   documentPlan: DocumentPlan
   dryRun: boolean
   runCwd: string
+  timeoutMs: number
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>
   knowledgeContext: string
   notificationsConfig: unknown
@@ -1497,13 +1619,13 @@ async function requestHumanConfirmation(input: {
   progressObserver?: LoopProgressObserver
 }): Promise<StageRunResult> {
   const confirmationItem: HumanConfirmationItem = {
+    ...summarizeHumanConfirmationReason(input.reason),
     id: generateId(),
     sessionId: input.session.id,
     stage: input.stage,
     status: 'pending',
     decision: 'pending',
     rationale: '',
-    reason: input.reason,
     artifacts: input.stageResult.artifacts,
     nextAction: input.nextAction,
     createdAt: new Date(),
@@ -1511,10 +1633,17 @@ async function requestHumanConfirmation(input: {
   }
 
   const clickTarget = resolveClickTarget('vscode', input.notificationsConfig)
-  const lineNumber = await appendHumanConfirmationItem(input.session.artifacts.humanConfirmationPath, confirmationItem)
-  const actionUrl = buildActionUrl(input.session.artifacts.humanConfirmationPath, lineNumber, clickTarget)
-
   input.session.humanConfirmations.push(confirmationItem)
+  const lineNumber = await syncSessionHumanConfirmationProjection(
+    input.session.artifacts.humanConfirmationPath,
+    input.session.id,
+    input.session.humanConfirmations
+  )
+  const actionUrl = buildActionUrl(
+    input.session.artifacts.humanConfirmationPath,
+    lineNumber ?? 1,
+    clickTarget
+  )
 
   const event: NotificationEvent = {
     type: 'human_confirmation_required',
@@ -1611,9 +1740,12 @@ async function requestHumanConfirmation(input: {
         input.tasks,
         input.documentPlan,
         input.executor,
+        input.config,
+        input.providerSessionsPath,
         input.dryRun,
         input.runCwd,
         input.runtime,
+        input.timeoutMs,
         input.commandSafety,
         input.knowledgeContext,
         input.progressObserver,
@@ -1625,7 +1757,17 @@ async function requestHumanConfirmation(input: {
       finalStageReport = retried.stageReport
       await appendFile(stageArtifactPath, `\n\n## Retry Execution (${attempt})\n${finalStageReport}\n`, 'utf-8')
 
-      finalEval = await evaluateStage(input.planner, input.stage, finalStageReport, finalTestOutput)
+      finalEval = await evaluateStage(input.planner, input.stage, finalStageReport, finalTestOutput, {
+        session: input.session,
+        config: input.config,
+        providerSessionsPath: input.providerSessionsPath,
+        timeoutMs: input.timeoutMs,
+        progressObserver: input.progressObserver,
+        binding: {
+          tool: input.runtime.plannerTool,
+          model: input.runtime.plannerModel,
+        },
+      })
       input.stageResult.retryCount = attempt
       input.stageResult.confidence = finalEval.confidence
       input.stageResult.summary = finalEval.summary
@@ -1679,10 +1821,12 @@ async function runSingleStage(
   planner: AIProvider,
   executor: AIProvider,
   router: ReturnType<typeof createNotificationRouter>,
+  providerSessionsPath: string,
   waitHuman: boolean,
   dryRun: boolean,
   notificationsConfig: unknown,
   runCwd: string,
+  timeoutMs: number,
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
   progressObserver?: LoopProgressObserver,
 ): Promise<StageRunResult> {
@@ -1712,9 +1856,12 @@ async function runSingleStage(
     tasks,
     documentPlan,
     executor,
+    config,
+    providerSessionsPath,
     dryRun,
     runCwd,
     runtime,
+    timeoutMs,
     commandSafety,
     knowledgeContext,
     progressObserver,
@@ -1728,7 +1875,17 @@ async function runSingleStage(
     await writeFile(stageArtifactPath, stageReport, 'utf-8')
   }
 
-  evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
+  evaluation = await evaluateStage(planner, stage, stageReport, testOutput, {
+    session,
+    config,
+    providerSessionsPath,
+    timeoutMs,
+    progressObserver,
+    binding: {
+      tool: runtime.plannerTool,
+      model: runtime.plannerModel,
+    },
+  })
   gateStrategy = resolveGateStrategy(
     runtime,
     stageSucceeded,
@@ -1864,9 +2021,12 @@ async function runSingleStage(
       tasks,
       documentPlan,
       executor,
+      config,
+      providerSessionsPath,
       dryRun,
       runCwd,
       runtime,
+      timeoutMs,
       commandSafety,
       knowledgeContext,
       progressObserver,
@@ -1877,7 +2037,17 @@ async function runSingleStage(
     testOutput = revisedAttempt.testOutput
     await appendFile(stageArtifactPath, `\n\n## Model Revision Execution (${modelRevisionCount})\n${stageReport}\n`, 'utf-8')
 
-    evaluation = await evaluateStage(planner, stage, stageReport, testOutput)
+    evaluation = await evaluateStage(planner, stage, stageReport, testOutput, {
+      session,
+      config,
+      providerSessionsPath,
+      timeoutMs,
+      progressObserver,
+      binding: {
+        tool: runtime.plannerTool,
+        model: runtime.plannerModel,
+      },
+    })
     stageResult.success = stageSucceeded
     stageResult.confidence = evaluation.confidence
     stageResult.summary = evaluation.summary
@@ -1908,10 +2078,13 @@ async function runSingleStage(
     runtime,
     planner,
     executor,
+    config,
+    providerSessionsPath,
     tasks,
     documentPlan,
     dryRun,
     runCwd,
+    timeoutMs,
     commandSafety,
     knowledgeContext,
     notificationsConfig,
@@ -1933,6 +2106,7 @@ async function continueSession(
   timeoutTier: ComplexityTier,
   runtime: LoopRuntimeConfig,
   config: MagpieConfig,
+  providerSessionsPath: string,
   planner: AIProvider,
   executor: AIProvider,
   autoCommitProvider: AIProvider,
@@ -2214,10 +2388,12 @@ async function continueSession(
           planner,
           executor,
           notificationRouter,
+          providerSessionsPath,
           prepared.waitHuman !== false,
           prepared.dryRun === true,
           notificationsConfig,
           runCwd,
+          timeoutMs,
           commandSafety,
           progressObserver,
         )
@@ -2884,6 +3060,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
     prepared.complexity || routingDecision?.tier || 'standard',
     loopRuntime,
     config,
+    providerSessionsPath,
     planner,
     executor,
     autoCommitProvider,
@@ -3127,6 +3304,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
     resumeComplexity || 'standard',
     loopRuntime,
     config,
+    providerSessionsPath,
     planner,
     executor,
     autoCommitProvider,

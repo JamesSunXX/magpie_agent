@@ -42,6 +42,8 @@ import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
 import { formatLocalDateTime } from '../../shared/utils/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
+import { StateManager } from '../../state/state-manager.js'
+import { applyLoopConfirmationDecision, type ConfirmationDecisionOptions } from './human-confirmation-actions.js'
 
 interface HarnessCommandOptions {
   config?: string
@@ -72,6 +74,10 @@ interface HarnessApprovalCommandOptions {
   gate?: string
   by?: string
   note?: string
+}
+
+interface HarnessConfirmCommandOptions extends ConfirmationDecisionOptions {
+  config?: string
 }
 
 interface HarnessRoundSummary {
@@ -1032,6 +1038,65 @@ harnessCommand
       { config: options.config || persisted.configPath },
       session.id
     )
+  })
+
+harnessCommand
+  .command('confirm')
+  .description('Approve or reject the latest pending loop confirmation linked to a harness session')
+  .argument('<sessionId>', 'Harness session ID')
+  .option('-c, --config <path>', 'Path to config file')
+  .option('--approve', 'Approve the pending confirmation and continue automatically')
+  .option('--reject', 'Reject the pending confirmation and trigger auto discussion')
+  .option('--reason <text>', 'Reason for rejection')
+  .action(async (sessionId: string, options: HarnessConfirmCommandOptions) => {
+    try {
+      const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+      if (!session) {
+        console.error(`Harness session not found: ${sessionId}`)
+        process.exitCode = 1
+        return
+      }
+
+      if (!session.artifacts.loopSessionId) {
+        console.error(`Harness session ${sessionId} has no linked loop session.`)
+        process.exitCode = 1
+        return
+      }
+
+      const loopStateManager = new StateManager(process.cwd())
+      await loopStateManager.initLoopSessions()
+      const loopSession = await loopStateManager.loadLoopSession(session.artifacts.loopSessionId)
+      if (!loopSession) {
+        console.error(`Linked loop session not found: ${session.artifacts.loopSessionId}`)
+        process.exitCode = 1
+        return
+      }
+
+      await applyLoopConfirmationDecision(process.cwd(), loopSession, {
+        ...options,
+        config: options.config,
+      })
+
+      if (options.approve) {
+        const persisted = extractHarnessResumeInput(session)
+        if (!persisted) {
+          console.error(`Harness session ${sessionId} cannot be resumed because its input metadata is missing.`)
+          process.exitCode = 1
+          return
+        }
+        await runHarnessWithSession(
+          persisted.input,
+          { config: options.config || persisted.configPath },
+          session.id
+        )
+        return
+      }
+
+      console.log(`Rejected pending human confirmation for ${session.id}.`)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exitCode = 1
+    }
   })
 
 harnessCommand

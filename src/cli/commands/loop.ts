@@ -17,6 +17,7 @@ import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import { formatLocalDateTime } from '../../shared/utils/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
+import { applyLoopConfirmationDecision, type ConfirmationDecisionOptions } from './human-confirmation-actions.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -27,6 +28,12 @@ interface SharedLoopOptions {
   planningProject?: string
   complexity?: ComplexityTier
   host?: ExecutionHost
+}
+
+interface LoopConfirmOptions extends Pick<SharedLoopOptions, 'config'> {
+  approve?: boolean
+  reject?: boolean
+  reason?: string
 }
 
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
@@ -199,6 +206,41 @@ loopCommand
       dryRun: options.dryRun,
       complexity: options.complexity,
     }, options)
+  })
+
+loopCommand
+  .command('confirm')
+  .description('Approve or reject the latest pending human confirmation for a loop session')
+  .argument('<sessionId>', 'Loop session ID or prefix')
+  .option('-c, --config <path>', 'Path to config file')
+  .option('--approve', 'Approve the latest pending confirmation and continue automatically')
+  .option('--reject', 'Reject the latest pending confirmation and trigger auto discussion')
+  .option('--reason <text>', 'Reason for rejection')
+  .action(async (sessionId: string, options: LoopConfirmOptions) => {
+    try {
+      const session = await loadLoopSessionByPrefix(sessionId, process.cwd())
+      if (!session) {
+        console.error(`Loop session not found: ${sessionId}`)
+        process.exitCode = 1
+        return
+      }
+
+      await applyLoopConfirmationDecision(process.cwd(), session, options)
+
+      if (options.approve) {
+        await runLoop({
+          mode: 'resume',
+          sessionId: session.id,
+          waitHuman: false,
+        }, options)
+        return
+      }
+
+      console.log(`Rejected pending human confirmation for ${session.id}.`)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exitCode = 1
+    }
   })
 
 loopCommand

@@ -172,10 +172,15 @@ export interface HumanConfirmationItem {
   stage: LoopStageName
   status: 'pending' | 'approved' | 'rejected' | 'revise'
   decision: 'pending' | 'approved' | 'rejected' | 'revise'
+  summary?: string
+  recommendation?: 'approve' | 'reject'
   rationale?: string
   reason: string
   artifacts: string[]
   nextAction: string
+  parentId?: string
+  discussionSessionId?: string
+  discussionOutputPath?: string
   createdAt: Date
   updatedAt: Date
 }

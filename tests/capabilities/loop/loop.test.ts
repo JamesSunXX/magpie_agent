@@ -393,6 +393,121 @@ describe('loop capability', () => {
     expect(events).toContain('"timeoutMs":1800000')
   })
 
+  it('falls back to kiro when the codex executor times out during a stage', async () => {
+    const codexExecutorChat = vi.fn().mockRejectedValue(new Error('Codex CLI timed out after 1800s'))
+    const kiroExecutorChat = vi.fn().mockResolvedValue('# Stage Report\n\nTRD generated.\n\n## Artifacts\n- /tmp/generated-trd.md')
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: input.tool === 'kiro' || input.model === 'kiro' ? 'kiro' : 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        if (input.tool === 'kiro' || input.model === 'kiro') {
+          return {
+            name: 'kiro',
+            chat: kiroExecutorChat,
+            chatStream: vi.fn(async function * () {}),
+          }
+        }
+        return {
+          name: 'codex',
+          chat: codexExecutorChat,
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-codex-executor-fallback-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nGenerate a TRD.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: codex\n    stages: [trd_generation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Generate TRD with fallback',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(codexExecutorChat).toHaveBeenCalledTimes(1)
+    expect(kiroExecutorChat).toHaveBeenCalledTimes(1)
+    expect(events).toContain('"event":"provider_fallback_applied"')
+    expect(events).toContain('"from":"codex"')
+    expect(events).toContain('"to":"kiro"')
+    expect(events).toContain('"reason":"Codex CLI timed out after 1800s"')
+  })
+
+  it('falls back to kiro when the codex planner times out during stage evaluation', async () => {
+    const codexPlannerChat = vi.fn().mockRejectedValue(new Error('Codex CLI timed out after 1800s'))
+    const kiroPlannerChat = vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}')
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        if (input.tool === 'kiro' || input.model === 'kiro') {
+          return {
+            name: 'kiro',
+            chat: kiroPlannerChat,
+            chatStream: vi.fn(async function * () {}),
+          }
+        }
+        return {
+          name: 'codex',
+          chat: codexPlannerChat,
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nTRD generated.\n\n## Artifacts\n- /tmp/generated-trd.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-codex-planner-fallback-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nGenerate a TRD.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: codex\n    executor_model: mock\n    stages: [trd_generation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Evaluate TRD with fallback',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(codexPlannerChat.mock.calls.length).toBeGreaterThanOrEqual(1)
+    expect(kiroPlannerChat).toHaveBeenCalledTimes(1)
+    expect(events).toContain('"event":"provider_fallback_applied"')
+    expect(events).toContain('"role":"planner"')
+    expect(events).toContain('"reason":"Codex CLI timed out after 1800s"')
+  })
+
   it('keeps the stored complexity tier when resuming without an override', async () => {
     const plannerSetTimeout = vi.fn()
     const executorSetTimeout = vi.fn()

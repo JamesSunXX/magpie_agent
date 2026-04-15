@@ -1,5 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
+import { StateManager } from '../../src/state/state-manager.js'
+import type { LoopSession } from '../../src/state/types.js'
 
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
@@ -23,16 +28,27 @@ vi.mock('../../src/cli/commands/tmux-launch.js', () => ({
 }))
 
 describe('loop CLI runtime command', () => {
+  let magpieHome: string | undefined
+
   beforeEach(() => {
     vi.clearAllMocks()
+    process.exitCode = 0
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
-    getTypedCapability.mockReturnValue({ name: 'loop' })
+    getTypedCapability.mockImplementation((_registry, name) => ({ name }))
     launchMagpieInTmux.mockResolvedValue({
       sessionId: 'loop-tmux-1',
       tmuxSession: 'magpie-loop-tmux-1',
       tmuxWindow: '@1',
       tmuxPane: '%1',
     })
+  })
+
+  afterEach(() => {
+    if (magpieHome) {
+      rmSync(magpieHome, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+      magpieHome = undefined
+    }
   })
 
   it('runs loop run through the capability runtime', async () => {
@@ -228,5 +244,267 @@ describe('loop CLI runtime command', () => {
 
     expect(logSpy).toHaveBeenCalledWith(`loop-2\tcompleted\t${formatExpectedLocalDateTime('2026-04-11T01:00:00.000Z')}\tCheckout`)
     logSpy.mockRestore()
+  })
+
+  it('approves the latest pending confirmation and resumes the loop automatically', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-loop-confirm-home-'))
+    process.env.MAGPIE_HOME = magpieHome
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-loop-confirm-cwd-'))
+    const state = new StateManager(cwd)
+    await state.initLoopSessions()
+    const sessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-confirm-1')
+    mkdirSync(sessionDir, { recursive: true })
+
+    const confirmationPath = join(sessionDir, 'human_confirmation.md')
+    writeFileSync(confirmationPath, `# Human Confirmation Queue
+
+<!-- MAGPIE_HUMAN_CONFIRMATION_START -->
+
+\`\`\`yaml
+id: hc-stale
+session_id: loop-confirm-1
+stage: code_development
+status: pending
+decision: pending
+reason: Old file-only pending item
+next_action: Continue
+created_at: 2026-04-10T00:00:00.000Z
+updated_at: 2026-04-10T00:00:00.000Z
+\`\`\`
+<!-- MAGPIE_HUMAN_CONFIRMATION_END -->
+
+<!-- MAGPIE_HUMAN_CONFIRMATION_START -->
+
+\`\`\`yaml
+id: hc-file
+session_id: loop-confirm-1
+stage: code_development
+status: pending
+decision: pending
+reason: File copy should not override session state
+next_action: Approve or reject
+created_at: 2026-04-11T00:00:00.000Z
+updated_at: 2026-04-11T00:00:00.000Z
+\`\`\`
+<!-- MAGPIE_HUMAN_CONFIRMATION_END -->
+`, 'utf-8')
+
+    const session: LoopSession = {
+      id: 'loop-confirm-1',
+      title: 'Confirm loop',
+      goal: 'Ship checkout',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [{
+        id: 'hc-pending',
+        sessionId: 'loop-confirm-1',
+        stage: 'code_development',
+        status: 'pending',
+        decision: 'pending',
+        reason: 'Need one final product decision',
+        artifacts: [],
+        nextAction: 'Approve or reject',
+        createdAt: new Date('2026-04-11T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-11T00:00:00.000Z'),
+      }],
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: confirmationPath,
+      },
+    }
+    await state.saveLoopSession(session)
+
+    runCapability.mockResolvedValue({
+      output: {
+        summary: 'Loop resumed.',
+        details: {
+          id: 'loop-confirm-1',
+          status: 'running',
+          artifacts: {
+            humanConfirmationPath: confirmationPath,
+          },
+        },
+      },
+    })
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { loopCommand } = await import('../../src/cli/commands/loop.js')
+    const previousCwd = process.cwd()
+
+    try {
+      process.chdir(cwd)
+      await loopCommand.parseAsync(
+        ['node', 'loop', 'confirm', 'loop-confirm-1', '--approve'],
+        { from: 'node' }
+      )
+    } finally {
+      process.chdir(previousCwd)
+      logSpy.mockRestore()
+    }
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'loop' },
+      expect.objectContaining({
+        mode: 'resume',
+        sessionId: 'loop-confirm-1',
+        waitHuman: false,
+      }),
+      expect.any(Object)
+    )
+
+    const content = readFileSync(confirmationPath, 'utf-8')
+    expect(content).toContain('id: hc-pending')
+    expect(content).toContain('status: approved')
+    expect(content).toContain('decision: approved')
+    expect(content).not.toContain('id: hc-stale')
+    expect(content).not.toContain('id: hc-file')
+
+    const persisted = await state.loadLoopSession('loop-confirm-1')
+    expect(persisted?.humanConfirmations.map((item) => item.id)).toEqual(['hc-pending'])
+    expect(persisted?.humanConfirmations[0]).toMatchObject({
+      id: 'hc-pending',
+      status: 'approved',
+      decision: 'approved',
+    })
+  })
+
+  it('rejects the latest pending confirmation, runs auto-discuss, and creates a new pending card', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-loop-confirm-reject-home-'))
+    process.env.MAGPIE_HOME = magpieHome
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-loop-confirm-reject-cwd-'))
+    const state = new StateManager(cwd)
+    await state.initLoopSessions()
+    await state.initDiscussions()
+    const sessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-confirm-2')
+    mkdirSync(sessionDir, { recursive: true })
+
+    const confirmationPath = join(sessionDir, 'human_confirmation.md')
+    writeFileSync(confirmationPath, `# Human Confirmation Queue
+
+<!-- MAGPIE_HUMAN_CONFIRMATION_START -->
+
+\`\`\`yaml
+id: hc-pending
+session_id: loop-confirm-2
+stage: code_development
+status: pending
+decision: pending
+reason: Need one final product decision
+next_action: Approve or reject
+created_at: 2026-04-11T00:00:00.000Z
+updated_at: 2026-04-11T00:00:00.000Z
+\`\`\`
+<!-- MAGPIE_HUMAN_CONFIRMATION_END -->
+`, 'utf-8')
+
+    const session: LoopSession = {
+      id: 'loop-confirm-2',
+      title: 'Reject loop',
+      goal: 'Ship checkout',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: confirmationPath,
+      },
+    }
+    await state.saveLoopSession(session)
+
+    runCapability.mockImplementation(async (capability, _input, ctx) => {
+      if (capability.name === 'discuss') {
+        await state.saveDiscussSession({
+          id: 'disc-1001',
+          title: 'Auto discussion',
+          createdAt: new Date('2026-04-11T00:10:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:10:00.000Z'),
+          status: 'completed',
+          reviewerIds: ['reviewer-a', 'reviewer-b'],
+          rounds: [{
+            roundNumber: 1,
+            topic: 'Auto discussion',
+            analysis: 'analysis',
+            messages: [],
+            summaries: [],
+            conclusion: '结论：建议继续，但先补上回滚说明和接口测试。',
+            timestamp: new Date('2026-04-11T00:10:00.000Z'),
+          }],
+        })
+        return {
+          output: {
+            summary: 'Discussion completed for disc-1001.',
+          },
+          result: {
+            status: 'completed',
+            payload: {
+              exitCode: 0,
+              summary: 'Discussion completed for disc-1001.',
+            },
+          },
+        }
+      }
+
+      throw new Error(`Unexpected capability ${capability.name}`)
+    })
+
+    const { loopCommand } = await import('../../src/cli/commands/loop.js')
+    const previousCwd = process.cwd()
+
+    try {
+      process.chdir(cwd)
+      await loopCommand.parseAsync(
+        ['node', 'loop', 'confirm', 'loop-confirm-2', '--reject', '--reason', '不同意，先补测试'],
+        { from: 'node' }
+      )
+    } finally {
+      process.chdir(previousCwd)
+    }
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'discuss' },
+      expect.objectContaining({
+        topic: expect.stringContaining('不同意，先补测试'),
+      }),
+      expect.any(Object)
+    )
+
+    const content = readFileSync(confirmationPath, 'utf-8')
+    expect(content).toContain('id: hc-pending')
+    expect(content).toContain('status: rejected')
+    expect(content).toContain('decision: rejected')
+    expect(content).toContain('discussion_session_id: disc-1001')
+    expect(content).toContain('status: pending')
+    expect(content).toContain('parent_id: hc-pending')
+
+    const persisted = await state.loadLoopSession('loop-confirm-2')
+    expect(persisted?.humanConfirmations).toHaveLength(2)
+    expect(persisted?.humanConfirmations[0]).toMatchObject({
+      id: 'hc-pending',
+      status: 'rejected',
+      decision: 'rejected',
+      rationale: '不同意，先补测试',
+    })
+    expect(persisted?.humanConfirmations[1]).toMatchObject({
+      parentId: 'hc-pending',
+      discussionSessionId: 'disc-1001',
+      status: 'pending',
+      decision: 'pending',
+    })
   })
 })

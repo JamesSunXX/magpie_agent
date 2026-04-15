@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { formatExpectedLocalDateTime } from '../helpers/local-time.js'
+import { StateManager } from '../../src/state/state-manager.js'
 
 const runCapability = vi.fn()
 const getTypedCapability = vi.fn()
@@ -88,7 +89,7 @@ describe('top-level harness CLI command', () => {
     vi.clearAllMocks()
     process.exitCode = 0
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
-    getTypedCapability.mockReturnValue({ name: 'harness' })
+    getTypedCapability.mockImplementation((_registry, name) => ({ name }))
     listWorkflowSessions.mockResolvedValue([])
     launchMagpieInTmux.mockResolvedValue({
       sessionId: 'harness-tmux-1',
@@ -1605,6 +1606,299 @@ describe('top-level harness CLI command', () => {
 
     expect(logSpy).toHaveBeenCalledWith('No harness sessions found.')
     logSpy.mockRestore()
+  })
+
+  it('approves the linked loop confirmation and resumes harness automatically', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-harness-confirm-approve-'))
+    const state = new StateManager(cwd)
+    await state.initLoopSessions()
+    const loopSessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-approve-1')
+    mkdirSync(loopSessionDir, { recursive: true })
+    const confirmationPath = join(loopSessionDir, 'human_confirmation.md')
+    writeFileSync(confirmationPath, `# Human Confirmation Queue
+
+<!-- MAGPIE_HUMAN_CONFIRMATION_START -->
+
+\`\`\`yaml
+id: hc-loop-1
+session_id: loop-approve-1
+stage: code_development
+status: pending
+decision: pending
+reason: Need one final decision
+next_action: Approve or reject
+created_at: 2026-04-11T00:00:00.000Z
+updated_at: 2026-04-11T00:00:00.000Z
+\`\`\`
+<!-- MAGPIE_HUMAN_CONFIRMATION_END -->
+`, 'utf-8')
+    await state.saveLoopSession({
+      id: 'loop-approve-1',
+      title: 'Loop',
+      goal: 'Ship checkout',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [{
+        id: 'hc-loop-1',
+        sessionId: 'loop-approve-1',
+        stage: 'code_development',
+        status: 'pending',
+        decision: 'pending',
+        reason: 'Need one final decision',
+        artifacts: [],
+        nextAction: 'Approve or reject',
+        createdAt: new Date('2026-04-11T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-11T00:00:00.000Z'),
+      }],
+      artifacts: {
+        sessionDir: loopSessionDir,
+        eventsPath: join(loopSessionDir, 'events.jsonl'),
+        planPath: join(loopSessionDir, 'plan.json'),
+        humanConfirmationPath: confirmationPath,
+      },
+    })
+
+    loadWorkflowSession.mockImplementation(async (_repoCwd, capability, id) => {
+      if (capability === 'harness' && id === 'harness-confirm-1') {
+        return {
+          id: 'harness-confirm-1',
+          capability: 'harness',
+          title: 'Ship checkout v2',
+          createdAt: new Date('2026-04-11T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+          status: 'blocked',
+          currentStage: 'developing',
+          summary: 'Harness paused during loop development stage for human intervention.',
+          artifacts: {
+            loopSessionId: 'loop-approve-1',
+            eventsPath: '/tmp/harness-events.jsonl',
+          },
+          evidence: {
+            input: {
+              goal: 'Ship checkout v2',
+              prdPath: '/tmp/prd.md',
+            },
+            configPath: '/tmp/harness.yaml',
+          },
+        }
+      }
+      if (capability === 'loop' && id === 'loop-approve-1') {
+        return {
+          id: 'loop-approve-1',
+          capability: 'loop',
+          title: 'Loop',
+          createdAt: new Date('2026-04-11T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+          status: 'paused_for_human',
+          currentStage: 'code_development',
+          summary: 'Loop paused for review.',
+          artifacts: {
+            humanConfirmationPath: confirmationPath,
+            sessionDir: loopSessionDir,
+            eventsPath: join(loopSessionDir, 'events.jsonl'),
+            planPath: join(loopSessionDir, 'plan.json'),
+          },
+        }
+      }
+      return null
+    })
+
+    const previousCwd = process.cwd()
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    try {
+      process.chdir(cwd)
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'confirm', 'harness-confirm-1', '--approve'],
+        { from: 'node' }
+      )
+    } finally {
+      process.chdir(previousCwd)
+    }
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'harness' },
+      expect.objectContaining({
+        goal: 'Ship checkout v2',
+        prdPath: '/tmp/prd.md',
+      }),
+      expect.objectContaining({
+        configPath: '/tmp/harness.yaml',
+      })
+    )
+    const content = readFileSync(confirmationPath, 'utf-8')
+    expect(content).toContain('id: hc-loop-1')
+    expect(content).toContain('status: approved')
+    expect(content).toContain('decision: approved')
+  })
+
+  it('rejects the linked loop confirmation, runs auto-discuss, and writes a new pending card', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'magpie-harness-confirm-reject-'))
+    const state = new StateManager(cwd)
+    await state.initLoopSessions()
+    await state.initDiscussions()
+    const loopSessionDir = join(cwd, '.magpie', 'sessions', 'loop', 'loop-reject-1')
+    mkdirSync(loopSessionDir, { recursive: true })
+    const confirmationPath = join(loopSessionDir, 'human_confirmation.md')
+    writeFileSync(confirmationPath, `# Human Confirmation Queue
+
+<!-- MAGPIE_HUMAN_CONFIRMATION_START -->
+
+\`\`\`yaml
+id: hc-loop-2
+session_id: loop-reject-1
+stage: code_development
+status: pending
+decision: pending
+reason: Need one final decision
+next_action: Approve or reject
+created_at: 2026-04-11T00:00:00.000Z
+updated_at: 2026-04-11T00:00:00.000Z
+\`\`\`
+<!-- MAGPIE_HUMAN_CONFIRMATION_END -->
+`, 'utf-8')
+    await state.saveLoopSession({
+      id: 'loop-reject-1',
+      title: 'Loop',
+      goal: 'Ship checkout',
+      prdPath: '/tmp/prd.md',
+      createdAt: new Date('2026-04-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development'],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [{
+        id: 'hc-loop-2',
+        sessionId: 'loop-reject-1',
+        stage: 'code_development',
+        status: 'pending',
+        decision: 'pending',
+        reason: 'Need one final decision',
+        artifacts: [],
+        nextAction: 'Approve or reject',
+        createdAt: new Date('2026-04-11T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-11T00:00:00.000Z'),
+      }],
+      artifacts: {
+        sessionDir: loopSessionDir,
+        eventsPath: join(loopSessionDir, 'events.jsonl'),
+        planPath: join(loopSessionDir, 'plan.json'),
+        humanConfirmationPath: confirmationPath,
+      },
+    })
+
+    loadWorkflowSession.mockImplementation(async (_repoCwd, capability, id) => {
+      if (capability === 'harness' && id === 'harness-confirm-2') {
+        return {
+          id: 'harness-confirm-2',
+          capability: 'harness',
+          title: 'Ship checkout v2',
+          createdAt: new Date('2026-04-11T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+          status: 'blocked',
+          currentStage: 'developing',
+          summary: 'Harness paused during loop development stage for human intervention.',
+          artifacts: {
+            loopSessionId: 'loop-reject-1',
+            eventsPath: '/tmp/harness-events.jsonl',
+          },
+          evidence: {
+            input: {
+              goal: 'Ship checkout v2',
+              prdPath: '/tmp/prd.md',
+            },
+          },
+        }
+      }
+      if (capability === 'loop' && id === 'loop-reject-1') {
+        return {
+          id: 'loop-reject-1',
+          capability: 'loop',
+          title: 'Loop',
+          createdAt: new Date('2026-04-11T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:05:00.000Z'),
+          status: 'paused_for_human',
+          currentStage: 'code_development',
+          summary: 'Loop paused for review.',
+          artifacts: {
+            humanConfirmationPath: confirmationPath,
+            sessionDir: loopSessionDir,
+            eventsPath: join(loopSessionDir, 'events.jsonl'),
+            planPath: join(loopSessionDir, 'plan.json'),
+          },
+        }
+      }
+      return null
+    })
+
+    runCapability.mockImplementation(async (capability) => {
+      if (capability.name === 'discuss') {
+        await state.saveDiscussSession({
+          id: 'disc-harness-1',
+          title: 'Harness auto discussion',
+          createdAt: new Date('2026-04-11T00:10:00.000Z'),
+          updatedAt: new Date('2026-04-11T00:10:00.000Z'),
+          status: 'completed',
+          reviewerIds: ['reviewer-a', 'reviewer-b'],
+          rounds: [{
+            roundNumber: 1,
+            topic: 'Auto discussion',
+            analysis: 'analysis',
+            messages: [],
+            summaries: [],
+            conclusion: '结论：建议继续，但先把接口测试和回滚说明补齐。',
+            timestamp: new Date('2026-04-11T00:10:00.000Z'),
+          }],
+        })
+        return {
+          output: {
+            summary: 'Discussion completed for disc-harness-1.',
+          },
+          result: {
+            status: 'completed',
+            payload: {
+              exitCode: 0,
+              summary: 'Discussion completed for disc-harness-1.',
+            },
+          },
+        }
+      }
+
+      throw new Error(`Unexpected capability ${capability.name}`)
+    })
+
+    const previousCwd = process.cwd()
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    try {
+      process.chdir(cwd)
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'confirm', 'harness-confirm-2', '--reject', '--reason', '不同意，先补接口测试'],
+        { from: 'node' }
+      )
+    } finally {
+      process.chdir(previousCwd)
+    }
+
+    expect(runCapability).toHaveBeenCalledWith(
+      { name: 'discuss' },
+      expect.objectContaining({
+        topic: expect.stringContaining('不同意，先补接口测试'),
+      }),
+      expect.any(Object)
+    )
+    const content = readFileSync(confirmationPath, 'utf-8')
+    expect(content).toContain('id: hc-loop-2')
+    expect(content).toContain('status: rejected')
+    expect(content).toContain('decision: rejected')
+    expect(content).toContain('discussion_session_id: disc-harness-1')
+    expect(content).toContain('parent_id: hc-loop-2')
   })
 })
 

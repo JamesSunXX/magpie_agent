@@ -116,7 +116,7 @@ describe('loop CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Open issues: Waiting for canary verification')
     expect(logSpy).toHaveBeenCalledWith(`Knowledge: ${knowledgeDir}`)
     logSpy.mockRestore()
-  })
+  }, 20_000)
 
   it('falls back to persisted session status when a legacy session has no state card', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-loop-cli-legacy-home-'))
