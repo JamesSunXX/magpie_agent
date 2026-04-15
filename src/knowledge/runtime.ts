@@ -1,9 +1,11 @@
-import { createHash } from 'crypto'
-import { execSync } from 'child_process'
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
-import { basename, join, resolve } from 'path'
+import { join, resolve } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
-import { loadPersistentMemoryContext } from '../memory/runtime.js'
+import {
+  loadPersistentMemoryContext,
+  syncProjectMemoryFromPromotedKnowledge,
+} from '../memory/runtime.js'
+import { getProjectStorageKey } from '../platform/project-identity.js'
 
 export interface KnowledgeArtifacts {
   knowledgeSchemaPath: string
@@ -62,7 +64,7 @@ interface CreateTaskKnowledgeOptions {
   goal: string
 }
 
-interface PromotionResult {
+export interface PromotionResult {
   repoKey: string
   promoted: KnowledgeCandidate[]
   deferred: KnowledgeCandidate[]
@@ -107,36 +109,6 @@ function normalizeKey(input: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-}
-
-function readGitRemote(repoRoot: string): string {
-  try {
-    return execSync('git remote get-url origin', {
-      cwd: resolve(repoRoot),
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-  } catch {
-    return ''
-  }
-}
-
-function normalizeRemoteUrl(remote: string): string {
-  return remote
-    .replace(/^git@github\.com:/, 'github.com/')
-    .replace(/^https?:\/\//, '')
-    .replace(/\.git$/, '')
-    .trim()
-}
-
-function repoKeyFor(repoRoot: string): string {
-  const resolved = resolve(repoRoot)
-  const remote = normalizeRemoteUrl(readGitRemote(resolved))
-  const identity = remote || resolved
-  const nameSource = remote ? remote.split('/').pop() || 'repo' : basename(resolved)
-  const name = normalizeKey(nameSource) || 'repo'
-  const digest = createHash('sha1').update(identity).digest('hex').slice(0, 8)
-  return `${name}-${digest}`
 }
 
 function candidateTopicKey(candidate: KnowledgeCandidate): string {
@@ -413,7 +385,7 @@ export async function promoteKnowledgeCandidates(
   repoRoot: string,
   candidates: KnowledgeCandidate[]
 ): Promise<PromotionResult> {
-  const repoKey = repoKeyFor(repoRoot)
+  const repoKey = getProjectStorageKey(repoRoot)
   const repoDir = join(getMagpieHomeDir(), 'knowledge', repoKey)
   const decisionsDir = join(repoDir, 'decisions')
   const failuresDir = join(repoDir, 'failure-patterns')
@@ -463,6 +435,18 @@ export async function promoteKnowledgeCandidates(
   return { repoKey, promoted, deferred }
 }
 
+export async function promoteKnowledgeCandidatesWithMemorySync(
+  repoRoot: string,
+  candidates: KnowledgeCandidate[]
+): Promise<PromotionResult & { memoryPath: string }> {
+  const result = await promoteKnowledgeCandidates(repoRoot, candidates)
+  const memoryPath = await syncProjectMemoryFromPromotedKnowledge(repoRoot, result.promoted)
+  return {
+    ...result,
+    memoryPath,
+  }
+}
+
 async function readLatestSummary(artifacts: KnowledgeArtifacts): Promise<string> {
   const stageEntries = (await listSummaryNames(artifacts))
     .filter((name) => name.startsWith('stage-'))
@@ -479,7 +463,7 @@ async function readLatestSummary(artifacts: KnowledgeArtifacts): Promise<string>
 }
 
 async function loadGlobalContext(repoRoot: string): Promise<string> {
-  const repoDir = join(getMagpieHomeDir(), 'knowledge', repoKeyFor(repoRoot))
+  const repoDir = join(getMagpieHomeDir(), 'knowledge', getProjectStorageKey(repoRoot))
   const index = stripMarkdown(await safeRead(join(repoDir, 'index.md')))
   const sections: string[] = []
 

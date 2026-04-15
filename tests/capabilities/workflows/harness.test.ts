@@ -33,6 +33,12 @@ vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
       }
       return actual.promoteKnowledgeCandidates(...args)
     }),
+    promoteKnowledgeCandidatesWithMemorySync: vi.fn(async (...args: Parameters<typeof actual.promoteKnowledgeCandidatesWithMemorySync>) => {
+      if (knowledgeMocks.failPromote) {
+        throw new Error('knowledge promotion failed')
+      }
+      return actual.promoteKnowledgeCandidatesWithMemorySync(...args)
+    }),
   }
 })
 
@@ -2355,7 +2361,7 @@ integrations:
       const result = await executeHarness(prepared, ctx)
 
       expect(result.status).toBe('completed')
-      expect(execFileSyncMock).not.toHaveBeenCalled()
+      expect(execFileSyncMock.mock.calls.filter(([file]) => file === 'claude')).toHaveLength(0)
       const selection = readJson<{
         decision: string
         replacements: string[]

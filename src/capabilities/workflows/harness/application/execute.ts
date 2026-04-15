@@ -52,7 +52,7 @@ import { createNotificationRouter } from '../../../../platform/integrations/noti
 import { dispatchStageNotification } from '../../../../platform/integrations/notifications/stage-dispatch.js'
 import {
   createTaskKnowledge,
-  promoteKnowledgeCandidates,
+  promoteKnowledgeCandidatesWithMemorySync,
   updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
   writeTaskKnowledgeFinal,
@@ -1983,7 +1983,7 @@ export async function executeHarness(
         candidates,
         logMessage
       )
-      await promoteKnowledgeCandidates(ctx.cwd, candidates)
+      await promoteKnowledgeCandidatesWithMemorySync(ctx.cwd, candidates)
     } catch {
       return
     }

@@ -6,11 +6,13 @@ import {
   createTaskKnowledge,
   loadInspectSnapshot,
   promoteKnowledgeCandidates,
+  promoteKnowledgeCandidatesWithMemorySync,
   renderKnowledgeContext,
   updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
   type KnowledgeCandidate,
 } from '../../src/knowledge/runtime.js'
+import { getProjectMemoryPath } from '../../src/memory/runtime.js'
 
 describe('knowledge runtime', () => {
   let magpieHome: string | undefined
@@ -151,5 +153,39 @@ describe('knowledge runtime', () => {
 
     const context = await renderKnowledgeContext(artifacts, repoRoot)
     expect(context).toContain('Prefer staged rollout with canary verification before full release.')
+  })
+
+  it('syncs only promoted knowledge into project memory', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-memory-sync-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const repoRoot = join(tmpdir(), 'magpie-knowledge-repo-memory-sync')
+    const decision: KnowledgeCandidate = {
+      type: 'decision',
+      title: 'Prefer staged rollout',
+      summary: 'Ship to canary first, then expand.',
+      sourceSessionId: 'loop-100',
+      status: 'candidate',
+    }
+    const failure: KnowledgeCandidate = {
+      type: 'failure-pattern',
+      title: 'worktree missing',
+      summary: 'Worktree directory was missing before execution started.',
+      topicKey: 'worktree-missing',
+      sourceSessionId: 'loop-101',
+      status: 'candidate',
+    }
+
+    const first = await promoteKnowledgeCandidatesWithMemorySync(repoRoot, [decision, failure])
+    const second = await promoteKnowledgeCandidatesWithMemorySync(repoRoot, [{ ...failure, sourceSessionId: 'loop-102' }])
+
+    const content = readFileSync(getProjectMemoryPath(repoRoot), 'utf-8')
+
+    expect(first.promoted.map((item) => item.type)).toEqual(['decision'])
+    expect(first.deferred.map((item) => item.type)).toEqual(['failure-pattern'])
+    expect(second.promoted.map((item) => item.type)).toEqual(['failure-pattern'])
+    expect(content).toContain('Prefer staged rollout')
+    expect(content).toContain('worktree missing')
+    expect(content.match(/worktree missing/g)).toHaveLength(1)
   })
 })

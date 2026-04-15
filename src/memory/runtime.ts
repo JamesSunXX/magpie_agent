@@ -1,9 +1,8 @@
-import { createHash } from 'crypto'
-import { execSync } from 'child_process'
-import { existsSync, readFileSync, realpathSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { basename, dirname, join, resolve } from 'path'
+import { dirname, join } from 'path'
 import { getMagpieHomeDir } from '../platform/paths.js'
+import { getProjectStorageKey } from '../platform/project-identity.js'
 
 export interface MemoryPaths {
   userPath: string
@@ -13,74 +12,8 @@ export interface MemoryPaths {
 const USER_MEMORY_TEMPLATE = '# User Memory\n\n- Record stable personal preferences here.\n'
 const PROJECT_MEMORY_TEMPLATE = '# Project Memory\n\n- Record stable repository rules and learned practices here.\n'
 
-function normalizeKey(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
-function readGitRemote(repoRoot: string): string {
-  try {
-    return execSync('git remote get-url origin', {
-      cwd: resolve(repoRoot),
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-  } catch {
-    return ''
-  }
-}
-
-function normalizeRemoteUrl(remote: string): string {
-  return remote
-    .replace(/^git@github\.com:/, 'github.com/')
-    .replace(/^https?:\/\//, '')
-    .replace(/\.git$/, '')
-    .trim()
-}
-
-function findProjectRoot(startDir: string): string {
-  const resolved = existsSync(startDir) ? realpathSync(startDir) : resolve(startDir)
-  try {
-    const root = execSync('git rev-parse --show-toplevel', {
-      cwd: resolved,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    if (root) {
-      return existsSync(root) ? realpathSync(root) : root
-    }
-  } catch {
-    // Fallback to directory walk for non-git tests and sandboxes.
-  }
-
-  let current = resolved
-  let candidate = resolved
-  while (true) {
-    if (
-      existsSync(join(current, '.git'))
-      || existsSync(join(current, 'package.json'))
-      || existsSync(join(current, 'AGENTS.md'))
-    ) {
-      candidate = current
-    }
-    const parent = dirname(current)
-    if (parent === current) {
-      return candidate
-    }
-    current = parent
-  }
-}
-
 export function projectMemoryKey(repoRoot: string): string {
-  const resolved = findProjectRoot(repoRoot)
-  const remote = normalizeRemoteUrl(readGitRemote(resolved))
-  const identity = remote || resolved
-  const nameSource = remote ? remote.split('/').pop() || 'repo' : basename(resolved)
-  const name = normalizeKey(nameSource) || 'repo'
-  const digest = createHash('sha1').update(identity).digest('hex').slice(0, 8)
-  return `${name}-${digest}`
+  return getProjectStorageKey(repoRoot)
 }
 
 function readOptionalSync(path: string): string {

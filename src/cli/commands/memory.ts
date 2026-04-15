@@ -5,7 +5,7 @@ import { StateManager } from '../../state/state-manager.js'
 import { listWorkflowSessions } from '../../capabilities/workflows/shared/runtime.js'
 import { parseCommandArgs } from '../../capabilities/workflows/shared/runtime.js'
 import {
-  promoteKnowledgeCandidates,
+  promoteKnowledgeCandidatesWithMemorySync,
   readKnowledgeCandidates,
   type KnowledgeCandidate,
 } from '../../knowledge/runtime.js'
@@ -13,7 +13,6 @@ import {
   ensureMemoryFiles,
   getProjectMemoryPath,
   getUserMemoryPath,
-  syncProjectMemoryFromPromotedKnowledge,
 } from '../../memory/runtime.js'
 
 interface MemoryScopeOptions {
@@ -132,12 +131,11 @@ export async function runMemoryPromote(sessionId: string, cwd = process.cwd()): 
   }
 
   const targetRepoRoot = session.repoRootPath || cwd
-  const result = await promoteKnowledgeCandidates(targetRepoRoot, candidates)
-  const memoryPath = await syncProjectMemoryFromPromotedKnowledge(targetRepoRoot, result.promoted)
+  const result = await promoteKnowledgeCandidatesWithMemorySync(targetRepoRoot, candidates)
 
   console.log(`Promoted: ${result.promoted.length}`)
   console.log(`Deferred: ${result.deferred.length}`)
-  console.log(`Project memory: ${memoryPath}`)
+  console.log(`Project memory: ${result.memoryPath}`)
   console.log(`Repository knowledge key: ${result.repoKey}`)
 }
 

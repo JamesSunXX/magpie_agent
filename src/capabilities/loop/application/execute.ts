@@ -81,7 +81,7 @@ import {
 import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
 import {
   createTaskKnowledge,
-  promoteKnowledgeCandidates,
+  promoteKnowledgeCandidatesWithMemorySync,
   renderKnowledgeContext,
   updateTaskKnowledgeState,
   updateTaskKnowledgeSummary,
@@ -1345,7 +1345,7 @@ async function finalizeLoopKnowledge(
       currentBlocker: approved ? 'None.' : summary,
     }, `Loop state updated for ${approved ? 'completion' : 'failure'}.`)
     await writeTaskKnowledgeFinal(artifacts, content, candidates, logMessage)
-    await promoteKnowledgeCandidates(session.artifacts.repoRootPath || session.artifacts.sessionDir, candidates)
+    await promoteKnowledgeCandidatesWithMemorySync(session.artifacts.repoRootPath || session.artifacts.sessionDir, candidates)
   } catch {
     return
   }

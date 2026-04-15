@@ -66,6 +66,12 @@ vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
       }
       return actual.promoteKnowledgeCandidates(...args)
     }),
+    promoteKnowledgeCandidatesWithMemorySync: vi.fn(async (...args: Parameters<typeof actual.promoteKnowledgeCandidatesWithMemorySync>) => {
+      if (knowledgeMocks.failPromote) {
+        throw new Error('knowledge promotion failed')
+      }
+      return actual.promoteKnowledgeCandidatesWithMemorySync(...args)
+    }),
   }
 })
 
