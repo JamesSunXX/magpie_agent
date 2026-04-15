@@ -10,11 +10,16 @@ vi.mock('child_process', () => ({
     const child = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter
       stderr: EventEmitter
+      stdin: { write: (chunk: string) => void; end: () => void }
       kill: ReturnType<typeof vi.fn>
     }
 
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
+    child.stdin = {
+      write: () => undefined,
+      end: () => undefined,
+    }
     killSpy = vi.fn(() => true)
     child.kill = killSpy
 

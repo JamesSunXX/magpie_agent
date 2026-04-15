@@ -62,11 +62,6 @@ vi.mock('child_process', () => ({
       },
     }
 
-    // Kiro provider passes prompt as argv and won't call stdin.end()
-    if (cmd === 'kiro-cli') {
-      setImmediate(() => finish())
-    }
-
     return child
   })
 }))
@@ -157,10 +152,9 @@ describe('CLI providers image passthrough', () => {
     expect(spawnCalls[0].cmd).toBe('kiro-cli')
     expect(spawnCalls[0].args).toContain('--agent')
     expect(spawnCalls[0].args).toContain('kiro_default')
-    const kiroPromptArg = spawnCalls[0].args[spawnCalls[0].args.length - 1]
-    expect(kiroPromptArg).toContain('@{/tmp/infra.png}')
-    expect(kiroPromptArg).toContain('@{https://example.com/flow2.png}')
-    expect(kiroPromptArg).toContain('基础架构图: /tmp/infra.png')
+    expect(spawnCalls[0].prompt).toContain('@{/tmp/infra.png}')
+    expect(spawnCalls[0].prompt).toContain('@{https://example.com/flow2.png}')
+    expect(spawnCalls[0].prompt).toContain('基础架构图: /tmp/infra.png')
     expect(resolveAgent).toHaveBeenCalled()
   })
 

@@ -119,6 +119,16 @@ export class KiroProvider implements AIProvider {
         return Math.min(10000, Math.max(200, Math.floor(this.timeout / 5)))
     }
 
+    private buildKiroArgs(agent: string): string[] {
+        const args = ['chat', '--no-interactive', '--trust-all-tools']
+        args.push(...this.getModelArgs())
+        args.push('--agent', agent)
+        if (this.session.sessionId && !this.session.isFirstMessage) {
+            args.push('--resume')
+        }
+        return args
+    }
+
     private async retryKiro<T>(fn: () => Promise<T>): Promise<T> {
         return withRetry(fn, {
             backoffMs: KIRO_RETRY_BACKOFF_MS,
@@ -151,15 +161,7 @@ export class KiroProvider implements AIProvider {
         const agent = await this.resolveAgent()
 
         return new Promise((resolve, reject) => {
-            // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
-            const args = ['chat', '--no-interactive', '--trust-all-tools']
-            args.push(...this.getModelArgs())
-            args.push('--agent', agent)
-            if (this.session.sessionId && !this.session.isFirstMessage) {
-                args.push('--resume')
-            }
-            // Pass prompt as argument
-            args.push(prompt)
+            const args = this.buildKiroArgs(agent)
 
             const child = spawn('kiro-cli', args, {
                 cwd: this.cwd,
@@ -207,6 +209,9 @@ export class KiroProvider implements AIProvider {
                 settled = true
                 reject(new Error(`Failed to run kiro-cli: ${err.message}`))
             })
+
+            child.stdin.write(prompt)
+            child.stdin.end()
         })
     }
 
@@ -236,15 +241,7 @@ export class KiroProvider implements AIProvider {
     private async *runKiroStreamOnce(prompt: string): AsyncGenerator<string, void, unknown> {
         const agent = await this.resolveAgent()
 
-        // kiro chat: --no-interactive for non-interactive mode, --trust-all-tools to auto-approve
-        const args = ['chat', '--no-interactive', '--trust-all-tools']
-        args.push(...this.getModelArgs())
-        args.push('--agent', agent)
-        if (this.session.sessionId && !this.session.isFirstMessage) {
-            args.push('--resume')
-        }
-        // Pass prompt as argument
-        args.push(prompt)
+        const args = this.buildKiroArgs(agent)
 
         const child = spawn('kiro-cli', args, {
             cwd: this.cwd,
@@ -309,6 +306,9 @@ export class KiroProvider implements AIProvider {
                 resolveNext({ chunk: null })
             }
         })
+
+        child.stdin.write(prompt)
+        child.stdin.end()
 
         while (!done || chunks.length > 0) {
             if (chunks.length > 0) {

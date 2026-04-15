@@ -5,6 +5,7 @@ import { KiroProvider } from '../../src/providers/kiro.js'
 type MockChild = EventEmitter & {
   stdout: EventEmitter
   stderr: EventEmitter
+  stdin: { write: (chunk: string) => void; end: () => void }
   kill: ReturnType<typeof vi.fn>
 }
 
@@ -18,6 +19,10 @@ function createChild(): MockChild {
   const child = new EventEmitter() as MockChild
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
+  child.stdin = {
+    write: () => undefined,
+    end: () => undefined,
+  }
   child.kill = vi.fn(() => true)
   return child
 }

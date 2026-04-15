@@ -111,7 +111,7 @@ describe('CLI provider invocation smoke tests', () => {
 
   it('invokes kiro with expected command, args, cwd, and prompt', async () => {
     scenarios.push({
-      onStart: (child) => {
+      onStdinEnd: (child) => {
         setImmediate(() => {
           child.stdout.emit('data', Buffer.from('kiro ok'))
           child.emit('close', 0)
@@ -142,13 +142,14 @@ describe('CLI provider invocation smoke tests', () => {
       'claude-sonnet-4-6',
       '--agent',
       'architect',
-      'System: system kiro\n\nuser: check kiro\n\n',
     ])
+    expect(spawnCalls[0]?.prompt).toContain('System: system kiro')
+    expect(spawnCalls[0]?.prompt).toContain('user: check kiro')
   })
 
   it('omits the kiro provider alias from kiro-cli model args', async () => {
     scenarios.push({
-      onStart: (child) => {
+      onStdinEnd: (child) => {
         setImmediate(() => {
           child.stdout.emit('data', Buffer.from('kiro default ok'))
           child.emit('close', 0)
@@ -177,8 +178,9 @@ describe('CLI provider invocation smoke tests', () => {
       '--trust-all-tools',
       '--agent',
       'architect',
-      'System: system kiro default\n\nuser: check default kiro\n\n',
     ])
+    expect(spawnCalls[0]?.prompt).toContain('System: system kiro default')
+    expect(spawnCalls[0]?.prompt).toContain('user: check default kiro')
   })
 
   it('omits the kiro provider alias from kiro-cli stream args', async () => {
@@ -216,8 +218,9 @@ describe('CLI provider invocation smoke tests', () => {
       '--trust-all-tools',
       '--agent',
       'architect',
-      'System: system kiro stream\n\nuser: stream default kiro\n\n',
     ])
+    expect(spawnCalls[0]?.prompt).toContain('System: system kiro stream')
+    expect(spawnCalls[0]?.prompt).toContain('user: stream default kiro')
   })
 
   it('invokes gemini-cli with expected command, args, cwd, and prompt', async () => {
