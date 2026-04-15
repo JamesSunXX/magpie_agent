@@ -56,6 +56,7 @@ interface PersistedHarnessResumeEvidence {
     nextRetryAt?: string
     lastError?: string
     lastReliablePoint?: string
+    processId?: number
   }
 }
 
@@ -445,7 +446,7 @@ async function recordHarnessApprovalDecision(
   decision: 'approved' | 'rejected',
   options: HarnessApprovalCommandOptions
 ): Promise<void> {
-  const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+  const session = await loadHarnessSessionForCommand(sessionId)
   if (!session) {
     console.error(`Harness session not found: ${sessionId}`)
     process.exitCode = 1
@@ -545,6 +546,82 @@ async function printHarnessRoleDetails(roleRoundsDir: string | undefined, cycle?
 
 async function runHarness(input: HarnessInput, options: HarnessCommandOptions): Promise<void> {
   return runHarnessWithSession(input, options)
+}
+
+function readForegroundHarnessProcessId(session: WorkflowSession): number | null {
+  if (session.artifacts.executionHost !== 'foreground') {
+    return null
+  }
+
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  const processId = evidence?.runtime?.processId
+  return Number.isInteger(processId) && Number(processId) > 0
+    ? Number(processId)
+    : null
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function reconcileForegroundHarnessSession(session: WorkflowSession): Promise<WorkflowSession> {
+  if (session.status !== 'in_progress') {
+    return session
+  }
+
+  const processId = readForegroundHarnessProcessId(session)
+  if (!processId || processId === process.pid || isProcessAlive(processId)) {
+    return session
+  }
+
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  const requeued: WorkflowSession = {
+    ...session,
+    status: 'waiting_next_cycle',
+    updatedAt: new Date(),
+    summary: 'Harness foreground runner disappeared; queued to resume.',
+    evidence: evidence
+      ? {
+        ...evidence,
+        runtime: {
+          ...(evidence.runtime || {}),
+          lastError: 'foreground_process_missing',
+          lastReliablePoint: 'waiting_next_cycle',
+        },
+      }
+      : session.evidence,
+  }
+
+  await persistWorkflowSession(process.cwd(), requeued)
+  await appendWorkflowEvent(process.cwd(), 'harness', session.id, {
+    timestamp: new Date(),
+    type: 'session_requeued',
+    stage: session.currentStage,
+    summary: requeued.summary,
+    details: {
+      reason: 'foreground_process_missing',
+      processId,
+    },
+  })
+  return requeued
+}
+
+async function loadHarnessSessionForCommand(sessionId: string): Promise<WorkflowSession | null> {
+  const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+  if (!session) {
+    return null
+  }
+  return reconcileForegroundHarnessSession(session)
+}
+
+async function listHarnessSessionsForCommand(): Promise<WorkflowSession[]> {
+  const sessions = await listWorkflowSessions(process.cwd(), 'harness')
+  return Promise.all(sessions.map((session) => reconcileForegroundHarnessSession(session)))
 }
 
 async function runHarnessWithSession(
@@ -649,8 +726,10 @@ async function runHarnessWithSession(
 
   const sigintHandler = () => handleSignal('SIGINT')
   const sigtermHandler = () => handleSignal('SIGTERM')
+  const sighupHandler = () => handleSignal('SIGHUP')
   process.on('SIGINT', sigintHandler)
   process.on('SIGTERM', sigtermHandler)
+  process.on('SIGHUP', sighupHandler)
 
   try {
     const execution = (async () => runCapability(capability, input, ctx))()
@@ -711,6 +790,7 @@ async function runHarnessWithSession(
     progressReporter.stop()
     process.off('SIGINT', sigintHandler)
     process.off('SIGTERM', sigtermHandler)
+    process.off('SIGHUP', sighupHandler)
     if (sessionId) {
       if (previousSessionId === undefined) {
         delete process.env.MAGPIE_SESSION_ID
@@ -822,7 +902,7 @@ harnessCommand
   .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
   .option('--node <id>', 'Show a specific graph node when the session has a graph')
   .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -902,7 +982,7 @@ harnessCommand
   .argument('<sessionId>', 'Harness session ID')
   .option('-c, --config <path>', 'Path to config file')
   .action(async (sessionId: string, options: Pick<HarnessCommandOptions, 'config'>) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -929,7 +1009,7 @@ harnessCommand
   .argument('<sessionId>', 'Harness session ID')
   .option('--once', 'Print current events and exit')
   .action(async (sessionId: string, options: { once?: boolean }) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -953,7 +1033,7 @@ harnessCommand
     await followHarnessEventStream({
       sessionId,
       initialSession: session,
-      loadSession: async (id) => loadWorkflowSession(process.cwd(), 'harness', id),
+      loadSession: async (id) => loadHarnessSessionForCommand(id),
       once: !!options.once,
     })
   })
@@ -965,7 +1045,7 @@ harnessCommand
   .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
   .option('--node <id>', 'Show a specific graph node when the session has a graph')
   .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -1032,7 +1112,7 @@ harnessCommand
   .command('list')
   .description('List persisted harness sessions')
   .action(async () => {
-    const sessions = await listWorkflowSessions(process.cwd(), 'harness')
+    const sessions = await listHarnessSessionsForCommand()
     if (sessions.length === 0) {
       console.log('No harness sessions found.')
       return

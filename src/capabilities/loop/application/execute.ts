@@ -541,19 +541,47 @@ function renderEvidence(stageRun: StageRunResult): string {
   ].filter(Boolean).join('\n')
 }
 
+const GENERATED_VERIFICATION_START = '<!-- MAGPIE_GENERATED_VERIFICATION_START -->'
+const GENERATED_VERIFICATION_END = '<!-- MAGPIE_GENERATED_VERIFICATION_END -->'
+
 function mergeStageReportWithVerification(stageReport: string, testOutput: string): string {
   if (!testOutput.trim()) {
     return stageReport
   }
 
-  const base = stageReport.trimEnd()
+  const base = stripGeneratedVerification(stageReport)
   return [
     base,
     '',
+    GENERATED_VERIFICATION_START,
     '# Verification',
     '',
     testOutput,
+    GENERATED_VERIFICATION_END,
   ].join('\n')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function stripGeneratedVerification(stageReport: string): string {
+  const trimmed = stageReport.trimEnd()
+  const markedBlock = new RegExp(
+    `${escapeRegExp(GENERATED_VERIFICATION_START)}[\\s\\S]*?${escapeRegExp(GENERATED_VERIFICATION_END)}\\s*`,
+    'g'
+  )
+  if (markedBlock.test(trimmed)) {
+    return trimmed.replace(markedBlock, '').trimEnd()
+  }
+
+  const legacyGeneratedVerification = /\n?#{1,6}\s+Verification\b\s*\n+\s*##\s+(?:Unit Test|Integration Test)\s+\([\s\S]*$/im
+  const legacyMatch = legacyGeneratedVerification.exec(trimmed)
+  if (!legacyMatch || legacyMatch.index === undefined) {
+    return trimmed
+  }
+
+  return trimmed.slice(0, legacyMatch.index).trimEnd()
 }
 
 function buildLoopRoleOpenIssuesMarkdown(issues: Array<{

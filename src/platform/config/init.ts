@@ -207,6 +207,7 @@ function buildDefaultNotificationsConfig() {
     stage_ai: {
       enabled: false,
       provider: 'codex',
+      timeout_ms: 2000,
       max_summary_chars: 900,
       include_loop: true,
       include_harness: true,
@@ -587,6 +588,11 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   if (isObjectRecord(capabilities.loop)) {
     upgradeCodexModelField(capabilities.loop, 'planner_model', 'capabilities.loop.planner_model', changes)
     upgradeCodexModelField(capabilities.loop, 'executor_model', 'capabilities.loop.executor_model', changes)
+    const commands = isObjectRecord(capabilities.loop.commands) ? capabilities.loop.commands : undefined
+    if (typeof commands?.integration_test === 'string' && commands.integration_test.trim() === 'npm run test:run -- tests/integration') {
+      commands.integration_test = 'npm run test:run -- tests/e2e'
+      changes.push('Updated capabilities.loop.commands.integration_test to the e2e default.')
+    }
   }
   if (isObjectRecord(capabilities.quality) && isObjectRecord(capabilities.quality.unitTestEval)) {
     upgradeCodexModelField(capabilities.quality.unitTestEval, 'provider', 'capabilities.quality.unitTestEval.provider', changes)
@@ -866,6 +872,7 @@ integrations:
     stage_ai:
       enabled: false
       provider: "codex"
+      timeout_ms: 2000
       max_summary_chars: 900
       include_loop: true
       include_harness: true

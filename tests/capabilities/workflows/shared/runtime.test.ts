@@ -204,11 +204,11 @@ describe('workflow shared runtime helpers', () => {
     }
 
     expect(result.record.signature).toBe(
-      'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
+      'code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
     )
     expect(index.entries).toHaveLength(1)
     expect(index.entries[0]).toMatchObject({
-      signature: 'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
+      signature: 'code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
       count: 1,
       capabilities: {
         loop: 1,

@@ -3,6 +3,7 @@ import {
   buildFailureSignature,
   classifyFailureCategory,
   normalizeFailureMessage,
+  normalizeFailureSignature,
 } from '../../../src/core/failures/classifier.js'
 
 describe('failure classifier', () => {
@@ -87,8 +88,32 @@ describe('failure classifier', () => {
       rawError: 'ENOENT: no such file or directory, open /tmp/demo/project/.magpie/sessions/loop/loop-abc123/session.json',
     })
 
-    expect(signature).toContain('loop|code_development|environment|')
+    expect(signature).toContain('code_development|environment|')
+    expect(signature.startsWith('loop|')).toBe(false)
     expect(signature).not.toContain('/tmp/demo/project')
     expect(signature).not.toContain('loop-abc123')
+  })
+
+  it('normalizes legacy capability-prefixed signatures into the canonical schema', () => {
+    expect(normalizeFailureSignature(
+      'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
+    )).toBe('code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.')
+
+    expect(normalizeFailureSignature(
+      'code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
+    )).toBe('code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.')
+  })
+
+  it('strips pipe characters from normalized messages before building signatures', () => {
+    const signature = buildFailureSignature({
+      capability: 'harness',
+      stage: 'reviewing',
+      category: 'prompt_or_parse',
+      reason: 'Validator output was malformed',
+      rawError: 'Decision: approved | missing rationale | missing unresolved items',
+    })
+
+    expect(signature.split('|')).toHaveLength(3)
+    expect(signature).toBe('reviewing|prompt_or_parse|decision: approved / missing rationale / missing unresolved items')
   })
 })

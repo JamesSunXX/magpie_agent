@@ -8,6 +8,12 @@ interface SignatureInput {
   rawError?: string
 }
 
+const LEGACY_SIGNATURE_CAPABILITIES = new Set<FailureFactInput['capability']>([
+  'loop',
+  'harness',
+  'harness-server',
+])
+
 const TRANSIENT_PATTERNS = [
   'timeout',
   'timed out',
@@ -67,6 +73,7 @@ export function normalizeFailureMessage(input: string): string {
       .replace(/(?:[a-z]:)?\/[^\s:]+/gi, '<path>')
       .replace(/\b(?:loop|harness)(?:-[a-z0-9]{4,})+\b/gi, '<session>')
       .replace(/:\d+(?::\d+)?/g, ':<line>')
+      .replace(/\|+/g, ' / ')
       .replace(/\s+/g, ' ')
       .trim()
 
@@ -76,6 +83,14 @@ export function normalizeFailureMessage(input: string): string {
   }
 
   return ''
+}
+
+export function normalizeFailureSignature(signature: string): string {
+  const parts = signature.split('|')
+  if (parts.length >= 4 && LEGACY_SIGNATURE_CAPABILITIES.has(parts[0] as FailureFactInput['capability'])) {
+    return parts.slice(1).join('|')
+  }
+  return signature
 }
 
 export function classifyFailureCategory(
@@ -126,10 +141,9 @@ export function classifyFailureCategory(
 
 export function buildFailureSignature(input: SignatureInput): string {
   const keyMessage = normalizeFailureMessage(input.rawError || input.reason) || normalizeFailureMessage(input.reason)
-  return [
-    input.capability,
+  return normalizeFailureSignature([
     input.stage,
     input.category,
     keyMessage || 'unknown',
-  ].join('|')
+  ].join('|'))
 }

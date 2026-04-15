@@ -154,4 +154,20 @@ describe('loadConfig - validation', () => {
     vi.mocked(parse).mockReturnValue(bad)
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('capabilities.harness.validator_checks entries must include a non-empty tool or model')
   })
+
+  it('throws when integrations.notifications.stage_ai.timeout_ms is not positive', () => {
+    const bad = structuredClone(validConfig)
+    bad.integrations.notifications = {
+      enabled: true,
+      stage_ai: {
+        enabled: true,
+        provider: 'codex',
+        timeout_ms: 0,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'integrations.notifications.stage_ai.timeout_ms must be a positive number'
+    )
+  })
 })

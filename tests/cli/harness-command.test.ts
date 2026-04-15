@@ -214,6 +214,62 @@ describe('top-level harness CLI command', () => {
     }
   })
 
+  it('preserves persisted reviewer selection mode when resuming', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-blocked-2',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+      status: 'blocked',
+      currentStage: 'reviewing',
+      summary: 'Harness paused during review.',
+      artifacts: {
+        eventsPath: '/tmp/events.jsonl',
+      },
+      evidence: {
+        input: {
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+          models: ['kiro', 'codex'],
+          modelsExplicit: false,
+        },
+        configPath: '/tmp/persisted.yaml',
+      },
+    })
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-blocked-2'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).toHaveBeenCalledWith(
+        { name: 'harness' },
+        expect.objectContaining({
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+          models: ['kiro', 'codex'],
+          modelsExplicit: false,
+        }),
+        expect.objectContaining({
+          configPath: '/tmp/persisted.yaml',
+        })
+      )
+      expect(process.env.MAGPIE_SESSION_ID).toBe(previousSessionId)
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+      logSpy.mockRestore()
+    }
+  })
+
   it('queues submit through the harness server when the background service is running', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     isHarnessServerRunning.mockResolvedValue(true)
@@ -967,6 +1023,109 @@ describe('top-level harness CLI command', () => {
     logSpy.mockRestore()
   })
 
+  it('reconciles stale foreground sessions before recording approval decisions', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-1',
+      capability: 'harness',
+      status: 'in_progress',
+      currentStage: 'reviewing',
+      createdAt: new Date('2026-04-13T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-13T00:05:00.000Z'),
+      title: 'Checkout',
+      summary: 'Still reviewing.',
+      artifacts: {
+        graphPath: '/tmp/harness-1/graph.json',
+        eventsPath: '/tmp/harness-1/events.jsonl',
+        executionHost: 'foreground',
+      },
+      evidence: {
+        runtime: {
+          processId: 999999,
+          retryCount: 0,
+          lastReliablePoint: 'reviewing',
+        },
+      },
+    })
+    loadHarnessGraphArtifact.mockResolvedValue({
+      graphId: 'checkout-v2',
+      title: 'Checkout V2',
+      goal: 'Ship checkout v2 as a graph',
+      status: 'active',
+      approvalGates: [
+        {
+          gateId: 'confirm-graph',
+          label: 'Confirm graph',
+          scope: 'graph_confirmation',
+          status: 'pending',
+        },
+      ],
+      createdAt: '2026-04-13T00:00:00.000Z',
+      updatedAt: '2026-04-13T00:05:00.000Z',
+      rollup: {
+        total: 1,
+        pending: 0,
+        ready: 0,
+        running: 0,
+        waitingRetry: 0,
+        waitingApproval: 1,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+      },
+      nodes: [
+        {
+          id: 'build-ui',
+          title: 'Build UI',
+          goal: 'Build checkout screens',
+          type: 'feature',
+          dependencies: [],
+          state: 'waiting_approval',
+          riskMarkers: [],
+          approvalGates: [],
+          statusReason: 'Waiting for graph approval: Confirm graph',
+        },
+      ],
+      version: 1,
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    await harnessCommand.parseAsync(
+      ['node', 'harness', 'approve', 'harness-1'],
+      { from: 'node' }
+    )
+
+    expect(persistWorkflowSession).toHaveBeenNthCalledWith(
+      1,
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-1',
+        status: 'waiting_next_cycle',
+        summary: 'Harness foreground runner disappeared; queued to resume.',
+      }),
+    )
+    expect(appendWorkflowEvent).toHaveBeenNthCalledWith(
+      1,
+      process.cwd(),
+      'harness',
+      'harness-1',
+      expect.objectContaining({
+        type: 'session_requeued',
+        summary: 'Harness foreground runner disappeared; queued to resume.',
+      }),
+    )
+    expect(persistWorkflowSession).toHaveBeenNthCalledWith(
+      2,
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-1',
+        status: 'waiting_next_cycle',
+        summary: 'Approved graph gate.',
+      }),
+    )
+    logSpy.mockRestore()
+  })
+
   it('sets a failing exit code when submit returns failed status', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     process.exitCode = 0
@@ -1099,6 +1258,179 @@ describe('top-level harness CLI command', () => {
     logSpy.mockRestore()
     errorSpy.mockRestore()
     exitSpy.mockRestore()
+  })
+
+  it('queues the session to resume when submit receives SIGHUP', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      process.exitCode = Number(code ?? 0)
+      return undefined as never
+    }) as typeof process.exit)
+    process.exitCode = 0
+
+    let releaseRun: (() => void) | undefined
+    runCapability.mockImplementation(async (_capability, _input, ctx) => {
+      const reporter = ctx.metadata?.harnessProgress as {
+        onSessionUpdate?: (session: Record<string, unknown>) => void
+      }
+      reporter.onSessionUpdate?.({
+        id: 'harness-live',
+        status: 'in_progress',
+        currentStage: 'developing',
+        artifacts: {
+          eventsPath: '/tmp/live-events.jsonl',
+        },
+      })
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve
+      })
+      return {
+        output: {
+          summary: 'Harness approved after 1 cycle(s).',
+        },
+        result: { status: 'completed' },
+      }
+    })
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-live',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z'),
+      status: 'in_progress',
+      currentStage: 'developing',
+      summary: 'Running loop development stage.',
+      artifacts: {
+        eventsPath: '/tmp/live-events.jsonl',
+      },
+      evidence: {
+        input: {
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        },
+        runtime: {
+          retryCount: 0,
+          lastReliablePoint: 'developing',
+        },
+      },
+    })
+
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+    const parsePromise = harnessCommand.parseAsync(
+      ['node', 'harness', 'submit', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith('Session: harness-live')
+    })
+    process.emit('SIGHUP')
+    await vi.waitFor(() => {
+      expect(persistWorkflowSession).toHaveBeenCalled()
+    })
+    releaseRun?.()
+    await parsePromise
+
+    expect(process.exitCode).toBe(130)
+    expect(persistWorkflowSession).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        id: 'harness-live',
+        status: 'waiting_next_cycle',
+        summary: 'Harness session was interrupted and queued to resume.',
+      })
+    )
+    expect(appendWorkflowEvent).toHaveBeenCalledWith(
+      process.cwd(),
+      'harness',
+      'harness-live',
+      expect.objectContaining({
+        type: 'session_requeued',
+        summary: 'Harness session was interrupted and queued to resume.',
+        details: {
+          signal: 'SIGHUP',
+        },
+      })
+    )
+    expect(logSpy).toHaveBeenCalledWith('Status: waiting_next_cycle')
+    expect(exitSpy).toHaveBeenCalledWith(130)
+
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+    exitSpy.mockRestore()
+  })
+
+  it('requeues a stale foreground session before showing status', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      _pid: number,
+      _signal?: number | NodeJS.Signals
+    ) => {
+      const error = new Error('process missing') as NodeJS.ErrnoException
+      error.code = 'ESRCH'
+      throw error
+    }) as typeof process.kill)
+
+    loadWorkflowSession.mockResolvedValue({
+      id: 'harness-stale',
+      capability: 'harness',
+      title: 'Ship checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z'),
+      status: 'in_progress',
+      currentStage: 'developing',
+      summary: 'Running loop development stage.',
+      artifacts: {
+        eventsPath: '/tmp/live-events.jsonl',
+        executionHost: 'foreground',
+      },
+      evidence: {
+        input: {
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        },
+        runtime: {
+          retryCount: 0,
+          lastReliablePoint: 'developing',
+          processId: 424242,
+        },
+      },
+    })
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'status', 'harness-stale'],
+        { from: 'node' }
+      )
+
+      expect(persistWorkflowSession).toHaveBeenCalledWith(
+        process.cwd(),
+        expect.objectContaining({
+          id: 'harness-stale',
+          status: 'waiting_next_cycle',
+          summary: 'Harness foreground runner disappeared; queued to resume.',
+        })
+      )
+      expect(appendWorkflowEvent).toHaveBeenCalledWith(
+        process.cwd(),
+        'harness',
+        'harness-stale',
+        expect.objectContaining({
+          type: 'session_requeued',
+          summary: 'Harness foreground runner disappeared; queued to resume.',
+          details: expect.objectContaining({
+            reason: 'foreground_process_missing',
+            processId: 424242,
+          }),
+        })
+      )
+      expect(logSpy).toHaveBeenCalledWith('Status: waiting_next_cycle')
+    } finally {
+      killSpy.mockRestore()
+      logSpy.mockRestore()
+    }
   })
 
   it('prints a deterministic error when status session is missing', async () => {

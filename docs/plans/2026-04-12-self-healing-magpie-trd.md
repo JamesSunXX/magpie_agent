@@ -141,7 +141,7 @@
   "capability": "harness",
   "stage": "code_development",
   "timestamp": "2026-04-12T10:00:00.000Z",
-  "signature": "harness|code_development|workflow_defect|loop_failed",
+  "signature": "code_development|workflow_defect|loop_failed",
   "category": "workflow_defect",
   "reason": "Loop failed during code_development and requires manual follow-up.",
   "retryable": false,
@@ -151,7 +151,7 @@
     ".magpie/sessions/harness/harness-456/events.jsonl"
   ],
   "metadata": {
-    "sourceFailureSignature": "loop|code_development|quality|green_test_failed",
+    "sourceFailureSignature": "code_development|workflow_defect|loop_failed",
     "countTowardFailureIndex": false,
     "loopSessionId": "loop-123"
   },
@@ -164,6 +164,7 @@
 - Domain A 不直接改 session 状态。
 - Domain A 不直接写 workflow event。
 - Domain A 只给出分类、账本结果和动作建议；最终状态迁移由接入层负责。
+- `signature` 第一版默认只包含 `stage`、`category` 和归一化后的关键报错；如果读到旧的 capability 前缀签名，shared runtime 和 ledger 要在读写时统一归一化；如果 `harness` 只是转述内层 `loop` 已有失败，则直接复用 `sourceFailureSignature`，再用 `countTowardFailureIndex=false` 避免同一根因重复累计。
 
 ### 3. 账本写入职责
 
@@ -180,7 +181,7 @@
 - `loop`、`harness`、`harness-server` 不得自己直接写 `.magpie/failure-index.json`。
 - 会话目录路径由现有 session runtime 提供，不能在每个能力里重复拼字符串。
 - 仓库级索引必须按 `signature` 聚合，而不是按 `failureId` 聚合。
-- 相同签名跨 capability 也要落在同一聚合主题下，但要保留 capability 计数明细。
+- 只有显式复用源签名的跨 capability 派生失败，才会和原始失败落在同一聚合主题下；仓库级索引仍要保留 capability 计数明细。
 
 路径归属示例：
 
@@ -285,7 +286,7 @@
 | `signature` | 稳定失败签名 |
 | `category` | 当前主分类 |
 | `count` | 总出现次数 |
-| `capabilities` | 各 capability 次数 |
+| `capabilities` | 各 capability 次数，固定为 `{ "loop"?: number, "harness"?: number, "harness-server"?: number }` |
 | `latestReason` | 最近一次原因摘要 |
 | `lastSeenAt` | 最近出现时间 |
 | `latestEvidencePaths` | 最近一次证据路径 |
@@ -299,13 +300,14 @@
 | `firstSeenAt` | 第一次出现时间 |
 | `lastSessionId` | 最近一次命中的 session id |
 | `recentSessionIds` | 最近三次命中的 session id |
-| `recentEvidencePaths` | 最近三次 evidence 路径 |
+| `recentEvidencePaths` | 最近三次命中的唯一路径，使用扁平字符串数组 |
 | `candidateForSelfRepair` | 当前是否满足自修候选条件 |
 | `lastRecoveryAction` | 最近一次恢复动作 |
 
 约束：
 
 - 并发写入时以“读最新、改内存、原子回写”为最低保证。
+- `.magpie/failure-index.lock` 的等待必须有上限；第一版超过 5 秒还拿不到锁时，当前写入直接失败，不能无限挂起。
 - 允许保留最近一次原因摘要，但不能覆盖累计次数。
 - 知识层只消费这个索引，不直接扫每个 session 的失败目录做聚合。
 
@@ -415,8 +417,19 @@
 - `npm run test:run -- tests/core/failures/classifier.test.ts tests/core/failures/ledger.test.ts tests/core/failures/recovery-policy.test.ts`
 - `npm run test:run -- tests/capabilities/loop/test-execution.test.ts tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness.test.ts tests/capabilities/workflows/harness-server.test.ts tests/state/state-manager.test.ts`
 - `npm run test:run`
+- `npm run test:coverage`
 - `npm run build`
+- `npm run check:boundaries`
 - `npm run check:docs`
+
+## `trd_generation` 阶段出口检查表
+
+只有下面 4 项同时满足，这一阶段才算真正结束，可进入 `code_development`：
+
+1. `FailureFactInput`、`FailureRecord`、`RecoveryDecision` 的字段名和责任边界已经固定，开发阶段不再重新定义接口。
+2. 三条主路径各自的失败上报时机，以及 `paused_for_human`、正常恢复、真正失败的边界已经固定，不会再把恢复语义误记成失败。
+3. 会话级、仓库级、服务级三类失败写盘路径和 `.magpie/failure-index.lock` 约束已经写清楚，不会在实现阶段再冒出第二套写入口。
+4. 开发顺序、开工检查项和最低验收标准已经和实施计划对齐；如果后续要新增字段或文件，必须先回补实施计划里的归属表。
 
 ## 开发阶段交接结论
 

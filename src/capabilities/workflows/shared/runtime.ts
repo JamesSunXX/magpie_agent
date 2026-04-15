@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto'
 import { getRepoCapabilitySessionsDir, getRepoMagpieDir, getRepoSessionDir } from '../../../platform/paths.js'
 import type { SafetyConfig } from '../../../platform/config/types.js'
 import { appendFailureRecord, getFailureOccurrenceCount } from '../../../core/failures/ledger.js'
-import { buildFailureSignature, classifyFailureCategory } from '../../../core/failures/classifier.js'
+import { buildFailureSignature, classifyFailureCategory, normalizeFailureSignature } from '../../../core/failures/classifier.js'
 import { decideRecovery } from '../../../core/failures/recovery-policy.js'
 import type { FailureFactInput, FailureRecord } from '../../../core/failures/types.js'
 
@@ -192,9 +192,13 @@ export async function appendWorkflowFailure(
   recordPath: string
   indexPath: string
 }> {
+  const metadata = fact.metadata ? { ...fact.metadata } : undefined
+  if (typeof metadata?.sourceFailureSignature === 'string') {
+    metadata.sourceFailureSignature = normalizeFailureSignature(metadata.sourceFailureSignature)
+  }
   const category = classifyFailureCategory(fact)
-  const signature = typeof fact.metadata?.sourceFailureSignature === 'string'
-    ? fact.metadata.sourceFailureSignature
+  const signature = typeof metadata?.sourceFailureSignature === 'string'
+    ? metadata.sourceFailureSignature
     : buildFailureSignature({
       capability: fact.capability,
       stage: fact.stage,
@@ -221,7 +225,7 @@ export async function appendWorkflowFailure(
     selfHealCandidate: decision.candidateForSelfRepair,
     lastReliablePoint: fact.lastReliablePoint,
     evidencePaths: fact.evidencePaths,
-    metadata: fact.metadata || {},
+    metadata: metadata || {},
     recoveryAction: decision.action,
   }
   const paths = resolveWorkflowFailureArtifacts(cwd, fact.capability, fact.sessionId)

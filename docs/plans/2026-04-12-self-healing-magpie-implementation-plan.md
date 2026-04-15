@@ -167,8 +167,8 @@
 
 | Domain | 唯一职责归属 | 直接验收 |
 | --- | --- | --- |
-| Domain A | `src/core/failures/types.ts`、`src/core/failures/classifier.ts`、`src/core/failures/ledger.ts`、`src/core/failures/recovery-policy.ts`、`src/core/failures/diagnostics.ts` | `tests/core/failures/classifier.test.ts`、`tests/core/failures/ledger.test.ts`、`tests/core/failures/recovery-policy.test.ts` |
-| Domain B | `src/state/types.ts`、`src/capabilities/workflows/shared/runtime.ts`、`src/capabilities/workflows/harness/types.ts` | `tests/state/state-manager.test.ts`，以及 `tests/capabilities/workflows/harness.test.ts` / `tests/capabilities/workflows/harness-server.test.ts` 里对 artifact 暴露和路径约定的断言 |
+| Domain A | `src/core/failures/types.ts`、`src/core/failures/classifier.ts`、`src/core/failures/ledger.ts`、`src/core/failures/recovery-policy.ts`、`src/core/failures/diagnostics.ts` | `tests/core/failures/classifier.test.ts`、`tests/core/failures/ledger.test.ts`、`tests/core/failures/recovery-policy.test.ts`、`tests/core/failures/diagnostics.test.ts` |
+| Domain B | `src/state/types.ts`、`src/capabilities/workflows/shared/runtime.ts`、`src/capabilities/workflows/harness/types.ts` | `tests/state/state-manager.test.ts`、`tests/capabilities/workflows/shared/runtime.test.ts`，以及 `tests/capabilities/workflows/harness.test.ts` / `tests/capabilities/workflows/harness-server.test.ts` 里对 artifact 暴露和路径约定的断言 |
 | Domain C | `src/capabilities/loop/application/execute.ts`、`src/capabilities/workflows/harness/application/execute.ts`、`src/capabilities/workflows/harness-server/runtime.ts`、`src/capabilities/loop/domain/test-execution.ts` | `tests/capabilities/loop/test-execution.test.ts`、`tests/capabilities/loop/loop.test.ts`、`tests/capabilities/workflows/harness.test.ts`、`tests/capabilities/workflows/harness-server.test.ts` |
 | Domain D | `src/knowledge/runtime.ts`、`README.md`、`docs/references/capabilities.md` | `tests/knowledge/runtime.test.ts`、`npm run check:docs` |
 
@@ -200,6 +200,7 @@
 - 下方正文已经按建议交付顺序排布；如果后续实现要插补字段，仍以“依赖顺序”和文末“交付顺序建议”为准
 - 如果后续实现发现字段不够，应优先回补 Domain A / Domain B 的契约，再改接入层逻辑
 - 对已有 session 和已有 `.magpie/failure-index.json` 保持兼容；缺失新字段时按默认空值处理，不要求一次性迁移旧数据
+- 入口文档同步以 `ARCHITECTURE.md`、`README.md`、`docs/references/capabilities.md` 为准；如果失败职责或模块落点调整，这三份文档要和本节一起更新，避免只在计划里生效
 
 ### `domain_partition` 阶段完成判定
 
@@ -209,6 +210,15 @@
 2. 每个 Domain 都能在“架构与 TRD 对齐结果”里找到对应约束，说明后续实现不会违反仓库分层，也不会重拆 TRD 已经固定的接口。
 3. `loop`、`harness`、`harness-server` 的失败接入点都已经被 Domain C 覆盖，且账本、分类、恢复决策仍分别收敛到 Domain A / B，不留“失败但没人负责”的空档。
 4. 下一个阶段只允许细化接口和写盘约束，不允许再改四域划分、文件归属和依赖顺序；如果要新增文件，必须先回补本节。
+
+### `trd_generation` 阶段完成判定
+
+以下条件同时满足，才算这一阶段完成，可进入 `code_development`：
+
+1. Domain C 上报给 Domain A 的事实字段、Domain A 返回给接入层的标准记录和恢复决策字段，都已经在 TRD 中固定到明确字段名，不需要开发阶段再猜接口。
+2. `loop`、`harness`、`harness-server` 三条主路径的失败上报时机、`paused_for_human` / 正常恢复 / 真正失败的边界，以及派生失败不重复计数的规则都已经写清楚。
+3. 会话级失败记录、仓库级失败索引、服务级无会话失败三类写盘路径的所有权、锁文件约束和原子写入要求都已经在 TRD 中固定，不允许开发阶段再新增第二套入口。
+4. 开发顺序、开工前检查项和最低验收标准都已经在 TRD 中锁定；后续如果要新增字段或文件，必须先回补本计划里的归属表和契约，再进入实现。
 
 ## Phase 1：统一失败结构
 
@@ -234,6 +244,16 @@
   - `degrade_path`
   - `spawn_self_repair_candidate`
   - `block_for_human`
+- [ ] 定义 `FailureFactInput` 最小字段，固定 Domain C 只能按这套事实接口上报：
+  - `sessionId`
+  - `capability`
+  - `stage`
+  - `reason`
+  - `rawError`
+  - `retryableHint`
+  - `lastReliablePoint`
+  - `evidencePaths`
+  - `metadata`
 - [ ] 定义 `FailureRecord` 最小字段：
   - `id`
   - `sessionId`
@@ -248,6 +268,12 @@
   - `lastReliablePoint`
   - `evidencePaths`
   - `metadata`
+- [ ] 定义 `RecoveryDecision` 最小字段，避免 `harness-server` 和共享写入层各自补一套：
+  - `action`
+  - `retryable`
+  - `candidateForSelfRepair`
+  - `reason`
+  - `diagnosticChecks`
 - [ ] 给 `LoopSession` 增加失败产物路径字段：
   - `artifacts.failureLogDir`
   - `artifacts.failureIndexPath`
@@ -260,7 +286,7 @@
   - 没有可用 sessionId 的服务级失败：`.magpie/harness-server/failures/<failureId>.json`
 - [ ] 兼容旧 session：读到缺失 `failureLogDir` / `failureIndexPath` 的历史会话时，运行时要按默认路径补齐，不要求迁移旧文件
 - [ ] 运行：
-  - `npm run test:run -- tests/state/state-manager.test.ts`
+  - `npm run test:run -- tests/state/state-manager.test.ts tests/capabilities/workflows/shared/runtime.test.ts`
 
 ## Phase 2：失败分类器
 
@@ -286,6 +312,7 @@
   - `stage`
   - `category`
   - 归一化后的首个关键报错
+- [ ] 明确默认 `signature` 只包含 `stage`、`category` 和归一化后的关键报错；如果读到旧的 capability 前缀签名，把它当兼容输入统一归一化；如果 `harness` 只是转述某条 `loop` 失败，则直接复用 `sourceFailureSignature`，再用 `countTowardFailureIndex=false` 避免同一根因重复累计
 - [ ] 固定“归一化后的首个关键报错”规则，避免不同实现各自摘要：
   - 全部转小写
   - 去掉绝对路径、sessionId、时间戳、纯数字行号这类易变内容
@@ -347,6 +374,7 @@
 - Create: `src/core/failures/recovery-policy.ts`
 - Create: `src/core/failures/diagnostics.ts`
 - Test: `tests/core/failures/recovery-policy.test.ts`
+- Test: `tests/core/failures/diagnostics.test.ts`
 - Test: `tests/capabilities/workflows/harness-server.test.ts`
 
 - [ ] 先写恢复决策测试，固定第一版规则：
@@ -388,7 +416,7 @@
   - 其余分类默认 `false`
 - [ ] 当恢复决策给出 `spawn_self_repair_candidate` 时，第一版只落一条候选记录到索引，不直接开修复任务
 - [ ] 运行：
-  - `npm run test:run -- tests/core/failures/recovery-policy.test.ts tests/capabilities/workflows/harness-server.test.ts`
+  - `npm run test:run -- tests/core/failures/recovery-policy.test.ts tests/core/failures/diagnostics.test.ts tests/capabilities/workflows/harness-server.test.ts`
 
 ## Phase 6：失败账本收口
 
@@ -398,12 +426,13 @@
 - Create: `src/core/failures/ledger.ts`
 - Modify: `src/capabilities/workflows/shared/runtime.ts`
 - Test: `tests/core/failures/ledger.test.ts`
+- Test: `tests/capabilities/workflows/shared/runtime.test.ts`
 
 - [ ] 先写失败账本测试，覆盖：
   - 单条失败能落到 session 目录
   - 同一仓库的失败能更新 `.magpie/failure-index.json`
   - 重复签名会累加计数而不是重复建独立主题
-  - 不同 capability 的相同签名也能聚合
+  - 显式复用源签名的跨 capability 派生失败也能聚合到同一主题
   - `harness` 对 `loop` 的派生失败不会把同一次根因重复累计
   - 从不存在或旧版本索引启动时，能兼容生成当前 `version=1` 结构
   - 并发两次写入不会破坏 `.magpie/failure-index.json`
@@ -425,21 +454,22 @@
     - `lastSeenAt`
     - `lastSessionId`
     - `recentSessionIds`
-    - `capabilities`
+    - `capabilities`（对象，key 固定为 `loop` / `harness` / `harness-server`，value 为累计次数）
     - `latestReason`
     - `latestEvidencePaths`
-    - `recentEvidencePaths`
+    - `recentEvidencePaths`（扁平字符串数组，保留最近三次命中的唯一路径）
     - `selfHealCandidateCount`
     - `candidateForSelfRepair`
     - `lastRecoveryAction`
 - [ ] 仓库级索引写入必须走单一辅助入口，并使用“仓库级锁文件 + 原子覆盖”组合：
   - 锁文件固定为 `.magpie/failure-index.lock`
   - 进入锁后再读最新索引、合并计数、写临时文件并替换
+  - 锁等待必须有上限；第一版超过 5 秒还拿不到锁时，当前写入按失败返回，不能无限等待
   - 验证目标不只是 JSON 不损坏，还要保证并发两次写入后计数不丢
 - [ ] 为 `appendWorkflowEvent` 所在路径补一个失败写入辅助函数，避免 `loop`、`harness`、`harness-server` 各自拼路径
 - [ ] 这一块放在三条主路径接入之后收口；TRD 已经提前固定结构，但这里才做最终写盘实现和聚合字段联调
 - [ ] 运行：
-  - `npm run test:run -- tests/core/failures/ledger.test.ts`
+  - `npm run test:run -- tests/core/failures/ledger.test.ts tests/capabilities/workflows/shared/runtime.test.ts`
 
 ## Phase 7：长期失败模式升级
 

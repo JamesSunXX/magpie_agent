@@ -2188,6 +2188,151 @@ process.exit(result.status ?? 1)
     expect(artifact).toContain('e2e-safe')
   })
 
+  it('replaces model-generated verification sections with the runtime integration evidence', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue([
+            '# integration_test 阶段报告',
+            '',
+            '## 结果',
+            '- 当前阶段通过。',
+            '',
+            '# Verification',
+            '',
+            '## Integration Test (npm run test:run -- tests/integration)',
+            'stale verification should not survive',
+          ].join('\n')),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-integration-sanitize-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'integration-sanitize-repro',
+      private: true,
+      scripts: {
+        'test:run': 'node integration-runner.js',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(join(dir, 'integration-runner.js'), [
+      "if (process.argv.includes('tests/e2e')) {",
+      "  console.log('e2e-safe')",
+      "  process.exit(0)",
+      "}",
+      "console.error('unexpected test target')",
+      "process.exit(1)",
+    ].join('\n'), 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [integration_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'integration_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('## Integration Test (npm run test:run -- tests/e2e)')
+    expect(artifact).toContain('e2e-safe')
+    expect(artifact).not.toContain('tests/integration')
+    expect(artifact).not.toContain('stale verification should not survive')
+    expect((artifact.match(/^# Verification$/gm) || [])).toHaveLength(1)
+  })
+
+  it('keeps model-written verification notes when replacing runtime verification output', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue([
+            '# integration_test 阶段报告',
+            '',
+            '## 结果',
+            '- 当前阶段通过。',
+            '',
+            '# Verification',
+            '',
+            '- 这里是模型写的说明，不是运行出来的测试结果。',
+            '',
+            '## 下一步',
+            '- 继续观察发布结果。',
+          ].join('\n')),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-integration-keep-notes-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'integration-keep-notes',
+      private: true,
+      scripts: {
+        'test:run': 'node integration-runner.js',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(join(dir, 'integration-runner.js'), [
+      "if (process.argv.includes('tests/e2e')) {",
+      "  console.log('e2e-safe')",
+      "  process.exit(0)",
+      "}",
+      "console.error('unexpected test target')",
+      "process.exit(1)",
+    ].join('\n'), 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [integration_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'integration_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('- 这里是模型写的说明，不是运行出来的测试结果。')
+    expect(artifact).toContain('## 下一步')
+    expect(artifact).toContain('## Integration Test (npm run test:run -- tests/e2e)')
+    expect(artifact).toContain('e2e-safe')
+  })
+
   it('persists runtime verification output in unit mock stage artifacts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-artifact-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })

@@ -150,4 +150,40 @@ describe('failure ledger', () => {
       },
     })
   })
+
+  it('merges legacy capability-prefixed signatures into the canonical repository index entry', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-failure-ledger-'))
+
+    await appendFailureRecord({
+      repoRoot: cwd,
+      sessionDir: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123'),
+      record: makeRecord({
+        sessionId: 'loop-123',
+        capability: 'loop',
+        signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+      }),
+    })
+
+    await appendFailureRecord({
+      repoRoot: cwd,
+      sessionDir: join(cwd, '.magpie', 'sessions', 'harness', 'harness-123'),
+      record: makeRecord({
+        sessionId: 'harness-123',
+        capability: 'harness',
+        signature: 'code_development|workflow_defect|resume-checkpoint',
+      }),
+    })
+
+    const index = await readFailureIndex(cwd)
+
+    expect(index.entries).toHaveLength(1)
+    expect(index.entries[0]).toMatchObject({
+      signature: 'code_development|workflow_defect|resume-checkpoint',
+      count: 2,
+      capabilities: {
+        loop: 1,
+        harness: 1,
+      },
+    })
+  })
 })

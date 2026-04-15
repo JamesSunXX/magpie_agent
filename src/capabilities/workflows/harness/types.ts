@@ -2,6 +2,7 @@ import type { ComplexityTier } from '../../../config/types.js'
 import type { WorkflowSession } from '../shared/runtime.js'
 import type { ExecutionHost } from '../../../platform/integrations/operations/types.js'
 import type { RoleFinalAction } from '../../../core/roles/index.js'
+import type { MagpieConfigV2 } from '../../../platform/config/types.js'
 
 export type HarnessStage =
   | 'queued'
@@ -23,6 +24,7 @@ export interface HarnessInput {
   reviewRounds?: number
   testCommand?: string
   models?: string[]
+  modelsExplicit?: boolean
   complexity?: ComplexityTier
   host?: ExecutionHost
   priority?: HarnessPriority
@@ -34,6 +36,7 @@ export interface HarnessPreparedInput extends HarnessInput {
   reviewRounds: number
   models: string[]
   modelsExplicit: boolean
+  config: MagpieConfigV2
 }
 
 export interface HarnessValidatorCheckArtifact {

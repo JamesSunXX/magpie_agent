@@ -91,6 +91,24 @@ describe('platform config loader', () => {
     expect(config.reviewers['route-architect']).toMatchObject({ tool: 'kiro', agent: 'architect' })
   })
 
+  it('normalizes the legacy integration test command for outdated configs', () => {
+    const config = structuredClone(validConfig)
+    config.config_version = CURRENT_CONFIG_VERSION - 1
+    config.capabilities.loop = {
+      commands: {
+        integration_test: 'npm run test:run -- tests/integration',
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    const loaded = loadConfig('/path/to/config.yaml')
+
+    expect(loaded.capabilities.loop?.commands?.integration_test).toBe('npm run test:run -- tests/e2e')
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('normalized to "npm run test:run -- tests/e2e"')
+    )
+  })
+
   it('throws when config file not found', () => {
     vi.mocked(existsSync).mockReturnValue(false)
     expect(() => loadConfig('/path/to/missing.yaml')).toThrow('Config file not found')

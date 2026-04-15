@@ -22,7 +22,6 @@ import {
   sessionDirFor,
 } from '../../shared/runtime.js'
 import { generateDocumentPlan, type DocumentPlan } from '../../../../core/project-documents/document-plan.js'
-import { loadConfig } from '../../../../platform/config/loader.js'
 import type { MagpieConfigV2, ModelRouteBinding, RoutingDecision } from '../../../../platform/config/types.js'
 import { createConfiguredProvider } from '../../../../platform/providers/index.js'
 import type { MergedIssue } from '../../../../core/debate/types.js'
@@ -115,6 +114,7 @@ interface PersistedHarnessResumeEvidence {
     reviewRounds?: number
     testCommand?: string
     models?: string[]
+    modelsExplicit?: boolean
     complexity?: HarnessPreparedInput['complexity']
     host?: HarnessPreparedInput['host']
     priority?: HarnessPreparedInput['priority']
@@ -125,6 +125,7 @@ interface PersistedHarnessResumeEvidence {
     nextRetryAt?: string
     lastError?: string
     lastReliablePoint?: string
+    processId?: number
   }
 }
 
@@ -520,6 +521,7 @@ function mergeHarnessRuntimeEvidence(
   patch: {
     lastReliablePoint?: string
     pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+    processId?: number | null
   }
 ): Record<string, unknown> {
   const baseEvidence = existingEvidence && typeof existingEvidence === 'object'
@@ -536,6 +538,11 @@ function mergeHarnessRuntimeEvidence(
     delete runtime.pendingReviewCheckpoint
   } else if (patch.pendingReviewCheckpoint !== undefined) {
     runtime.pendingReviewCheckpoint = patch.pendingReviewCheckpoint
+  }
+  if (patch.processId === null) {
+    delete runtime.processId
+  } else if (patch.processId !== undefined) {
+    runtime.processId = patch.processId
   }
 
   return {
@@ -715,6 +722,7 @@ function buildPersistedHarnessResumeEvidence(
       ...(Number.isFinite(prepared.reviewRounds) ? { reviewRounds: prepared.reviewRounds } : {}),
       ...(prepared.testCommand ? { testCommand: prepared.testCommand } : {}),
       ...(prepared.models.length > 0 ? { models: prepared.models } : {}),
+      modelsExplicit: prepared.modelsExplicit,
       ...(prepared.complexity ? { complexity: prepared.complexity } : {}),
       ...(prepared.host ? { host: prepared.host } : {}),
       ...(prepared.priority ? { priority: prepared.priority } : {}),
@@ -725,6 +733,7 @@ function buildPersistedHarnessResumeEvidence(
       ...(typeof evidence.runtime?.nextRetryAt === 'string' ? { nextRetryAt: evidence.runtime.nextRetryAt } : {}),
       ...(typeof evidence.runtime?.lastError === 'string' ? { lastError: evidence.runtime.lastError } : {}),
       lastReliablePoint: evidence.runtime?.lastReliablePoint || 'queued',
+      ...(Number.isInteger(evidence.runtime?.processId) ? { processId: Number(evidence.runtime?.processId) } : {}),
     },
   }
 }
@@ -1723,7 +1732,7 @@ export async function executeHarness(
   prepared: HarnessPreparedInput,
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
-  const config = loadConfig(ctx.configPath)
+  const config = prepared.config
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
@@ -1837,6 +1846,7 @@ export async function executeHarness(
     patch: {
       lastReliablePoint?: string
       pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+      processId?: number | null
     }
   ): Promise<void> => {
     await persistSession({
@@ -2079,7 +2089,15 @@ export async function executeHarness(
 
   await persistSession()
   if (!resumeState.isResume) {
-    await persistRuntimeEvidence({ lastReliablePoint: 'queued', pendingReviewCheckpoint: null })
+    await persistRuntimeEvidence({
+      lastReliablePoint: 'queued',
+      pendingReviewCheckpoint: null,
+      processId: session.artifacts.executionHost === 'foreground' ? process.pid : null,
+    })
+  } else {
+    await persistRuntimeEvidence({
+      processId: session.artifacts.executionHost === 'foreground' ? process.pid : null,
+    })
   }
   await appendEvent(resumeState.isResume ? 'workflow_resumed' : 'workflow_started', {
     stage: session.currentStage || 'queued',
