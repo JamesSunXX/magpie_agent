@@ -124,6 +124,10 @@ describe('provider session persistence', () => {
     expect(persisted['loop.planner']?.workflowSessionId).toBe('loop-1')
     expect(persisted['loop.executor']?.workflowSessionId).toBe('loop-1')
     expect(persisted['loop.planner']?.sessionId).not.toBe(persisted['loop.executor']?.sessionId)
+    expect(persisted['loop.planner']?.supportsResume).toBe(true)
+    expect(persisted['loop.executor']?.supportsResume).toBe(true)
+    expect(typeof persisted['loop.planner']?.updatedAt).toBe('string')
+    expect(typeof persisted['loop.executor']?.updatedAt).toBe('string')
 
     const restoredPlanner = createResumableProvider('planner-provider')
     await withProviderSessionScope({
@@ -172,6 +176,73 @@ describe('provider session persistence', () => {
 
     const persisted = JSON.parse(readFileSync(sessionsPath, 'utf-8')) as Record<string, { roleId: string }>
     expect(Object.keys(persisted).sort()).toEqual(['harness.arbitrator', 'harness.reviewer.alpha'])
+  })
+
+  it('restores harness reviewer and arbitrator sessions to their own saved roles', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-provider-harness-restore-'))
+    tempDirs.push(dir)
+    const sessionsPath = join(dir, 'provider-sessions.json')
+
+    await withProviderSessionScope({
+      sessionsPath,
+      workflowSessionId: 'harness-2',
+      namespace: 'harness.review',
+    }, async () => {
+      const reviewer = withProviderSessionPersistence(
+        createResumableProvider('reviewer-provider'),
+        'reviewers.alpha'
+      )
+      await reviewer.chat([{ role: 'user', content: 'review' }])
+    })
+
+    await withProviderSessionScope({
+      sessionsPath,
+      workflowSessionId: 'harness-2',
+      namespace: 'harness.arbitration',
+    }, async () => {
+      const arbitrator = withProviderSessionPersistence(
+        createResumableProvider('arbitrator-provider'),
+        'summarizer'
+      )
+      await arbitrator.chat([{ role: 'user', content: 'decide' }])
+    })
+
+    const persisted = JSON.parse(readFileSync(sessionsPath, 'utf-8')) as Record<string, {
+      sessionId: string
+    }>
+
+    const restoredReviewer = createResumableProvider('reviewer-provider')
+    await withProviderSessionScope({
+      sessionsPath,
+      workflowSessionId: 'harness-2',
+      namespace: 'harness.review',
+    }, async () => {
+      const provider = withProviderSessionPersistence(restoredReviewer, 'reviewers.alpha')
+      await provider.chat([{ role: 'user', content: 'continue review' }])
+    })
+
+    const restoredArbitrator = createResumableProvider('arbitrator-provider')
+    await withProviderSessionScope({
+      sessionsPath,
+      workflowSessionId: 'harness-2',
+      namespace: 'harness.arbitration',
+    }, async () => {
+      const provider = withProviderSessionPersistence(restoredArbitrator, 'summarizer')
+      await provider.chat([{ role: 'user', content: 'continue decision' }])
+    })
+
+    expect(restoredReviewer.restoreSession).toHaveBeenCalledWith(
+      persisted['harness.reviewer.alpha']?.sessionId,
+      'harness.reviewer.alpha'
+    )
+    expect(restoredArbitrator.restoreSession).toHaveBeenCalledWith(
+      persisted['harness.arbitrator']?.sessionId,
+      'harness.arbitrator'
+    )
+    expect(restoredReviewer.restoreSession).not.toHaveBeenCalledWith(
+      persisted['harness.arbitrator']?.sessionId,
+      'harness.reviewer.alpha'
+    )
   })
 
   it('degrades gracefully for providers without remote session restore', async () => {

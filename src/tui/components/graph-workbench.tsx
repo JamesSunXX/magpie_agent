@@ -72,6 +72,7 @@ export function GraphWorkbench(props: {
           {selectedNode.title}
           <Text color="gray">  {selectedNode.id} · {selectedNode.type} · {selectedNode.state}</Text>
         </Text>
+        {selectedNode.stageDocumentPath ? <Text>Document: {selectedNode.stageDocumentPath}</Text> : null}
         {selectedNode.statusReason ? <Text>Status: {selectedNode.statusReason}</Text> : null}
         <Text>Dependencies: {selectedNode.dependencies.join(', ') || 'None.'}</Text>
         <Text>Approval pending: {selectedNode.approvalPending ? 'yes' : 'no'}</Text>

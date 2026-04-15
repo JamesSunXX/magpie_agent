@@ -20,10 +20,12 @@ import {
   createHarnessGraphArtifact,
   loadHarnessGraphArtifact,
   persistHarnessGraphArtifact,
+  reconcileHarnessGraphArtifact,
   recordHarnessGraphApprovalDecision,
   type HarnessGraphApprovalGate,
   type HarnessGraphArtifact,
   type HarnessGraphNode,
+  type HarnessGraphNodeInput,
 } from '../../capabilities/workflows/harness-server/graph.js'
 import type {
   HarnessInput,
@@ -117,6 +119,49 @@ class MissingHarnessGraphError extends Error {
 }
 
 const HARNESS_PRIORITIES = ['interactive', 'high', 'normal', 'background'] as const
+const FAILURE_RECOVERY_REQUIREMENT_PATH = 'docs/plans/2026-04-14-harness-loop-failure-recovery.md'
+const FAILURE_RECOVERY_EXECUTION_PLAN_PATH = 'docs/plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md'
+const FAILURE_RECOVERY_STAGE_NODES: HarnessGraphNodeInput[] = [
+  {
+    id: 'loop-recovery',
+    title: 'Loop recovery',
+    goal: 'Make loop keep failed-but-usable development runs resumable.',
+    type: 'feature',
+    stageDocumentPath: 'docs/plans/2026-04-14-loop-recovery-stage.md',
+  },
+  {
+    id: 'harness-recovery',
+    title: 'Harness recovery',
+    goal: 'Make harness treat recoverable inner loop failures as resumable workflow state.',
+    type: 'integration',
+    dependencies: ['loop-recovery'],
+    stageDocumentPath: 'docs/plans/2026-04-14-harness-recovery-stage.md',
+  },
+  {
+    id: 'submit-reconnect',
+    title: 'Submit reconnect',
+    goal: 'Reconnect submit to the latest recoverable matching session.',
+    type: 'feature',
+    dependencies: ['harness-recovery'],
+    stageDocumentPath: 'docs/plans/2026-04-14-submit-reconnect-stage.md',
+  },
+  {
+    id: 'provider-session-reuse',
+    title: 'Provider session reuse',
+    goal: 'Restore provider session continuity per role on resume.',
+    type: 'integration',
+    dependencies: ['harness-recovery'],
+    stageDocumentPath: 'docs/plans/2026-04-14-provider-session-reuse-stage.md',
+  },
+  {
+    id: 'verification-and-compat',
+    title: 'Verification and compatibility',
+    goal: 'Finish regression, compatibility, and artifact-preservation checks.',
+    type: 'validation',
+    dependencies: ['submit-reconnect', 'provider-session-reuse'],
+    stageDocumentPath: 'docs/plans/2026-04-14-verification-and-compat-stage.md',
+  },
+]
 
 function parseHarnessPriority(value: string): HarnessPriority {
   if ((HARNESS_PRIORITIES as readonly string[]).includes(value)) {
@@ -142,20 +187,33 @@ function slugifyHarnessGraphId(goal: string): string {
 }
 
 function buildQueuedHarnessGraph(goal: string, prdPath: string): HarnessGraphArtifact {
-  return createHarnessGraphArtifact({
+  const normalizedPrdPath = normalizeComparablePrdPath(prdPath)
+  const isFailureRecoveryPlan = [
+    FAILURE_RECOVERY_REQUIREMENT_PATH,
+    FAILURE_RECOVERY_EXECUTION_PLAN_PATH,
+  ].some((candidate) => normalizeComparablePrdPath(candidate) === normalizedPrdPath)
+
+  const graph = createHarnessGraphArtifact({
     graphId: slugifyHarnessGraphId(goal),
     title: goal,
     goal,
-    sourceRequirementPath: prdPath,
-    nodes: [
-      {
-        id: 'deliverable',
-        title: 'Deliver requirement',
-        goal,
-        type: 'feature',
-      },
-    ],
+    sourceRequirementPath: isFailureRecoveryPlan ? FAILURE_RECOVERY_REQUIREMENT_PATH : prdPath,
+    nodes: isFailureRecoveryPlan
+      ? FAILURE_RECOVERY_STAGE_NODES.map((node) => ({
+          ...node,
+          dependencies: node.dependencies ? [...node.dependencies] : undefined,
+        }))
+      : [
+          {
+            id: 'deliverable',
+            title: 'Deliver requirement',
+            goal,
+            type: 'feature',
+          },
+        ],
   })
+
+  return reconcileHarnessGraphArtifact(graph)
 }
 
 function normalizeComparablePrdPath(prdPath: string): string {
@@ -437,6 +495,9 @@ function formatHarnessGraphGate(gate: HarnessGraphApprovalGate): string {
 
 function printHarnessGraphSummary(artifact: HarnessGraphArtifact): void {
   console.log(`Graph: ${artifact.graphId} | ${artifact.status} | ${formatHarnessGraphRollup(artifact)}`)
+  if (artifact.sourceRequirementPath) {
+    console.log(`Graph requirement: ${artifact.sourceRequirementPath}`)
+  }
   if (artifact.approvalGates.length > 0) {
     console.log(`Graph approvals: ${artifact.approvalGates.map(formatHarnessGraphGate).join(', ')}`)
   }
@@ -463,6 +524,9 @@ function printHarnessGraphNode(node: HarnessGraphNode): void {
   console.log(`Node: ${node.id} | ${node.state} | ${node.title}`)
   console.log(`Node goal: ${node.goal}`)
   console.log(`Node dependencies: ${node.dependencies.length > 0 ? node.dependencies.join(', ') : '-'}`)
+  if (node.stageDocumentPath) {
+    console.log(`Node document: ${node.stageDocumentPath}`)
+  }
   if (node.conflictScope) {
     console.log(`Node conflict scope: ${node.conflictScope}`)
   }
@@ -948,6 +1012,19 @@ harnessCommand
       console.error(`Harness session ${sessionId} cannot be resumed because its input metadata is missing.`)
       process.exitCode = 1
       return
+    }
+
+    if (session.status === 'failed') {
+      const loopSession = session.artifacts.loopSessionId
+        ? await loadWorkflowSession(process.cwd(), 'loop', session.artifacts.loopSessionId)
+        : null
+      if (!isRecoverableHarnessSession(session, loopSession || undefined)) {
+        console.error(
+          `Harness session ${sessionId} cannot be resumed because its linked recovery checkpoint is not recoverable.`
+        )
+        process.exitCode = 1
+        return
+      }
     }
 
     await runHarnessWithSession(

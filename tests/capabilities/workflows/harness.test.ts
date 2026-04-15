@@ -745,6 +745,123 @@ integrations:
     }
   })
 
+  it('resumes the loop stage even after completed cycles when the current stage is still developing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-resume-loop-after-cycle-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const sessionId = 'harness-resume-loop-after-cycle'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'harness', sessionId)
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'rounds.json'), JSON.stringify([
+      {
+        cycle: 1,
+        reviewOutputPath: join(sessionDir, 'cycle-1', 'review.json'),
+        validatorChecks: [],
+        adjudicationOutputPath: join(sessionDir, 'cycle-1', 'adjudication.json'),
+        unitTestEvalPath: join(sessionDir, 'cycle-1', 'unit-test-eval.json'),
+        issueCount: 1,
+        blockingIssueCount: 1,
+        testsPassed: false,
+        modelDecision: 'revise',
+        modelRationale: 'Need another implementation pass.',
+        finalAction: 'revise',
+        nextRoundBrief: 'Continue fixing the implementation in the existing loop session.',
+      },
+    ], null, 2), 'utf-8')
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      capability: 'harness',
+      title: 'Deliver checkout v2',
+      createdAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:05:00.000Z').toISOString(),
+      status: 'blocked',
+      currentStage: 'developing',
+      summary: 'Waiting for the next implementation pass.',
+      artifacts: {
+        repoRootPath: dir,
+        roundsPath: join(sessionDir, 'rounds.json'),
+        harnessConfigPath: join(sessionDir, 'harness.config.yaml'),
+        providerSelectionPath: join(sessionDir, 'provider-selection.json'),
+        routingDecisionPath: join(sessionDir, 'routing-decision.json'),
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        loopSessionId: 'loop-resume-after-cycle-1',
+      },
+    }, null, 2), 'utf-8')
+
+    const previousSessionId = process.env.MAGPIE_SESSION_ID
+    process.env.MAGPIE_SESSION_ID = sessionId
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        expect(input).toMatchObject({
+          mode: 'resume',
+          sessionId: 'loop-resume-after-cycle-1',
+        })
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-resume-after-cycle-1' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(runCapabilityMock.mock.calls.find(([module]) => module.name === 'loop')?.[1]).toMatchObject({
+        mode: 'resume',
+        sessionId: 'loop-resume-after-cycle-1',
+      })
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
   it('marks developing stage as failed when loop development fails', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-failed-'))
     const magpieHome = join(dir, '.magpie-home')
@@ -819,6 +936,7 @@ integrations:
               currentLoopState: 'blocked_for_human',
               lastReliablePoint: 'red_test_confirmed',
               lastFailureReason: '继续从当前工作区修复。',
+              branchName: 'sch/recoverable-current-branch',
               artifacts: {
                 sessionDir: '/tmp/loop-recoverable-1',
                 eventsPath: '/tmp/loop-recoverable-events.jsonl',
@@ -850,6 +968,9 @@ integrations:
       expect(result.session?.currentStage).toBe('developing')
       expect(result.session?.artifacts.loopSessionId).toBe('loop-recoverable-1')
       expect(result.session?.artifacts.workspacePath).toBe(dir)
+      expect(result.session?.artifacts.branchName).toBe('sch/recoverable-current-branch')
+      expect((result.session?.evidence as { runtime?: { lastReliablePoint?: string } } | undefined)?.runtime?.lastReliablePoint)
+        .toBe('red_test_confirmed')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

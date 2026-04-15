@@ -52,6 +52,7 @@ export interface HarnessGraphNodeInput {
   title: string
   goal: string
   type: HarnessGraphNodeType
+  stageDocumentPath?: string
   dependencies?: string[]
   state?: HarnessGraphNodeState
   conflictScope?: string

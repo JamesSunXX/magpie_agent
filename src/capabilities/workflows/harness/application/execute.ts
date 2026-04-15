@@ -569,14 +569,16 @@ async function resolveHarnessResumeState(
     ? await loopStateManager.loadLoopSession(existingSession.artifacts.loopSessionId!)
     : null
   const recoverableLoopFailure = isRecoverableLoopSession(loopSession)
+  const isDevelopingStage = existingSession.currentStage === 'developing'
   const canReuseCompletedDevelopment = hasLoopSession
+    && !isDevelopingStage
     && (existingSession.currentStage === 'reviewing'
       || existingSession.currentStage === 'completed'
       || completedCycles.length > 0)
   const shouldResumeLoop = hasLoopSession
     && !canReuseCompletedDevelopment
     && (
-      existingSession.currentStage === 'developing'
+      isDevelopingStage
       || ((existingSession.currentStage === 'failed' || existingSession.status === 'failed') && recoverableLoopFailure)
     )
   const isResume = existingSession.status === 'waiting_next_cycle'
@@ -2212,6 +2214,8 @@ export async function executeHarness(
       loopProgress: {
         onSessionUpdate: (loopSession: {
           id: string
+          branchName?: string
+          lastReliablePoint?: string
           artifacts?: {
             eventsPath?: string
             workspaceMode?: 'current' | 'worktree'
@@ -2225,8 +2229,12 @@ export async function executeHarness(
               ...(loopSession.artifacts?.eventsPath ? { loopEventsPath: loopSession.artifacts.eventsPath } : {}),
               ...(loopSession.artifacts?.workspaceMode ? { workspaceMode: loopSession.artifacts.workspaceMode } : {}),
               ...(loopSession.artifacts?.workspacePath ? { workspacePath: loopSession.artifacts.workspacePath } : {}),
+              ...(loopSession.branchName ? { branchName: loopSession.branchName } : {}),
               ...(loopSession.artifacts?.worktreeBranch ? { worktreeBranch: loopSession.artifacts.worktreeBranch } : {}),
             },
+            ...(loopSession.lastReliablePoint
+              ? { evidence: mergeHarnessRuntimeEvidence(session.evidence, { lastReliablePoint: loopSession.lastReliablePoint }) }
+              : {}),
           })
         },
         onEvent: (event: {
@@ -2319,9 +2327,13 @@ export async function executeHarness(
           ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
           ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
           ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+          ...(loopResult.result.session?.branchName ? { branchName: loopResult.result.session.branchName } : {}),
           ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
         },
       })
+      if (loopResult.result.session?.lastReliablePoint) {
+        await persistRuntimeEvidence({ lastReliablePoint: loopResult.result.session.lastReliablePoint })
+      }
       await updateTaskKnowledgeState(knowledgeArtifacts, {
         currentStage: 'developing',
         lastReliableResult: summary,
@@ -2357,9 +2369,13 @@ export async function executeHarness(
         ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
         ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
         ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+        ...(loopResult.result.session?.branchName ? { branchName: loopResult.result.session.branchName } : {}),
         ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
       },
     })
+    if (loopResult.result.session?.lastReliablePoint) {
+      await persistRuntimeEvidence({ lastReliablePoint: loopResult.result.session.lastReliablePoint })
+    }
     await updateTaskKnowledgeState(knowledgeArtifacts, {
       currentStage: 'failed',
       lastReliableResult: summary,
@@ -2385,9 +2401,13 @@ export async function executeHarness(
           ...(loopResult.result.session?.artifacts?.eventsPath ? { loopEventsPath: loopResult.result.session.artifacts.eventsPath } : {}),
           ...(loopResult.result.session?.artifacts?.workspaceMode ? { workspaceMode: loopResult.result.session.artifacts.workspaceMode } : {}),
           ...(loopResult.result.session?.artifacts?.workspacePath ? { workspacePath: loopResult.result.session.artifacts.workspacePath } : {}),
+          ...(loopResult.result.session?.branchName ? { branchName: loopResult.result.session.branchName } : {}),
           ...(loopResult.result.session?.artifacts?.worktreeBranch ? { worktreeBranch: loopResult.result.session.artifacts.worktreeBranch } : {}),
       },
     })
+    if (loopResult.result.session?.lastReliablePoint) {
+      await persistRuntimeEvidence({ lastReliablePoint: loopResult.result.session.lastReliablePoint })
+    }
   }
   await updateTaskKnowledgeSummary(
     knowledgeArtifacts,

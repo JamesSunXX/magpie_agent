@@ -1,5 +1,6 @@
 import { createNotificationRouter } from '../src/platform/integrations/notifications/factory.js'
 import type { NotificationEventType } from '../src/config/types.js'
+import type { NotificationEvent } from '../src/platform/integrations/notifications/types.js'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()
@@ -24,15 +25,29 @@ function parseEventType(input: string | undefined): NotificationEventType {
   return candidate
 }
 
-async function main(): Promise<void> {
-  const eventType = parseEventType(process.argv[2])
-  const bluebubblesServerUrl = requiredEnv('BLUEBUBBLES_SERVER_URL')
-  const bluebubblesPassword = requiredEnv('BLUEBUBBLES_PASSWORD')
-  const bluebubblesChatGuid = requiredEnv('BLUEBUBBLES_CHAT_GUID')
-  const feishuWebhookUrl = requiredEnv('FEISHU_WEBHOOK_URL')
-  const feishuWebhookSecret = requiredEnv('FEISHU_WEBHOOK_SECRET')
+export interface SmokeNotificationEnv {
+  bluebubblesServerUrl: string
+  bluebubblesPassword: string
+  bluebubblesChatGuid: string
+  feishuWebhookUrl: string
+  feishuWebhookSecret: string
+}
 
-  const router = createNotificationRouter({
+export function loadSmokeNotificationEnv(): SmokeNotificationEnv {
+  return {
+    bluebubblesServerUrl: requiredEnv('BLUEBUBBLES_SERVER_URL'),
+    bluebubblesPassword: requiredEnv('BLUEBUBBLES_PASSWORD'),
+    bluebubblesChatGuid: requiredEnv('BLUEBUBBLES_CHAT_GUID'),
+    feishuWebhookUrl: requiredEnv('FEISHU_WEBHOOK_URL'),
+    feishuWebhookSecret: requiredEnv('FEISHU_WEBHOOK_SECRET'),
+  }
+}
+
+export function buildSmokeNotificationConfig(
+  eventType: NotificationEventType,
+  env: SmokeNotificationEnv
+) {
+  return {
     enabled: true,
     default_timeout_ms: Number(process.env.SMOKE_TIMEOUT_MS || 8000),
     routes: {
@@ -42,33 +57,51 @@ async function main(): Promise<void> {
       bluebubbles_smoke: {
         type: 'imessage',
         transport: 'bluebubbles',
-        server_url: bluebubblesServerUrl,
-        password: bluebubblesPassword,
+        server_url: env.bluebubblesServerUrl,
+        password: env.bluebubblesPassword,
         targets: [
-          `chat_guid:${bluebubblesChatGuid}`,
+          `chat_guid:${env.bluebubblesChatGuid}`,
         ],
       },
       feishu_smoke: {
         type: 'feishu-webhook',
-        webhook_url: feishuWebhookUrl,
-        secret: feishuWebhookSecret,
-        msg_type: 'post',
+        webhook_url: env.feishuWebhookUrl,
+        secret: env.feishuWebhookSecret,
+        msg_type: 'interactive',
       },
     },
-  })
+  } as const
+}
 
-  const sessionId = `smoke-${Date.now()}`
-  const result = await router.dispatch({
+export function buildSmokeNotificationEvent(
+  eventType: NotificationEventType,
+  sessionId: string
+): NotificationEvent {
+  return {
     type: eventType,
     sessionId,
     title: `[SMOKE] ${eventType}`,
-    message: `Smoke notification from magpie. session=${sessionId}`,
+    message: [
+      '任务: Smoke notification from magpie',
+      `事件: ${eventType}`,
+      '目标: bluebubbles_smoke, feishu_smoke',
+      `会话: ${sessionId}`,
+    ].join('\n'),
     severity: eventType === 'loop_failed' ? 'error' : 'warning',
     metadata: {
       smoke: true,
       ts: new Date().toISOString(),
     },
-  })
+  }
+}
+
+async function main(): Promise<void> {
+  const eventType = parseEventType(process.argv[2])
+  const env = loadSmokeNotificationEnv()
+  const router = createNotificationRouter(buildSmokeNotificationConfig(eventType, env))
+
+  const sessionId = `smoke-${Date.now()}`
+  const result = await router.dispatch(buildSmokeNotificationEvent(eventType, sessionId))
 
   console.log(JSON.stringify(result, null, 2))
 
@@ -83,8 +116,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error)
-  console.error(`[smoke-notifications] ${message}`)
-  process.exit(1)
-})
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[smoke-notifications] ${message}`)
+    process.exit(1)
+  })
+}

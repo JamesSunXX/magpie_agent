@@ -217,6 +217,7 @@ describe('TUI components', () => {
           title: 'Release approval',
           type: 'approval',
           state: 'waiting_approval',
+          stageDocumentPath: 'docs/plans/2026-04-14-harness-recovery-stage.md',
           statusReason: 'Waiting for node approval: Approve release',
           dependencies: ['design-api'],
           approvalPending: true,
@@ -282,6 +283,7 @@ describe('TUI components', () => {
     expect(normalizedText(element)).toContain('release-approval')
     expect(normalizedText(element)).toContain('Selected Node Detail')
     expect(normalizedText(element)).toContain('Implementation is ready. Waiting for release approval.')
+    expect(normalizedText(element)).toContain('Document: docs/plans/2026-04-14-harness-recovery-stage.md')
     expect(normalizedText(element)).toContain('Review: security: revise - Missing rollback handling.')
     expect(normalizedText(element)).toContain('Arbitration: Decision: revise - Need another cycle after rollback fixes.')
     expect(normalizedText(element)).toContain('Linked session: loop loop-ship paused_for_human')

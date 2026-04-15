@@ -19,7 +19,12 @@
 | [`./plans/`](./plans/) | 设计和计划历史 |
 | [`./plans/2026-04-13-multi-model-engine-progress-audit.md`](./plans/2026-04-13-multi-model-engine-progress-audit.md) | 当前“多模型工程协作流引擎”进展盘点 |
 | [`./plans/2026-04-14-harness-loop-failure-recovery.md`](./plans/2026-04-14-harness-loop-failure-recovery.md) | 失败后继续开发与 provider 会话续跑方案，明确恢复规则、自动接回和遗留现场处理 |
-| [`./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md`](./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md) | 这次失败恢复需求的总实施计划，先写阶段文档，再生成真实任务图，再按阶段实现 |
+| [`./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md`](./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md) | 这次失败恢复需求的总实施计划，当前已完成，可从这里看整体进度和阶段结果 |
+| [`./plans/2026-04-14-loop-recovery-stage.md`](./plans/2026-04-14-loop-recovery-stage.md) | 第 1 阶段完成记录，说明 loop 如何保留可恢复失败并继续 |
+| [`./plans/2026-04-14-harness-recovery-stage.md`](./plans/2026-04-14-harness-recovery-stage.md) | 第 2 阶段完成记录，说明 harness 如何承接 loop 的可恢复失败 |
+| [`./plans/2026-04-14-submit-reconnect-stage.md`](./plans/2026-04-14-submit-reconnect-stage.md) | 第 3 阶段完成记录，说明 harness submit 如何自动接回旧会话 |
+| [`./plans/2026-04-14-provider-session-reuse-stage.md`](./plans/2026-04-14-provider-session-reuse-stage.md) | 第 4 阶段完成记录，说明如何按角色保存和恢复对话上下文 |
+| [`./plans/2026-04-14-verification-and-compat-stage.md`](./plans/2026-04-14-verification-and-compat-stage.md) | 第 5 阶段完成记录，说明兼容性、保留现场和最终验证结果 |
 | [`./plans/2026-04-14-panoramic-workbench-continuation-plan.md`](./plans/2026-04-14-panoramic-workbench-continuation-plan.md) | 全景工作台现状、缺口和后续推进顺序 |
 | [`./plans/2026-04-14-panoramic-workbench-interaction-spec.md`](./plans/2026-04-14-panoramic-workbench-interaction-spec.md) | 全景工作台交互规格，锁定浏览、详情、动作和事件区规则 |
 | [`./plans/2026-04-14-panoramic-workbench-implementation-plan.md`](./plans/2026-04-14-panoramic-workbench-implementation-plan.md) | 全景工作台具体落地计划，按阶段拆到可执行任务和验证命令 |

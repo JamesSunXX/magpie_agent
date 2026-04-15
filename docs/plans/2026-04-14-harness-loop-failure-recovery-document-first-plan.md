@@ -8,6 +8,13 @@
 
 **Tech Stack:** Markdown planning docs, TypeScript, Commander, Vitest, repo-local `.magpie/` workflow artifacts, harness graph artifact
 
+## Current Status
+
+- Status: complete on 2026-04-15
+- Task 1 through Task 5 are finished and checked off in this plan
+- All five stage docs now exist and include outcome notes plus verification records
+- The harness graph, CLI inspection, TUI workbench, recovery flow, reconnect flow, provider session reuse, and final compatibility sweep are all reflected in the current docs set
+
 ---
 
 ## Why This Plan Exists
@@ -105,7 +112,7 @@ These rules apply to every stage:
 - Modify: `docs/README.md`
 - Verify: `npm run check:docs`
 
-- [ ] **Step 1: Write the top-level execution plan**
+- [x] **Step 1: Write the top-level execution plan**
 
 The plan must define:
 
@@ -115,11 +122,11 @@ The plan must define:
 - which source files are expected to change later
 - what counts as done
 
-- [ ] **Step 2: Add the plan to the docs map**
+- [x] **Step 2: Add the plan to the docs map**
 
 Update `docs/README.md` so the new plan is discoverable from the main docs index.
 
-- [ ] **Step 3: Verify the docs structure**
+- [x] **Step 3: Verify the docs structure**
 
 Run: `npm run check:docs`
 Expected: PASS
@@ -135,7 +142,7 @@ Expected: PASS
 - Create: `docs/plans/2026-04-14-provider-session-reuse-stage.md`
 - Create: `docs/plans/2026-04-14-verification-and-compat-stage.md`
 
-- [ ] **Step 1: Write the loop recovery stage doc**
+- [x] **Step 1: Write the loop recovery stage doc**
 
 This document should cover:
 
@@ -144,7 +151,7 @@ This document should cover:
 - how `loop resume` should continue
 - how old failed sessions should be treated if they contain enough evidence
 
-- [ ] **Step 2: Write the harness recovery stage doc**
+- [x] **Step 2: Write the harness recovery stage doc**
 
 This document should cover:
 
@@ -152,7 +159,7 @@ This document should cover:
 - which artifacts must be preserved on the harness session
 - how `harness resume` re-enters the same development stage
 
-- [ ] **Step 3: Write the submit reconnect stage doc**
+- [x] **Step 3: Write the submit reconnect stage doc**
 
 This document should cover:
 
@@ -160,7 +167,7 @@ This document should cover:
 - when a new session must still be created
 - how CLI output should distinguish reconnect from fresh submit
 
-- [ ] **Step 4: Write the provider session reuse stage doc**
+- [x] **Step 4: Write the provider session reuse stage doc**
 
 This document should cover:
 
@@ -168,7 +175,7 @@ This document should cover:
 - restore behavior on resume
 - fallback behavior when a provider does not support remote continuation
 
-- [ ] **Step 5: Write the verification and compatibility stage doc**
+- [x] **Step 5: Write the verification and compatibility stage doc**
 
 This document should cover:
 
@@ -185,7 +192,7 @@ This document should cover:
 - Modify: graph creation path used by `harness submit` / queue entry
 - Modify: related tests under `tests/cli/` and `tests/tui/`
 
-- [ ] **Step 1: Replace the placeholder graph with the five-node graph**
+- [x] **Step 1: Replace the placeholder graph with the five-node graph**
 
 Graph creation should emit:
 
@@ -194,7 +201,7 @@ Graph creation should emit:
 - titles that match the stage documents
 - source requirement path pointing back to `docs/plans/2026-04-14-harness-loop-failure-recovery.md`
 
-- [ ] **Step 2: Add graph metadata that helps operators**
+- [x] **Step 2: Add graph metadata that helps operators**
 
 The graph should expose enough text to explain:
 
@@ -202,7 +209,7 @@ The graph should expose enough text to explain:
 - which stage is waiting on another stage
 - which stage document should be read next
 
-- [ ] **Step 3: Verify the graph is visible in CLI and TUI**
+- [x] **Step 3: Verify the graph is visible in CLI and TUI**
 
 Checks:
 
@@ -218,16 +225,16 @@ Checks:
 - Use the stage docs from Task 2 as the implementation gates
 - Touch runtime files only after the matching stage doc exists
 
-- [ ] **Step 1: Implement `loop-recovery`**
-- [ ] **Step 2: Verify `loop-recovery`**
-- [ ] **Step 3: Implement `harness-recovery`**
-- [ ] **Step 4: Verify `harness-recovery`**
-- [ ] **Step 5: Implement `submit-reconnect`**
-- [ ] **Step 6: Verify `submit-reconnect`**
-- [ ] **Step 7: Implement `provider-session-reuse`**
-- [ ] **Step 8: Verify `provider-session-reuse`**
-- [ ] **Step 9: Implement `verification-and-compat`**
-- [ ] **Step 10: Run full verification**
+- [x] **Step 1: Implement `loop-recovery`**
+- [x] **Step 2: Verify `loop-recovery`**
+- [x] **Step 3: Implement `harness-recovery`**
+- [x] **Step 4: Verify `harness-recovery`**
+- [x] **Step 5: Implement `submit-reconnect`**
+- [x] **Step 6: Verify `submit-reconnect`**
+- [x] **Step 7: Implement `provider-session-reuse`**
+- [x] **Step 8: Verify `provider-session-reuse`**
+- [x] **Step 9: Implement `verification-and-compat`**
+- [x] **Step 10: Run full verification**
 
 Required verification at the end of this task:
 
@@ -248,7 +255,7 @@ If coverage enforcement applies to touched files, also run:
 - Modify: `docs/references/capabilities.md`
 - Modify: `docs/README.md` if new follow-up docs are created
 
-- [ ] **Step 1: Update each stage doc with outcome notes**
+- [x] **Step 1: Update each stage doc with outcome notes**
 
 Each stage doc should record:
 
@@ -256,7 +263,7 @@ Each stage doc should record:
 - what was deferred
 - what verification proved the stage complete
 
-- [ ] **Step 2: Update user-facing capability docs**
+- [x] **Step 2: Update user-facing capability docs**
 
 Only after runtime behavior truly changes, update:
 
@@ -264,7 +271,7 @@ Only after runtime behavior truly changes, update:
 
 to explain the new recovery and reconnect behavior.
 
-- [ ] **Step 3: Re-run docs verification**
+- [x] **Step 3: Re-run docs verification**
 
 Run: `npm run check:docs`
 Expected: PASS

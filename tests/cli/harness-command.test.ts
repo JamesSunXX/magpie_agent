@@ -16,6 +16,7 @@ const launchMagpieInTmux = vi.fn()
 const enqueueHarnessSession = vi.fn()
 const isHarnessServerRunning = vi.fn()
 const createHarnessGraphArtifact = vi.fn()
+const reconcileHarnessGraphArtifact = vi.fn()
 const loadHarnessGraphArtifact = vi.fn()
 const persistHarnessGraphArtifact = vi.fn()
 const recordHarnessGraphApprovalDecision = vi.fn()
@@ -55,6 +56,7 @@ vi.mock('../../src/capabilities/workflows/harness-server/runtime.js', () => ({
 
 vi.mock('../../src/capabilities/workflows/harness-server/graph.js', () => ({
   createHarnessGraphArtifact,
+  reconcileHarnessGraphArtifact,
   loadHarnessGraphArtifact,
   persistHarnessGraphArtifact,
   recordHarnessGraphApprovalDecision,
@@ -114,6 +116,7 @@ describe('top-level harness CLI command', () => {
       },
       status: 'active',
     })
+    reconcileHarnessGraphArtifact.mockImplementation((graph) => graph)
     enqueueHarnessSession.mockResolvedValue({
       id: 'harness-queued-1',
       status: 'queued',
@@ -240,6 +243,60 @@ describe('top-level harness CLI command', () => {
     }
   })
 
+  it('refuses to resume a failed harness session when its linked checkpoint is not recoverable', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    loadWorkflowSession
+      .mockResolvedValueOnce({
+        id: 'harness-failed-1',
+        capability: 'harness',
+        title: 'Ship checkout v2',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStage: 'developing',
+        summary: 'Harness failed during loop development stage.',
+        artifacts: {
+          loopSessionId: 'loop-bad-1',
+        },
+        evidence: {
+          input: {
+            goal: 'Ship checkout v2',
+            prdPath: '/tmp/prd.md',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        id: 'loop-bad-1',
+        capability: 'loop',
+        title: 'Loop session',
+        createdAt: new Date('2026-04-10T08:00:00.000Z'),
+        updatedAt: new Date('2026-04-10T09:30:00.000Z'),
+        status: 'failed',
+        currentStage: 'code_development',
+        summary: 'Loop failed without a safe checkpoint.',
+        artifacts: {
+          workspacePath: '/tmp/workspace',
+        },
+      })
+    isRecoverableHarnessSession.mockReturnValue(false)
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-failed-1'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Harness session harness-failed-1 cannot be resumed because its linked recovery checkpoint is not recoverable.'
+      )
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   it('queues submit through the harness server when the background service is running', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     isHarnessServerRunning.mockResolvedValue(true)
@@ -281,6 +338,74 @@ describe('top-level harness CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Session: harness-queued-1')
     expect(logSpy).toHaveBeenCalledWith('Status: queued')
     expect(logSpy).toHaveBeenCalledWith('Priority: high')
+    logSpy.mockRestore()
+  })
+
+  it('builds the five-stage recovery graph when the document-first plan is submitted', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    isHarnessServerRunning.mockResolvedValue(true)
+    const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+
+    await harnessCommand.parseAsync(
+      [
+        'node',
+        'harness',
+        'submit',
+        'Implement failure recovery document-first flow',
+        '--prd',
+        'docs/plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md',
+      ],
+      { from: 'node' }
+    )
+
+    expect(createHarnessGraphArtifact).toHaveBeenCalledWith({
+      graphId: 'implement-failure-recovery-document-first-flow',
+      title: 'Implement failure recovery document-first flow',
+      goal: 'Implement failure recovery document-first flow',
+      sourceRequirementPath: 'docs/plans/2026-04-14-harness-loop-failure-recovery.md',
+      nodes: [
+        {
+          id: 'loop-recovery',
+          title: 'Loop recovery',
+          goal: 'Make loop keep failed-but-usable development runs resumable.',
+          type: 'feature',
+          stageDocumentPath: 'docs/plans/2026-04-14-loop-recovery-stage.md',
+        },
+        {
+          id: 'harness-recovery',
+          title: 'Harness recovery',
+          goal: 'Make harness treat recoverable inner loop failures as resumable workflow state.',
+          type: 'integration',
+          dependencies: ['loop-recovery'],
+          stageDocumentPath: 'docs/plans/2026-04-14-harness-recovery-stage.md',
+        },
+        {
+          id: 'submit-reconnect',
+          title: 'Submit reconnect',
+          goal: 'Reconnect submit to the latest recoverable matching session.',
+          type: 'feature',
+          dependencies: ['harness-recovery'],
+          stageDocumentPath: 'docs/plans/2026-04-14-submit-reconnect-stage.md',
+        },
+        {
+          id: 'provider-session-reuse',
+          title: 'Provider session reuse',
+          goal: 'Restore provider session continuity per role on resume.',
+          type: 'integration',
+          dependencies: ['harness-recovery'],
+          stageDocumentPath: 'docs/plans/2026-04-14-provider-session-reuse-stage.md',
+        },
+        {
+          id: 'verification-and-compat',
+          title: 'Verification and compatibility',
+          goal: 'Finish regression, compatibility, and artifact-preservation checks.',
+          type: 'validation',
+          dependencies: ['submit-reconnect', 'provider-session-reuse'],
+          stageDocumentPath: 'docs/plans/2026-04-14-verification-and-compat-stage.md',
+        },
+      ],
+    })
+    expect(reconcileHarnessGraphArtifact).toHaveBeenCalledWith(createHarnessGraphArtifact.mock.results.at(-1)?.value)
     logSpy.mockRestore()
   })
 

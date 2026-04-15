@@ -83,6 +83,7 @@ describe('graph workbench loader', () => {
             capability: 'loop',
             sessionId: 'loop-ship',
           },
+          stageDocumentPath: 'docs/plans/2026-04-14-harness-recovery-stage.md',
           statusReason: 'Waiting for node approval: Approve release',
         },
         {
@@ -197,6 +198,7 @@ describe('graph workbench loader', () => {
       title: 'Release approval',
       type: 'approval',
       state: 'waiting_approval',
+      stageDocumentPath: 'docs/plans/2026-04-14-harness-recovery-stage.md',
       statusReason: 'Waiting for node approval: Approve release',
       dependencies: ['design-api'],
       approvalPending: true,

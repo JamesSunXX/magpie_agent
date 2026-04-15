@@ -119,6 +119,7 @@ export interface GraphWorkbenchNodeDetail {
   title: string
   type: string
   state: string
+  stageDocumentPath?: string
   statusReason?: string
   dependencies: string[]
   approvalPending: boolean

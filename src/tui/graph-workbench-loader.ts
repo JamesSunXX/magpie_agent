@@ -210,6 +210,7 @@ async function buildSelectedNodeDetail(
     title: node.title,
     type: node.type,
     state: node.state,
+    ...(node.stageDocumentPath ? { stageDocumentPath: node.stageDocumentPath } : {}),
     ...(node.statusReason ? { statusReason: node.statusReason } : {}),
     dependencies: [...node.dependencies],
     approvalPending: node.approvalGates.some((gate) => gate.status === 'pending'),
