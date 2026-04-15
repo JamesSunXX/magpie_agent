@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -8,6 +8,14 @@ import YAML from 'yaml'
 const execFileSyncMock = vi.hoisted(() => vi.fn())
 const knowledgeMocks = vi.hoisted(() => ({
   failPromote: false,
+}))
+const stageAiProviderMocks = vi.hoisted(() => ({
+  factory: null as null | (() => {
+    name?: string
+    setCwd?: ReturnType<typeof vi.fn>
+    chat: ReturnType<typeof vi.fn>
+    chatStream?: ReturnType<typeof vi.fn>
+  }),
 }))
 const validatorProviderMocks = vi.hoisted(() => ({
   claw: vi.fn(async () => '```json\n{"decision":"approved","rationale":"claw ok","unresolvedItems":[]}\n```'),
@@ -49,6 +57,14 @@ import { persistWorkflowSession } from '../../../src/capabilities/workflows/shar
 import { executeHarness } from '../../../src/capabilities/workflows/harness/application/execute.js'
 import { prepareHarnessInput } from '../../../src/capabilities/workflows/harness/application/prepare.js'
 import { reportHarness } from '../../../src/capabilities/workflows/harness/application/report.js'
+import { readFailureIndex } from '../../../src/core/failures/ledger.js'
+
+const originalHarnessEnv = {
+  executionHost: process.env.MAGPIE_EXECUTION_HOST,
+  tmuxSession: process.env.MAGPIE_TMUX_SESSION,
+  tmuxWindow: process.env.MAGPIE_TMUX_WINDOW,
+  tmuxPane: process.env.MAGPIE_TMUX_PANE,
+}
 
 vi.mock('../../../src/core/capability/runner.js', () => ({
   runCapability: vi.fn(),
@@ -74,6 +90,19 @@ vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
         setCwd: vi.fn(),
         chat: validatorProviderMocks[providerKey as 'claw' | 'kiro' | 'codex'],
       }
+    }),
+  }
+})
+
+vi.mock('../../../src/providers/configured-provider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/providers/configured-provider.js')>()
+  return {
+    ...actual,
+    createConfiguredProvider: vi.fn((input, config) => {
+      if (stageAiProviderMocks.factory && input.logicalName === 'integrations.notifications.stage_ai') {
+        return stageAiProviderMocks.factory()
+      }
+      return actual.createConfiguredProvider(input, config)
     }),
   }
 })
@@ -206,12 +235,34 @@ function readJson<T>(path: string): T {
 
 describe('harness workflow', () => {
   afterEach(() => {
+    if (originalHarnessEnv.executionHost === undefined) {
+      delete process.env.MAGPIE_EXECUTION_HOST
+    } else {
+      process.env.MAGPIE_EXECUTION_HOST = originalHarnessEnv.executionHost
+    }
+    if (originalHarnessEnv.tmuxSession === undefined) {
+      delete process.env.MAGPIE_TMUX_SESSION
+    } else {
+      process.env.MAGPIE_TMUX_SESSION = originalHarnessEnv.tmuxSession
+    }
+    if (originalHarnessEnv.tmuxWindow === undefined) {
+      delete process.env.MAGPIE_TMUX_WINDOW
+    } else {
+      process.env.MAGPIE_TMUX_WINDOW = originalHarnessEnv.tmuxWindow
+    }
+    if (originalHarnessEnv.tmuxPane === undefined) {
+      delete process.env.MAGPIE_TMUX_PANE
+    } else {
+      process.env.MAGPIE_TMUX_PANE = originalHarnessEnv.tmuxPane
+    }
     vi.clearAllMocks()
     knowledgeMocks.failPromote = false
+    stageAiProviderMocks.factory = null
     validatorProviderMocks.claw.mockClear()
     validatorProviderMocks.kiro.mockClear()
     validatorProviderMocks.codex.mockClear()
     vi.restoreAllMocks()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -299,6 +350,93 @@ describe('harness workflow', () => {
       expect(cardJson).not.toContain('claude-code')
     } finally {
       delete process.env.MAGPIE_MOCK_RESPONSE
+    }
+  })
+
+  it('falls back from hanging stage AI summaries without blocking harness progress', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-stage-ai-timeout-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    const configContent = readFileSync(configPath, 'utf-8').replace(
+      'integrations:\n  notifications:\n    enabled: false\n',
+      `integrations:\n  notifications:\n    enabled: true\n    stage_ai:\n      enabled: true\n      provider: codex\n      timeout_ms: 25\n      max_summary_chars: 900\n      include_loop: true\n      include_harness: true\n    routes:\n      stage_entered: [feishu_team]\n      stage_completed: [feishu_team]\n    providers:\n      feishu_team:\n        type: feishu-webhook\n        webhook_url: https://example.com/hook\n`
+    )
+    writeFileSync(configPath, configContent, 'utf-8')
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    mockClaudeHealthy()
+
+    const hangingChat = vi.fn(() => new Promise<string>(() => {}))
+    stageAiProviderMocks.factory = () => ({
+      name: 'stage-ai-hang',
+      setCwd: vi.fn(),
+      chat: hangingChat,
+      chatStream: vi.fn(async function * () {}),
+    })
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-1' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('completed')
+      expect(hangingChat).toHaveBeenCalled()
+      expect(fetchMock).toHaveBeenCalled()
+      const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      const firstText = firstBody.content.post.zh_cn.content[0][0].text as string
+      expect(firstBody.content.post.zh_cn.title).toContain('[stage_entered]')
+      expect(firstText).toContain('阶段: queued')
+      expect(firstText).toContain('下一步: 选择本轮可用模型并进入开发阶段。')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
     }
   })
 
@@ -1294,6 +1432,10 @@ integrations:
       expect(result.status).toBe('blocked')
       expect(result.session?.status).toBe('blocked')
       expect(result.session?.currentStage).toBe('developing')
+      const failureLogDir = result.session?.artifacts.failureLogDir
+      if (failureLogDir && existsSync(failureLogDir)) {
+        expect(readdirSync(failureLogDir)).toHaveLength(0)
+      }
       const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
       expect(events).toContain('"type":"stage_paused","stage":"developing","summary":"Harness paused during loop development stage for human intervention."')
       expect(events).not.toContain('"type":"stage_completed","stage":"developing"')
@@ -1415,6 +1557,10 @@ integrations:
     const magpieHome = join(dir, '.magpie-home')
     mkdirSync(magpieHome, { recursive: true })
     process.env.MAGPIE_HOME = magpieHome
+    delete process.env.MAGPIE_EXECUTION_HOST
+    delete process.env.MAGPIE_TMUX_SESSION
+    delete process.env.MAGPIE_TMUX_WINDOW
+    delete process.env.MAGPIE_TMUX_PANE
 
     const configPath = join(dir, 'config.yaml')
     writeConfig(configPath, {
@@ -1488,6 +1634,7 @@ integrations:
       expect(result.status).toBe('completed')
       expect(result.session?.status).toBe('completed')
       expect(result.session?.artifacts.loopSessionId).toBe('loop-1')
+      expect((result.session?.evidence as { runtime?: { processId?: number } } | undefined)?.runtime?.processId).toBe(process.pid)
       expect(result.session?.artifacts.providerSelectionPath).toBeTruthy()
       expect(result.session?.artifacts.eventsPath).toBeTruthy()
       expect(result.session?.artifacts.knowledgeSchemaPath).toBeTruthy()
@@ -1885,6 +2032,13 @@ integrations:
       expect(result.session?.status).toBe('failed')
       expect(result.session?.currentStage).toBe('failed')
       expect(issueFixCalls).toBe(2)
+      const failureFiles = readdirSync(result.session!.artifacts.failureLogDir!)
+      const failure = JSON.parse(readFileSync(join(result.session!.artifacts.failureLogDir!, failureFiles[0]!), 'utf-8')) as {
+        category: string
+        metadata: Record<string, unknown>
+      }
+      expect(failure.category).toBe('quality')
+      expect(failure.metadata.finalApprovalDenied).toBe(true)
       const events = readFileSync(result.session!.artifacts.eventsPath, 'utf-8')
         .trim()
         .split('\n')
@@ -2963,6 +3117,94 @@ describe('reportHarness logging levels', () => {
     errorSpy.mockRestore()
     infoSpy.mockRestore()
   })
+
+  it('writes a harness failure record when the inner loop fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-loop-failure-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+
+    const loopFailurePath = join(dir, 'loop-failure.json')
+    writeFileSync(loopFailurePath, JSON.stringify({
+      signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+      reason: 'Cannot safely resume because no reliable checkpoint was recorded.',
+    }, null, 2), 'utf-8')
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+    writeFileSync(join(dir, '.magpie', 'failure-index.json'), JSON.stringify({
+      version: 1,
+      updatedAt: '2026-04-12T10:00:00.000Z',
+      entries: [{
+        signature: 'loop|code_development|workflow_defect|resume-checkpoint',
+        category: 'workflow_defect',
+        categories: ['workflow_defect'],
+        count: 1,
+        firstSeenAt: '2026-04-12T10:00:00.000Z',
+        lastSeenAt: '2026-04-12T10:00:00.000Z',
+        lastSessionId: 'loop-failed',
+        recentSessionIds: ['loop-failed'],
+        capabilities: { loop: 1 },
+        latestReason: 'Cannot safely resume because no reliable checkpoint was recorded.',
+        latestEvidencePaths: [loopFailurePath],
+        recentEvidencePaths: [loopFailurePath],
+        selfHealCandidateCount: 1,
+        candidateForSelfRepair: true,
+        lastRecoveryAction: 'spawn_self_repair_candidate',
+      }],
+    }, null, 2), 'utf-8')
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'failed',
+            session: {
+              id: 'loop-failed',
+              status: 'failed',
+              artifacts: {
+                eventsPath: join(dir, 'loop-events.jsonl'),
+                lastFailurePath: loopFailurePath,
+              },
+            },
+          },
+          output: { summary: 'loop failed' } as never,
+        }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'Handle inner loop failure',
+      prdPath: join(dir, 'docs', 'prd.md'),
+      maxCycles: 1,
+    }, ctx)
+    const result = await executeHarness(prepared, ctx)
+
+    const failureFiles = readdirSync(result.session!.artifacts.failureLogDir!)
+    const failure = JSON.parse(readFileSync(join(result.session!.artifacts.failureLogDir!, failureFiles[0]!), 'utf-8')) as {
+      metadata: Record<string, unknown>
+    }
+    const failureIndex = await readFailureIndex(dir)
+
+    expect(result.status).toBe('failed')
+    expect(failure.metadata.sourceFailureSignature).toBe('code_development|workflow_defect|resume-checkpoint')
+    expect(failure.metadata.countTowardFailureIndex).toBe(false)
+    expect(failureIndex.entries).toHaveLength(1)
+    expect(failureIndex.entries[0]).toMatchObject({
+      signature: 'code_development|workflow_defect|resume-checkpoint',
+      count: 1,
+      capabilities: {
+        loop: 1,
+      },
+    })
+  })
 })
 
 describe('summarizeHarness', () => {
@@ -3009,7 +3251,7 @@ describe('prepareHarnessInput', () => {
     const prepared = await prepareHarnessInput({ goal: 'ship it', prdPath: '/tmp/prd.md' }, ctx)
     expect(prepared.maxCycles).toBe(3)
     expect(prepared.reviewRounds).toBe(3)
-    expect(prepared.models).toEqual(['gemini-cli', 'kiro'])
+    expect(prepared.models).toEqual(['kiro', 'codex'])
     expect(prepared.preparedAt).toBeInstanceOf(Date)
   })
 
@@ -3046,6 +3288,216 @@ describe('prepareHarnessInput', () => {
       prdPath: '/tmp/prd.md',
       models: [],
     }, ctx)
-    expect(prepared.models).toEqual(['gemini-cli', 'kiro'])
+    expect(prepared.models).toEqual(['kiro', 'codex'])
+  })
+
+  it('keeps config-driven reviewer selection on resume when models were not explicitly chosen', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-prepare-resume-config-'))
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  kiro:
+    enabled: true
+  codex:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  primary:
+    tool: kiro
+    prompt: primary review
+  secondary:
+    tool: codex
+    prompt: secondary review
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  harness:
+    default_reviewers:
+      - primary
+      - secondary
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'g',
+      prdPath: '/tmp/prd.md',
+      models: ['kiro', 'codex'],
+      modelsExplicit: false,
+    }, ctx)
+
+    expect(prepared.modelsExplicit).toBe(false)
+    expect(prepared.models).toEqual(['kiro', 'codex'])
+  })
+
+  it('uses configured harness reviewers when models are omitted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-prepare-config-'))
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  kiro:
+    enabled: true
+  codex:
+    enabled: true
+reviewers:
+  primary:
+    tool: kiro
+    agent: go-reviewer
+    prompt: primary review
+  secondary:
+    tool: codex
+    prompt: secondary review
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+summarizer:
+  model: kiro
+  prompt: summarize
+analyzer:
+  model: codex
+  prompt: analyze
+capabilities:
+  harness:
+    default_reviewers:
+      - primary
+      - secondary
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const prepared = await prepareHarnessInput({
+      goal: 'g',
+      prdPath: '/tmp/prd.md',
+    }, ctx)
+
+    expect(prepared.models).toEqual(['kiro', 'codex'])
+  })
+
+  it('fails fast when the config file is malformed and models depend on config defaults', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-prepare-bad-config-'))
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, 'providers:\n  kiro: [\n', 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+
+    await expect(prepareHarnessInput({
+      goal: 'g',
+      prdPath: '/tmp/prd.md',
+    }, ctx)).rejects.toThrow()
+  })
+
+  it('persists whether reviewer models were explicitly chosen', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-persist-explicit-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  kiro:
+    enabled: true
+  codex:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  primary:
+    tool: kiro
+    prompt: primary review
+  secondary:
+    tool: codex
+    prompt: secondary review
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  harness:
+    default_reviewers:
+      - primary
+      - secondary
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  issue_fix:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+  quality:
+    unitTestEval:
+      enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-persist' } },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+      const evidence = result.session?.evidence as { input?: { modelsExplicit?: boolean } } | undefined
+
+      expect(result.status).toBe('completed')
+      expect(evidence?.input?.modelsExplicit).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
   })
 })

@@ -5,6 +5,7 @@ import { CliSessionHelper } from './session-helper.js'
 export class CodexCliProvider implements AIProvider {
   name = 'codex'
   supportsPreciseSessionRestore = true
+  private static readonly TURN_COMPLETION_GRACE_MS = 5000
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private readonly model?: string
@@ -194,21 +195,26 @@ export class CodexCliProvider implements AIProvider {
   private flushJsonLines(
     lineBuf: string,
     onProgress?: (event: ProviderProgressEvent) => void
-  ): { remainder: string } {
+  ): { remainder: string; sawTurnCompleted: boolean } {
     const lines = lineBuf.split('\n')
     const remainder = lines.pop() || ''
+    let sawTurnCompleted = false
 
     for (const line of lines) {
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        this.handleProgressEvent(JSON.parse(trimmed) as Record<string, unknown>, onProgress)
+        const event = JSON.parse(trimmed) as Record<string, unknown>
+        this.handleProgressEvent(event, onProgress)
+        if (event.type === 'turn.completed') {
+          sawTurnCompleted = true
+        }
       } catch {
         // Ignore non-JSON output from the CLI.
       }
     }
 
-    return { remainder }
+    return { remainder, sawTurnCompleted }
   }
 
   private runCodex(
@@ -229,11 +235,37 @@ export class CodexCliProvider implements AIProvider {
       const startTime = Date.now()
       let lastActivity = Date.now()
       let lineBuf = ''
+      let sawTurnCompleted = false
+      let completionGraceTimer: NodeJS.Timeout | null = null
       const checkInterval = this.getTimeoutCheckInterval()
+      const graceMs = this.timeout > 0
+        ? Math.min(this.timeout, CodexCliProvider.TURN_COMPLETION_GRACE_MS)
+        : CodexCliProvider.TURN_COMPLETION_GRACE_MS
+      const clearCompletionGraceTimer = () => {
+        if (completionGraceTimer) {
+          clearTimeout(completionGraceTimer)
+          completionGraceTimer = null
+        }
+      }
+      const resolveWithCurrentOutput = () => {
+        if (settled) return
+        settled = true
+        clearCompletionGraceTimer()
+        if (timeoutChecker) clearInterval(timeoutChecker)
+        child.kill('SIGTERM')
+        resolve(this.parseJsonlOutput(output))
+      }
+      const armCompletionGraceTimer = () => {
+        if (completionGraceTimer || settled) return
+        completionGraceTimer = setTimeout(() => {
+          resolveWithCurrentOutput()
+        }, graceMs)
+      }
       const timeoutChecker = this.timeout > 0 ? setInterval(() => {
         const elapsed = Date.now() - startTime
         const idle = Date.now() - lastActivity
         if ((elapsed > this.timeout || idle > this.timeout) && !settled) {
+          clearCompletionGraceTimer()
           if (timeoutChecker) clearInterval(timeoutChecker)
           child.kill('SIGTERM')
           settled = true
@@ -246,7 +278,12 @@ export class CodexCliProvider implements AIProvider {
         const chunk = data.toString()
         output += chunk
         lineBuf += chunk
-        lineBuf = this.flushJsonLines(lineBuf, onProgress).remainder
+        const flushed = this.flushJsonLines(lineBuf, onProgress)
+        lineBuf = flushed.remainder
+        if (flushed.sawTurnCompleted) {
+          sawTurnCompleted = true
+          armCompletionGraceTimer()
+        }
       })
 
       child.stderr.on('data', (data) => {
@@ -255,17 +292,22 @@ export class CodexCliProvider implements AIProvider {
       })
 
       child.on('close', (code) => {
+        clearCompletionGraceTimer()
         if (timeoutChecker) clearInterval(timeoutChecker)
         if (settled) return
         settled = true
         if (lineBuf.trim()) {
           try {
-            this.handleProgressEvent(JSON.parse(lineBuf.trim()) as Record<string, unknown>, onProgress)
+            const event = JSON.parse(lineBuf.trim()) as Record<string, unknown>
+            this.handleProgressEvent(event, onProgress)
+            if (event.type === 'turn.completed') {
+              sawTurnCompleted = true
+            }
           } catch {
             // Ignore trailing non-JSON output.
           }
         }
-        if (code !== 0) {
+        if (code !== 0 && !sawTurnCompleted) {
           reject(new Error(`Codex CLI exited with code ${code}: ${error}`))
         } else {
           resolve(this.parseJsonlOutput(output))
@@ -273,6 +315,7 @@ export class CodexCliProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        clearCompletionGraceTimer()
         if (timeoutChecker) clearInterval(timeoutChecker)
         if (settled) return
         settled = true

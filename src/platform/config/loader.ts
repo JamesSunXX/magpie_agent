@@ -19,7 +19,9 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 15
+export const CURRENT_CONFIG_VERSION = 16
+const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
+const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 
 export interface ConfigVersionStatus {
   path: string
@@ -421,6 +423,13 @@ function validateLoopExecutionTimeout(timeout: LoopExecutionTimeoutConfig | unde
   }
 }
 
+function validateNotificationsConfig(config: MagpieConfigV2['integrations']['notifications'] | undefined): void {
+  if (!config) return
+
+  validatePositiveNumber('integrations.notifications.default_timeout_ms', config.default_timeout_ms)
+  validatePositiveNumber('integrations.notifications.stage_ai.timeout_ms', config.stage_ai?.timeout_ms)
+}
+
 function isLegacyConfig(config: Record<string, unknown>): boolean {
   return !('capabilities' in config) && !('integrations' in config)
 }
@@ -472,6 +481,28 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   validateLoopConfig(config.capabilities.loop, config.reviewers, config.capabilities.discuss?.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
   validateLoopExecutionTimeout(config.capabilities.loop?.execution_timeout)
+  validateNotificationsConfig(config.integrations.notifications)
+}
+
+function normalizeLegacyLoopCommands(config: MagpieConfigV2, rawVersion: number | undefined, configPath: string): void {
+  const commands = config.capabilities.loop?.commands
+  if (!commands) return
+
+  if (
+    rawVersion !== undefined
+    && rawVersion >= CURRENT_CONFIG_VERSION
+  ) {
+    return
+  }
+
+  if (commands.integration_test?.trim() !== LEGACY_INTEGRATION_TEST_COMMAND) {
+    return
+  }
+
+  commands.integration_test = DEFAULT_INTEGRATION_TEST_COMMAND
+  logger.warn(
+    `capabilities.loop.commands.integration_test used legacy default "${LEGACY_INTEGRATION_TEST_COMMAND}" and was normalized to "${DEFAULT_INTEGRATION_TEST_COMMAND}" in memory. Run \`magpie init --upgrade --config ${configPath}\` to persist the new default.`
+  )
 }
 
 export function loadConfig(configPath?: string): MagpieConfigV2 {
@@ -483,11 +514,13 @@ export function loadConfig(configPath?: string): MagpieConfigV2 {
 
   const content = readFileSync(path, 'utf-8')
   const parsed = parse(content) as Record<string, unknown>
+  const rawVersion = typeof parsed?.config_version === 'number' ? parsed.config_version : undefined
   const expanded = expandEnvVarsInObject(parsed) as MagpieConfigV2
   if (expanded.config_version === undefined) {
     expanded.config_version = CURRENT_CONFIG_VERSION
   }
 
   validateConfig(expanded, parsed)
+  normalizeLegacyLoopCommands(expanded, rawVersion, path)
   return expanded
 }

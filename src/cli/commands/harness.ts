@@ -62,6 +62,10 @@ interface PersistedHarnessResumeEvidence {
   configPath?: string
   runtime?: {
     lastReliablePoint?: string
+    retryCount?: number
+    nextRetryAt?: string
+    lastError?: string
+    processId?: number
   }
 }
 
@@ -568,7 +572,7 @@ async function recordHarnessApprovalDecision(
   decision: 'approved' | 'rejected',
   options: HarnessApprovalCommandOptions
 ): Promise<void> {
-  const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+  const session = await loadHarnessSessionForCommand(sessionId)
   if (!session) {
     console.error(`Harness session not found: ${sessionId}`)
     process.exitCode = 1
@@ -701,6 +705,82 @@ async function findRecoverableHarnessSession(
   return null
 }
 
+function readForegroundHarnessProcessId(session: WorkflowSession): number | null {
+  if (session.artifacts.executionHost !== 'foreground') {
+    return null
+  }
+
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  const processId = evidence?.runtime?.processId
+  return Number.isInteger(processId) && Number(processId) > 0
+    ? Number(processId)
+    : null
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function reconcileForegroundHarnessSession(session: WorkflowSession): Promise<WorkflowSession> {
+  if (session.status !== 'in_progress') {
+    return session
+  }
+
+  const processId = readForegroundHarnessProcessId(session)
+  if (!processId || processId === process.pid || isProcessAlive(processId)) {
+    return session
+  }
+
+  const evidence = session.evidence as PersistedHarnessResumeEvidence | undefined
+  const requeued: WorkflowSession = {
+    ...session,
+    status: 'waiting_next_cycle',
+    updatedAt: new Date(),
+    summary: 'Harness foreground runner disappeared; queued to resume.',
+    evidence: evidence
+      ? {
+        ...evidence,
+        runtime: {
+          ...(evidence.runtime || {}),
+          lastError: 'foreground_process_missing',
+          lastReliablePoint: 'waiting_next_cycle',
+        },
+      }
+      : session.evidence,
+  }
+
+  await persistWorkflowSession(process.cwd(), requeued)
+  await appendWorkflowEvent(process.cwd(), 'harness', session.id, {
+    timestamp: new Date(),
+    type: 'session_requeued',
+    stage: session.currentStage,
+    summary: requeued.summary,
+    details: {
+      reason: 'foreground_process_missing',
+      processId,
+    },
+  })
+  return requeued
+}
+
+async function loadHarnessSessionForCommand(sessionId: string): Promise<WorkflowSession | null> {
+  const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+  if (!session) {
+    return null
+  }
+  return reconcileForegroundHarnessSession(session)
+}
+
+async function listHarnessSessionsForCommand(): Promise<WorkflowSession[]> {
+  const sessions = await listWorkflowSessions(process.cwd(), 'harness')
+  return Promise.all(sessions.map((session) => reconcileForegroundHarnessSession(session)))
+}
+
 async function runHarnessWithSession(
   input: HarnessInput,
   options: HarnessCommandOptions,
@@ -711,7 +791,15 @@ async function runHarnessWithSession(
     registry,
     'harness'
   )
-  const progressReporter = createHarnessProgressReporter()
+  const baseProgressReporter = createHarnessProgressReporter()
+  let activeSessionId = sessionId?.trim() || ''
+  const progressReporter = {
+    ...baseProgressReporter,
+    onSessionUpdate(session: WorkflowSession): void {
+      activeSessionId = session.id
+      baseProgressReporter.onSessionUpdate(session)
+    },
+  }
   const ctx = createCapabilityContext({
     cwd: process.cwd(),
     configPath: options.config,
@@ -724,61 +812,149 @@ async function runHarnessWithSession(
   if (sessionId) {
     process.env.MAGPIE_SESSION_ID = sessionId
   }
-  const { output, result } = await (async () => {
-    try {
-      return await runCapability(capability, input, ctx)
-    } finally {
-      progressReporter.stop()
-      if (sessionId) {
-        if (previousSessionId === undefined) {
-          delete process.env.MAGPIE_SESSION_ID
-        } else {
-          process.env.MAGPIE_SESSION_ID = previousSessionId
-        }
-      }
-    }
-  })()
 
-  console.log(output.summary)
-  if (output.details) {
-    if (!progressReporter.hasAnnouncedSession()) {
-      console.log(`Session: ${output.details.id}`)
-      console.log(`Status: ${output.details.status}`)
-      if (output.details.currentStage) {
-        console.log(`Stage: ${output.details.currentStage}`)
-      }
-      if (output.details.artifacts.eventsPath) {
-        console.log(`Events: ${output.details.artifacts.eventsPath}`)
-      }
+  const interruptError = new Error('HARNESS_INTERRUPTED')
+  let interrupted = false
+  let lastSignalAt = 0
+  let interruptSettled = false
+  let rejectInterrupted!: (reason: Error) => void
+  const interruptedRun = new Promise<never>((_resolve, reject) => {
+    rejectInterrupted = reject
+  })
+
+  const queueInterruptedSession = async (signal: NodeJS.Signals): Promise<void> => {
+    if (interruptSettled) {
+      return
     }
-    if (output.details.artifacts.workspacePath) {
-      console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+    interruptSettled = true
+    process.exitCode = 130
+
+    if (!activeSessionId) {
+      rejectInterrupted(interruptError)
+      return
     }
-    if (output.details.artifacts.executionHost) {
-      console.log(`Host: ${output.details.artifacts.executionHost}`)
+
+    const persisted = await loadWorkflowSession(process.cwd(), 'harness', activeSessionId)
+    if (persisted?.status === 'in_progress') {
+      const evidence = persisted.evidence as PersistedHarnessResumeEvidence | undefined
+      await persistWorkflowSession(process.cwd(), {
+        ...persisted,
+        status: 'waiting_next_cycle',
+        updatedAt: new Date(),
+        summary: 'Harness session was interrupted and queued to resume.',
+        evidence: evidence
+          ? {
+            ...evidence,
+            runtime: {
+              ...(evidence.runtime || {}),
+              lastError: signal.toLowerCase(),
+              lastReliablePoint: 'waiting_next_cycle',
+            },
+          }
+          : persisted.evidence,
+      })
+      await appendWorkflowEvent(process.cwd(), 'harness', persisted.id, {
+        timestamp: new Date(),
+        type: 'session_requeued',
+        stage: persisted.currentStage,
+        summary: 'Harness session was interrupted and queued to resume.',
+        details: {
+          signal,
+        },
+      })
     }
-    if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
-      console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
-    }
-    console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
-    console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
-    console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
-    console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
-    if (output.details.artifacts.loopSessionId) {
-      console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
-      const loopSnapshot = await loadLoopSessionSnapshot(output.details.artifacts.loopSessionId)
-      if (loopSnapshot) {
-        console.log(`Loop status: ${loopSnapshot.status}`)
-        console.log(`Loop summary: ${loopSnapshot.summary}`)
-        if (loopSnapshot.mr) {
-          console.log(`Loop MR: ${loopSnapshot.mr.line}`)
-        }
-      }
-    }
+
+    rejectInterrupted(interruptError)
   }
 
-  if (result.status === 'failed') {
-    process.exitCode = 1
+  const handleSignal = (signal: NodeJS.Signals) => {
+    const now = Date.now()
+    if (interrupted && now - lastSignalAt < 3000) {
+      console.error('\nForce exit.')
+      process.exit(130)
+    }
+    interrupted = true
+    lastSignalAt = now
+    console.error('\nHarness interrupted. Queueing resume... (press again to force exit)')
+    void queueInterruptedSession(signal).finally(() => {
+      process.exit(130)
+    })
+  }
+
+  const sigintHandler = () => handleSignal('SIGINT')
+  const sigtermHandler = () => handleSignal('SIGTERM')
+  const sighupHandler = () => handleSignal('SIGHUP')
+  process.on('SIGINT', sigintHandler)
+  process.on('SIGTERM', sigtermHandler)
+  process.on('SIGHUP', sighupHandler)
+
+  try {
+    const execution = (async () => runCapability(capability, input, ctx))()
+    execution.catch(() => undefined)
+    const { output, result } = await Promise.race([execution, interruptedRun])
+
+    console.log(output.summary)
+    if (output.details) {
+      if (!progressReporter.hasAnnouncedSession()) {
+        console.log(`Session: ${output.details.id}`)
+        console.log(`Status: ${output.details.status}`)
+        if (output.details.currentStage) {
+          console.log(`Stage: ${output.details.currentStage}`)
+        }
+        if (output.details.artifacts.eventsPath) {
+          console.log(`Events: ${output.details.artifacts.eventsPath}`)
+        }
+      }
+      if (output.details.artifacts.workspacePath) {
+        console.log(`Workspace: ${output.details.artifacts.workspacePath} (${output.details.artifacts.workspaceMode || 'current'})`)
+      }
+      if (output.details.artifacts.executionHost) {
+        console.log(`Host: ${output.details.artifacts.executionHost}`)
+      }
+      if (output.details.artifacts.tmuxSession || output.details.artifacts.tmuxWindow || output.details.artifacts.tmuxPane) {
+        console.log(`Tmux: session=${output.details.artifacts.tmuxSession || '-'} window=${output.details.artifacts.tmuxWindow || '-'} pane=${output.details.artifacts.tmuxPane || '-'}`)
+      }
+      console.log(`Config: ${output.details.artifacts.harnessConfigPath}`)
+      console.log(`Rounds: ${output.details.artifacts.roundsPath}`)
+      console.log(`Provider selection: ${output.details.artifacts.providerSelectionPath}`)
+      console.log(`Routing: ${output.details.artifacts.routingDecisionPath}`)
+      if (output.details.artifacts.loopSessionId) {
+        console.log(`Loop session: ${output.details.artifacts.loopSessionId}`)
+        const loopSnapshot = await loadLoopSessionSnapshot(output.details.artifacts.loopSessionId)
+        if (loopSnapshot) {
+          console.log(`Loop status: ${loopSnapshot.status}`)
+          console.log(`Loop summary: ${loopSnapshot.summary}`)
+          if (loopSnapshot.mr) {
+            console.log(`Loop MR: ${loopSnapshot.mr.line}`)
+          }
+        }
+      }
+    }
+
+    if (result.status === 'failed') {
+      process.exitCode = 1
+    }
+  } catch (error) {
+    if (error === interruptError) {
+      if (activeSessionId) {
+        console.log(`Session: ${activeSessionId}`)
+        console.log('Status: waiting_next_cycle')
+      }
+      return
+    }
+    throw error
+  } finally {
+    progressReporter.stop()
+    process.off('SIGINT', sigintHandler)
+    process.off('SIGTERM', sigtermHandler)
+    process.off('SIGHUP', sighupHandler)
+    if (sessionId) {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+    }
   }
 }
 
@@ -954,7 +1130,7 @@ harnessCommand
   .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
   .option('--node <id>', 'Show a specific graph node when the session has a graph')
   .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -1034,7 +1210,7 @@ harnessCommand
   .argument('<sessionId>', 'Harness session ID')
   .option('-c, --config <path>', 'Path to config file')
   .action(async (sessionId: string, options: Pick<HarnessCommandOptions, 'config'>) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -1133,7 +1309,7 @@ harnessCommand
   .argument('<sessionId>', 'Harness session ID')
   .option('--once', 'Print current events and exit')
   .action(async (sessionId: string, options: { once?: boolean }) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -1157,7 +1333,7 @@ harnessCommand
     await followHarnessEventStream({
       sessionId,
       initialSession: session,
-      loadSession: async (id) => loadWorkflowSession(process.cwd(), 'harness', id),
+      loadSession: async (id) => loadHarnessSessionForCommand(id),
       once: !!options.once,
     })
   })
@@ -1169,7 +1345,7 @@ harnessCommand
   .option('--cycle <number>', 'Show a specific persisted review cycle', parseHarnessCycle)
   .option('--node <id>', 'Show a specific graph node when the session has a graph')
   .action(async (sessionId: string, options: HarnessRoundViewOptions) => {
-    const session = await loadWorkflowSession(process.cwd(), 'harness', sessionId)
+    const session = await loadHarnessSessionForCommand(sessionId)
     if (!session) {
       console.error(`Harness session not found: ${sessionId}`)
       process.exitCode = 1
@@ -1236,7 +1412,7 @@ harnessCommand
   .command('list')
   .description('List persisted harness sessions')
   .action(async () => {
-    const sessions = await listWorkflowSessions(process.cwd(), 'harness')
+    const sessions = await listHarnessSessionsForCommand()
     if (sessions.length === 0) {
       console.log('No harness sessions found.')
       return

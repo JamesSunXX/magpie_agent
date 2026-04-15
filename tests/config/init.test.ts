@@ -40,6 +40,7 @@ describe('Config Init', () => {
     expect(content).toContain('fallback_chain:')
     expect(content).toContain('harness:')
     expect(content).toContain('validator_checks:')
+    expect(content).toContain('integration_test: "npm run test:run -- tests/e2e"')
     expect(content).not.toContain('auto_commit_model:')
     expect(content).not.toContain('image_reader:')
   })
@@ -59,6 +60,7 @@ describe('Config Init', () => {
     expect(content).toContain('chat_guid:${BLUEBUBBLES_CHAT_GUID}')
     expect(content).toContain('stage_ai:')
     expect(content).toContain('provider: "codex"')
+    expect(content).toContain('timeout_ms: 2000')
     expect(content).toContain('include_loop: true')
     expect(content).toContain('include_harness: true')
     expect(content).toContain('stage_entered: [feishu_team]')
@@ -160,6 +162,43 @@ integrations:
     expect(result.changes).toContain('Added capabilities.loop MR defaults.')
     expect(result.changes).toContain('Filled missing integrations.notifications defaults.')
     expect(result.warnings).toContain('Review repo-specific verification commands before applying this config to a non-Node repository.')
+  })
+
+  it('upgrades the legacy integration test command to the e2e default', () => {
+    const configPath = join(testDir, '.magpie', 'config.yaml')
+    mkdirSync(join(testDir, '.magpie'), { recursive: true })
+    writeFileSync(configPath, `config_version: 12
+providers: {}
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  codex:
+    tool: codex
+    prompt: review
+summarizer:
+  model: kiro
+  prompt: summarize
+analyzer:
+  model: kiro
+  prompt: analyze
+capabilities:
+  loop:
+    commands:
+      integration_test: "npm run test:run -- tests/integration"
+  review:
+    enabled: true
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const result = upgradeConfigWithResult(configPath)
+    const upgraded = readFileSync(configPath, 'utf-8')
+
+    expect(upgraded).toContain('integration_test: npm run test:run -- tests/e2e')
+    expect(result.changes).toContain('Updated capabilities.loop.commands.integration_test to the e2e default.')
   })
 
   it('supports dry-run upgrade without writing files', () => {
@@ -308,6 +347,7 @@ integrations:
     stage_ai:
       enabled: true
       provider: codex
+      timeout_ms: 2500
       max_summary_chars: 700
       include_loop: true
       include_harness: false
@@ -323,6 +363,7 @@ integrations:
     const config = loadConfig(configPath)
     expect(config.integrations.notifications?.stage_ai?.enabled).toBe(true)
     expect(config.integrations.notifications?.stage_ai?.provider).toBe('codex')
+    expect(config.integrations.notifications?.stage_ai?.timeout_ms).toBe(2500)
     expect(config.integrations.notifications?.stage_ai?.max_summary_chars).toBe(700)
     expect(config.integrations.notifications?.stage_ai?.include_loop).toBe(true)
     expect(config.integrations.notifications?.stage_ai?.include_harness).toBe(false)

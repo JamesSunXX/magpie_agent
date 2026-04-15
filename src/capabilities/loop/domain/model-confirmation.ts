@@ -133,6 +133,10 @@ function uniqueRequiredActions(decisions: Array<Pick<ModelReviewerDecision, 'req
 export async function runLoopModelConfirmation(
   input: RunLoopModelConfirmationInput
 ): Promise<LoopModelConfirmationResult> {
+  if (input.reviewerIds.length === 0) {
+    throw new Error('multi_model gate requires at least one reviewer')
+  }
+
   const reviewerPrompt = buildReviewerInput(input)
   const reviewers: ModelReviewerDecision[] = []
 

@@ -6,6 +6,7 @@ import {
   syncProjectMemoryFromPromotedKnowledge,
 } from '../memory/runtime.js'
 import { getProjectStorageKey } from '../platform/project-identity.js'
+import { readFailureIndex } from '../core/failures/ledger.js'
 
 export interface KnowledgeArtifacts {
   knowledgeSchemaPath: string
@@ -381,6 +382,37 @@ function finalizeCandidate(candidate: KnowledgeCandidate, status: KnowledgeCandi
   }
 }
 
+function buildFailureIndexCandidates(
+  entries: Array<{
+    signature: string
+    count: number
+    latestReason: string
+    latestEvidencePaths?: string[]
+    recentSessionIds?: string[]
+    selfHealCandidateCount?: number
+  }>
+): KnowledgeCandidate[] {
+  return entries
+    .filter((entry) => entry.count >= 2)
+    .map((entry) => ({
+      type: 'failure-pattern' as const,
+      title: entry.latestReason || entry.signature,
+      summary: [
+        entry.latestReason || entry.signature,
+        `Signature: ${entry.signature}`,
+        `Count: ${entry.count}`,
+        entry.selfHealCandidateCount && entry.selfHealCandidateCount > 0
+          ? 'Self-repair candidate seen in failure ledger.'
+          : undefined,
+      ].filter(Boolean).join('\n'),
+      topicKey: entry.signature,
+      sourceSessionId: entry.recentSessionIds?.[entry.recentSessionIds.length - 1] || 'failure-index',
+      evidencePath: entry.latestEvidencePaths?.[0],
+      status: 'candidate' as const,
+      lifecycle: 'active' as const,
+    }))
+}
+
 export async function promoteKnowledgeCandidates(
   repoRoot: string,
   candidates: KnowledgeCandidate[]
@@ -399,6 +431,7 @@ export async function promoteKnowledgeCandidates(
   await mkdir(workflowRulesDir, { recursive: true })
 
   const failureCounts = await readCountIndex(failureCountPath)
+  const failureIndexCandidates = buildFailureIndexCandidates((await readFailureIndex(repoRoot)).entries)
 
   for (const candidate of candidates) {
     const slug = candidateSlug(candidate)
@@ -424,6 +457,13 @@ export async function promoteKnowledgeCandidates(
       continue
     }
 
+    const promotedCandidate = finalizeCandidate(candidate, 'promoted', 'active')
+    await writeFile(join(failuresDir, `${slug}.md`), `${formatGlobalEntry(promotedCandidate)}\n`, 'utf-8')
+    promoted.push(promotedCandidate)
+  }
+
+  for (const candidate of failureIndexCandidates) {
+    const slug = candidateSlug(candidate)
     const promotedCandidate = finalizeCandidate(candidate, 'promoted', 'active')
     await writeFile(join(failuresDir, `${slug}.md`), `${formatGlobalEntry(promotedCandidate)}\n`, 'utf-8')
     promoted.push(promotedCandidate)

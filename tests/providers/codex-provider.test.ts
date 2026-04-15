@@ -75,6 +75,7 @@ afterEach(() => {
   } else {
     process.env.MAGPIE_CODEX_TIMEOUT_MS = originalTimeoutEnv
   }
+  vi.useRealTimers()
 })
 
 describe('CodexCliProvider behavior', () => {
@@ -312,5 +313,59 @@ describe('CodexCliProvider behavior', () => {
     const result = await provider.chat([{ role: 'user', content: 'no timeout' }])
     expect(result).toBe('ok')
     expect(killSpies.some((spy) => spy.mock.calls.length > 0)).toBe(false)
+  })
+
+  it('resolves shortly after turn completion even if codex never exits cleanly', async () => {
+    vi.useFakeTimers()
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"thread.started","thread_id":"thread-stuck"}\n' +
+          '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n' +
+          '{"type":"turn.completed"}\n'
+        ))
+      }
+    })
+
+    const provider = new CodexCliProvider({ timeoutMs: 60000 })
+    const promise = provider.chat([{ role: 'user', content: 'stuck after complete' }])
+
+    await vi.advanceTimersByTimeAsync(5000)
+
+    await expect(promise).resolves.toBe('done')
+    expect(killSpies[0]).toHaveBeenCalledWith('SIGTERM')
+  })
+
+  it('keeps the grace window when timeout=0 so trailing output can flush', async () => {
+    vi.useFakeTimers()
+    process.env.MAGPIE_CODEX_TIMEOUT_MS = '0'
+    scenarios.push({
+      onStdinEnd: (child) => {
+        child.stdout.emit('data', Buffer.from(
+          '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n' +
+          '{"type":"turn.completed"}\n'
+        ))
+        setTimeout(() => {
+          child.stdout.emit('data', Buffer.from(
+            '{"type":"item.completed","item":{"type":"agent_message","text":" later"}}\n'
+          ))
+          child.emit('close', 0)
+        }, 1000)
+      }
+    })
+
+    const provider = new CodexCliProvider()
+    const promise = provider.chat([{ role: 'user', content: 'flush trailing output' }])
+    let settled = false
+    promise.finally(() => {
+      settled = true
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(promise).resolves.toBe('done later')
+    expect(killSpies[0]).not.toHaveBeenCalled()
   })
 })

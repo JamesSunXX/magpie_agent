@@ -222,6 +222,7 @@ export type NotificationEventType =
 export interface StageAiNotificationConfig {
   enabled?: boolean
   provider?: string
+  timeout_ms?: number
   max_summary_chars?: number
   include_loop?: boolean
   include_harness?: boolean

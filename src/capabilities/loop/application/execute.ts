@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto'
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import type { CapabilityContext } from '../../../core/capability/context.js'
@@ -34,9 +34,11 @@ import {
   extractPlanningItemKey,
 } from '../../../platform/integrations/planning/index.js'
 import {
+  appendWorkflowFailure,
   buildCommandSafetyConfig,
   isRecoverableLoopSession,
   runSafeCommand,
+  resolveWorkflowFailureArtifacts,
 } from '../../workflows/shared/runtime.js'
 import {
   generateDocumentPlan,
@@ -106,6 +108,9 @@ const DEFAULT_STAGES: LoopStageName[] = [
   'unit_mock_test',
   'integration_test',
 ]
+
+const LEGACY_DEFAULT_MOCK_TEST_COMMAND = 'npm run test:run -- tests/mock'
+const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 
 interface LoopRuntimeConfig {
   plannerTool?: string
@@ -476,7 +481,7 @@ function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: s
     commands: {
       unitTest: config?.commands?.unit_test || 'npm run test:run',
       mockTest: config?.commands?.mock_test?.trim() || undefined,
-      integrationTest: config?.commands?.integration_test || 'npm run test:run -- tests/integration',
+      integrationTest: config?.commands?.integration_test || DEFAULT_INTEGRATION_TEST_COMMAND,
       unitMockTestSteps: resolveUnitMockTestSteps(config?.commands?.unit_mock_test_steps),
     },
     executionTimeout: {
@@ -586,6 +591,31 @@ function runVerificationSteps(
   }
 }
 
+function runOptionalMockCommand(
+  cwd: string,
+  command: string | undefined,
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+): { passed: boolean; output: string; commandLabel: string } {
+  const result = runOptionalCommand(
+    cwd,
+    command,
+    'Skipped: no mock test command configured.',
+    commandSafety
+  )
+
+  if (command?.trim() === LEGACY_DEFAULT_MOCK_TEST_COMMAND
+    && result.passed === false
+    && /No test files found/i.test(result.output)) {
+    return {
+      passed: true,
+      output: 'Skipped: no matching tests for legacy default mock target.',
+      commandLabel: '(skipped: no matching tests)',
+    }
+  }
+
+  return result
+}
+
 function renderPlanSummary(tasks: LoopTask[]): string {
   return [
     '# Plan',
@@ -644,19 +674,47 @@ function renderEvidence(stageRun: StageRunResult): string {
   ].filter(Boolean).join('\n')
 }
 
+const GENERATED_VERIFICATION_START = '<!-- MAGPIE_GENERATED_VERIFICATION_START -->'
+const GENERATED_VERIFICATION_END = '<!-- MAGPIE_GENERATED_VERIFICATION_END -->'
+
 function mergeStageReportWithVerification(stageReport: string, testOutput: string): string {
   if (!testOutput.trim()) {
     return stageReport
   }
 
-  const base = stageReport.trimEnd()
+  const base = stripGeneratedVerification(stageReport)
   return [
     base,
     '',
+    GENERATED_VERIFICATION_START,
     '# Verification',
     '',
     testOutput,
+    GENERATED_VERIFICATION_END,
   ].join('\n')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function stripGeneratedVerification(stageReport: string): string {
+  const trimmed = stageReport.trimEnd()
+  const markedBlock = new RegExp(
+    `${escapeRegExp(GENERATED_VERIFICATION_START)}[\\s\\S]*?${escapeRegExp(GENERATED_VERIFICATION_END)}\\s*`,
+    'g'
+  )
+  if (markedBlock.test(trimmed)) {
+    return trimmed.replace(markedBlock, '').trimEnd()
+  }
+
+  const legacyGeneratedVerification = /\n?#{1,6}\s+Verification\b\s*\n+\s*##\s+(?:Unit Test|Integration Test)\s+\([\s\S]*$/im
+  const legacyMatch = legacyGeneratedVerification.exec(trimmed)
+  if (!legacyMatch || legacyMatch.index === undefined) {
+    return trimmed
+  }
+
+  return trimmed.slice(0, legacyMatch.index).trimEnd()
 }
 
 function buildLoopRoleOpenIssuesMarkdown(issues: Array<{
@@ -995,14 +1053,16 @@ JSON schema:
 }
 
 function shouldGate(
+  stage: LoopStageName,
   runtime: LoopRuntimeConfig,
   stageSucceeded: boolean,
   evaluation: StageEvaluation
 ): boolean {
   if (runtime.gatePolicy === 'always') return true
-  if (evaluation.requireHumanConfirmation) return true
   if (evaluation.parseFailed && stageSucceeded) return false
   if (runtime.gatePolicy === 'manual_only') return false
+  if ((stage === 'unit_mock_test' || stage === 'integration_test') && stageSucceeded) return false
+  if (evaluation.requireHumanConfirmation) return true
   if (!stageSucceeded) return true
   return evaluation.confidence < runtime.confidenceThreshold
 }
@@ -1014,12 +1074,13 @@ function shouldEscalateToHumanForDangerousSignals(stageReport: string, testOutpu
 }
 
 function resolveGateStrategy(
+  stage: LoopStageName,
   runtime: LoopRuntimeConfig,
   stageSucceeded: boolean,
   evaluation: StageEvaluation,
   forceHuman: boolean
 ): GateStrategy {
-  if (!shouldGate(runtime, stageSucceeded, evaluation)) {
+  if (!shouldGate(stage, runtime, stageSucceeded, evaluation)) {
     return 'none'
   }
 
@@ -1212,6 +1273,18 @@ function resolveWorktreeDirectory(cwd: string): string | null {
   return null
 }
 
+function ensureWorktreeDirectory(cwd: string): { directory: string } | { failureReason: string } {
+  const directory = resolveWorktreeDirectory(cwd) || '.worktrees'
+  try {
+    mkdirSync(join(cwd, directory), { recursive: true })
+    return { directory }
+  } catch (error) {
+    return {
+      failureReason: `Failed to create worktree directory ${directory}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
 function isIgnoredPath(cwd: string, relativePath: string): boolean {
   for (const candidate of [relativePath, join(relativePath, '.magpie-ignore-probe')]) {
     try {
@@ -1223,6 +1296,37 @@ function isIgnoredPath(cwd: string, relativePath: string): boolean {
   }
 
   return false
+}
+
+function ensureIgnoredWorktreeDirectory(cwd: string, directory: string): string | null {
+  try {
+    const excludePath = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim()
+    const resolvedExcludePath = resolve(cwd, excludePath)
+    const pattern = `${directory}/`
+    const existing = existsSync(resolvedExcludePath)
+      ? readFileSync(resolvedExcludePath, 'utf-8')
+      : ''
+    const lines = existing.split(/\r?\n/).map((line) => line.trim())
+
+    if (!lines.includes(pattern)) {
+      const next = existing.trimEnd()
+      writeFileSync(
+        resolvedExcludePath,
+        `${next ? `${next}\n` : ''}${pattern}\n`,
+        'utf-8'
+      )
+    }
+  } catch (error) {
+    return `Failed to mark ${directory} as ignored: ${error instanceof Error ? error.message : String(error)}`
+  }
+
+  return isIgnoredPath(cwd, directory)
+    ? null
+    : `Worktree directory ${directory} is not ignored by git.`
 }
 
 async function ensureWorktree(input: {
@@ -1244,12 +1348,24 @@ async function ensureWorktree(input: {
     }
   }
 
-  const directory = resolveWorktreeDirectory(input.cwd)
-  if (!directory) {
+  const ensuredDirectory = ensureWorktreeDirectory(input.cwd)
+  if ('failureReason' in ensuredDirectory) {
     return {
       workspaceMode: 'current',
       workspacePath: input.cwd,
-      failureReason: 'No worktree directory found. Create .worktrees/ or worktrees/ first.',
+      failureReason: ensuredDirectory.failureReason,
+    }
+  }
+  const { directory } = ensuredDirectory
+
+  if (!isIgnoredPath(input.cwd, directory)) {
+    const ignoreFailure = ensureIgnoredWorktreeDirectory(input.cwd, directory)
+    if (ignoreFailure) {
+      return {
+        workspaceMode: 'current',
+        workspacePath: input.cwd,
+        failureReason: ignoreFailure,
+      }
     }
   }
 
@@ -1427,6 +1543,18 @@ async function markSessionFailed(
   }
   session.status = 'failed'
   session.updatedAt = new Date()
+  await recordLoopFailure(session, stage, runCwd, stateManager, {
+    reason,
+    rawError: reason,
+    evidencePaths: [
+      session.artifacts.eventsPath,
+      session.artifacts.greenTestResultPath,
+      session.artifacts.redTestResultPath,
+      session.artifacts.repairEvidencePath,
+      session.artifacts.repairOpenIssuesPath,
+    ].filter((path): path is string => Boolean(path)),
+    lastReliablePoint: session.lastReliablePoint,
+  }, progressObserver)
   await persistLoopNextRoundInput({
     session,
     stage,
@@ -1496,6 +1624,39 @@ async function markSessionFailed(
     summary: `Loop failed at stage ${stage}. Session: ${session.id}. Reason: ${reason}`,
     session,
   }
+}
+
+async function recordLoopFailure(
+  session: LoopSession,
+  stage: LoopStageName,
+  cwd: string,
+  stateManager: StateManager,
+  input: {
+    reason: string
+    rawError?: string
+    evidencePaths: string[]
+    lastReliablePoint?: string
+    retryableHint?: boolean
+    metadata?: Record<string, unknown>
+  },
+  progressObserver?: LoopProgressObserver,
+): Promise<void> {
+  const failure = await appendWorkflowFailure(cwd, {
+    sessionId: session.id,
+    capability: 'loop',
+    stage,
+    reason: input.reason,
+    rawError: input.rawError,
+    evidencePaths: input.evidencePaths,
+    lastReliablePoint: input.lastReliablePoint,
+    retryableHint: input.retryableHint,
+    metadata: input.metadata,
+  })
+  session.artifacts.failureLogDir = resolveWorkflowFailureArtifacts(cwd, 'loop', session.id).failureLogDir
+  session.artifacts.failureIndexPath = failure.indexPath
+  session.artifacts.lastFailurePath = failure.recordPath
+  session.lastFailureReason = input.reason
+  await saveLoopSessionWithObserver(stateManager, session, progressObserver)
 }
 
 async function finalizeLoopKnowledge(
@@ -1569,6 +1730,64 @@ async function waitForHumanDecision(
   }
 
   return null
+}
+
+async function consumeApprovedHumanConfirmation(
+  session: LoopSession,
+  progressObserver?: LoopProgressObserver,
+): Promise<boolean> {
+  if (session.status !== 'paused_for_human') {
+    return false
+  }
+
+  const stage = session.stages[session.currentStageIndex]
+  if (!stage) {
+    return false
+  }
+
+  const pendingConfirmation = [...session.humanConfirmations].reverse().find(
+    (item) => item.stage === stage && item.decision === 'pending'
+  )
+  if (!pendingConfirmation) {
+    return false
+  }
+
+  const decided = await findHumanConfirmationDecision(session.artifacts.humanConfirmationPath, pendingConfirmation.id)
+  if (!decided || decided.decision !== 'approved') {
+    return false
+  }
+
+  const completedStage = [...session.stageResults].reverse().find((item) => item.stage === stage)
+  if (!completedStage?.success) {
+    return false
+  }
+
+  const codeDevelopmentNeedsVerification = stage === 'code_development'
+    && session.tddEligible === true
+    && session.redTestConfirmed === true
+    && !session.artifacts.greenTestResultPath
+  if (codeDevelopmentNeedsVerification) {
+    return false
+  }
+
+  pendingConfirmation.status = 'approved'
+  pendingConfirmation.decision = 'approved'
+  pendingConfirmation.rationale = decided.rationale
+  pendingConfirmation.updatedAt = decided.updatedAt
+  session.updatedAt = new Date()
+  session.status = 'running'
+  session.currentLoopState = undefined
+  session.lastFailureReason = undefined
+  session.currentStageIndex += 1
+
+  await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+    event: 'human_confirmation_applied',
+    stage,
+    decision: decided.decision,
+    nextStage: session.stages[session.currentStageIndex] || 'completed',
+  }, progressObserver)
+
+  return true
 }
 
 async function executeStageAttempt(
@@ -1656,6 +1875,16 @@ async function executeStageAttempt(
         `## Mock Test (${mock.commandLabel})\n${mock.output}`,
       ].join('\n\n')
     }
+    const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
+      safety: commandSafety,
+      interactive: process.stdin.isTTY && process.stdout.isTTY,
+    })
+    const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
+    stageSucceeded = unit.passed && mock.passed
+    testOutput = [
+      `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
+      `## Mock Test (${mock.commandLabel})\n${mock.output}`,
+    ].join('\n\n')
   } else if (stage === 'integration_test') {
     const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
       safety: commandSafety,
@@ -1987,6 +2216,7 @@ async function runSingleStage(
     },
   })
   gateStrategy = resolveGateStrategy(
+    stage,
     runtime,
     stageSucceeded,
     evaluation,
@@ -2170,6 +2400,7 @@ async function runSingleStage(
     stageResult.summary = evaluation.summary
     stageResult.risks = evaluation.risks
     gateStrategy = resolveGateStrategy(
+      stage,
       runtime,
       stageSucceeded,
       evaluation,
@@ -2426,6 +2657,21 @@ async function continueSession(
             progressObserver,
           })
           await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+          await recordLoopFailure(session, stage, runCwd, stateManager, {
+            reason: summary,
+            rawError: redTestRun.output,
+            evidencePaths: [
+              session.artifacts.redTestResultPath,
+              repairArtifacts.openIssuesPath,
+              repairArtifacts.evidencePath,
+              session.artifacts.eventsPath,
+            ].filter((path): path is string => Boolean(path)),
+            lastReliablePoint: session.lastReliablePoint,
+            metadata: {
+              failureKind: redTestRun.failureKind,
+              attemptNumber: repairState.executionRetryCount,
+            },
+          }, progressObserver)
           await appendObservedEvent(session.artifacts.eventsPath, session.id, {
             event: 'red_test_execution_retry_required',
             stage,
@@ -2713,6 +2959,22 @@ async function continueSession(
         session.artifacts.repairEvidencePath = repairArtifacts.evidencePath
         session.updatedAt = new Date()
         await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+        await recordLoopFailure(session, stage, runCwd, stateManager, {
+          reason: summary,
+          rawError: greenTestResult.output,
+          evidencePaths: [
+            session.artifacts.greenTestResultPath,
+            repairArtifacts.openIssuesPath,
+            repairArtifacts.evidencePath,
+            session.artifacts.eventsPath,
+          ].filter((path): path is string => Boolean(path)),
+          lastReliablePoint: session.lastReliablePoint,
+          retryableHint: greenTestResult.failureKind === 'execution',
+          metadata: {
+            failureKind: greenTestResult.failureKind,
+            attemptNumber,
+          },
+        }, progressObserver)
         await appendObservedEvent(session.artifacts.eventsPath, session.id, {
           event: greenTestResult.failureKind === 'quality' ? 'repair_required' : 'execution_retry_required',
           stage,
@@ -3120,6 +3382,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       eventsPath,
       planPath,
       humanConfirmationPath,
+      ...resolveWorkflowFailureArtifacts(ctx.cwd, 'loop', sessionId),
       mrResultPath,
       documentPlanPath,
       providerSessionsPath,
@@ -3369,6 +3632,19 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
       progressObserver,
     })
     await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+    await recordLoopFailure(session, session.stages[session.currentStageIndex] || 'code_development', session.artifacts.workspacePath || ctx.cwd, stateManager, {
+      reason: resumeCheckpointError,
+      rawError: resumeCheckpointError,
+      evidencePaths: [
+        session.artifacts.eventsPath,
+        session.artifacts.greenTestResultPath,
+        session.artifacts.redTestResultPath,
+      ].filter((path): path is string => Boolean(path)),
+      lastReliablePoint: session.lastReliablePoint,
+      metadata: {
+        checkpointMissing: true,
+      },
+    }, progressObserver)
     await appendObservedEvent(session.artifacts.eventsPath, session.id, {
       event: 'resume_blocked_invalid_checkpoint',
       stage: session.stages[session.currentStageIndex] || 'unknown',
@@ -3385,6 +3661,21 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   if (recoverableFailedSession) {
     session.status = 'paused_for_human'
     session.currentLoopState = session.currentLoopState || 'blocked_for_human'
+  }
+
+  if (session.status === 'paused_for_human') {
+    const approvedStage = session.stages[session.currentStageIndex] || 'unknown'
+    if (await consumeApprovedHumanConfirmation(session, progressObserver)) {
+      await updateLoopState(session, {
+        currentStage: session.stages[session.currentStageIndex] || 'completed',
+        lastReliableResult: `Human confirmation approved stage ${approvedStage}.`,
+        nextAction: session.stages[session.currentStageIndex]
+          ? `Start ${session.stages[session.currentStageIndex]}.`
+          : 'Finalize loop output.',
+        currentBlocker: 'None.',
+      }, `Applied human confirmation for ${approvedStage}.`)
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+    }
   }
 
   if (session.status === 'paused_for_human') {

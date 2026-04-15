@@ -20,6 +20,8 @@ interface StageSummaryJson {
   body?: string
 }
 
+const DEFAULT_STAGE_AI_TIMEOUT_MS = 2000
+
 function resolveBinding(provider: string): { tool?: string; model?: string } {
   try {
     getProviderForTool(provider)
@@ -33,7 +35,8 @@ function resolveBinding(provider: string): { tool?: string; model?: string } {
 export async function summarizeStageNotification(
   args: SummarizeStageNotificationArgs
 ): Promise<StageNotificationMessage> {
-  const stageAi = args.config.integrations.notifications?.stage_ai
+  const notifications = args.config.integrations.notifications
+  const stageAi = notifications?.stage_ai
   const maxChars = stageAi?.max_summary_chars
   const fallback = buildFallbackStageNotificationMessage(args.input, maxChars)
 
@@ -42,18 +45,30 @@ export async function summarizeStageNotification(
   }
 
   try {
+    const timeoutMs = stageAi.timeout_ms ?? DEFAULT_STAGE_AI_TIMEOUT_MS
     const binding = resolveBinding(stageAi.provider)
     const provider = createConfiguredProvider({
       logicalName: 'integrations.notifications.stage_ai',
       ...binding,
+      timeoutMs,
     }, args.config)
     provider.setCwd?.(args.cwd)
 
-    const response = await provider.chat(
-      [{ role: 'user', content: buildStageSummaryPrompt(args.input) }],
-      'You write concise Chinese stage notifications for engineering workflow events.',
-      { disableTools: true }
-    )
+    const timeoutError = new Error(`Stage AI summarizer timed out after ${timeoutMs}ms`)
+    const response = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(timeoutError), timeoutMs)
+      void provider.chat(
+        [{ role: 'user', content: buildStageSummaryPrompt(args.input) }],
+        'You write concise Chinese stage notifications for engineering workflow events.',
+        { disableTools: true }
+      ).then((value) => {
+        clearTimeout(timer)
+        resolve(value)
+      }).catch((error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+    })
 
     const parsed = extractJsonBlock<StageSummaryJson>(response)
     if (!parsed?.title || !parsed?.body) {

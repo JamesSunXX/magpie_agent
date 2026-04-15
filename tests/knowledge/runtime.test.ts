@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -125,6 +125,35 @@ describe('knowledge runtime', () => {
     expect(() => readFileSync(join(decisionDir, 'prefer-explicit-harness-inspect-output.md'), 'utf-8')).not.toThrow()
     expect(() => readFileSync(join(workflowRuleDir, 'always-update-readme-for-cli-surface-changes.md'), 'utf-8')).not.toThrow()
     expect(() => readFileSync(join(failureDir, 'review-cycle-timeout.md'), 'utf-8')).not.toThrow()
+  })
+
+  it('promotes repeated failure patterns from the repository failure index', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-index-promote-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const repoRoot = mkdtempSync(join(tmpdir(), 'magpie-knowledge-repo-'))
+    mkdirSync(join(repoRoot, '.magpie'), { recursive: true })
+    writeFileSync(join(repoRoot, '.magpie', 'failure-index.json'), JSON.stringify({
+      version: 1,
+      updatedAt: '2026-04-12T10:00:00.000Z',
+      entries: [{
+        signature: 'workflow_defect|resume-checkpoint',
+        category: 'workflow_defect',
+        count: 2,
+        capabilities: { loop: 2 },
+        latestReason: 'Cannot safely resume because no reliable checkpoint was recorded.',
+        lastSeenAt: '2026-04-12T10:00:00.000Z',
+        latestEvidencePaths: ['/tmp/events.jsonl'],
+        selfHealCandidateCount: 1,
+        recentSessionIds: ['loop-a', 'loop-b'],
+        recentEvidencePaths: ['/tmp/events.jsonl'],
+      }],
+    }, null, 2), 'utf-8')
+
+    const promotion = await promoteKnowledgeCandidates(repoRoot, [])
+
+    expect(promotion.promoted.some((candidate) => candidate.type === 'failure-pattern')).toBe(true)
+    expect(readFileSync(join(magpieHome, 'knowledge', promotion.repoKey, 'index.md'), 'utf-8')).toContain('Cannot safely resume')
   })
 
   it('includes promoted knowledge summaries in rendered context', async () => {

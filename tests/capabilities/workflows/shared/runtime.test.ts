@@ -3,6 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  appendWorkflowFailure,
   appendWorkflowEvent,
   buildCommandSafetyConfig,
   classifyDangerousCommand,
@@ -141,6 +142,80 @@ describe('workflow shared runtime helpers', () => {
     const raw = readFileSync(eventsPath, 'utf-8').trim()
     expect(raw).toContain('"type":"workflow_started"')
     expect(raw).toContain('"stage":"queued"')
+  })
+
+  it('persists workflow failure artifacts through the shared helper', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-failures-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-failures-cwd-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const result = await appendWorkflowFailure(cwd, {
+      capability: 'harness',
+      sessionId: 'harness-a',
+      stage: 'reviewing',
+      reason: 'Review cycle timed out',
+      rawError: 'spawnSync codex ETIMEDOUT',
+      evidencePaths: ['/tmp/review.json'],
+      lastReliablePoint: 'review_completed',
+    })
+
+    expect(result.record.category).toBe('transient')
+    expect(result.recordPath).toContain('/failures/')
+    expect(result.indexPath).toBe(join(cwd, '.magpie', 'failure-index.json'))
+    expect(readFileSync(result.indexPath, 'utf-8')).toContain('"count": 1')
+  })
+
+  it('reuses the source failure signature for derived failures without incrementing the index twice', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-derived-failures-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-derived-failures-cwd-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    await appendWorkflowFailure(cwd, {
+      capability: 'loop',
+      sessionId: 'loop-a',
+      stage: 'code_development',
+      reason: 'Loop failed on resume checkpoint',
+      rawError: 'Cannot safely resume because no reliable checkpoint was recorded.',
+      evidencePaths: ['/tmp/loop-events.jsonl'],
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        checkpointMissing: true,
+      },
+    })
+
+    const result = await appendWorkflowFailure(cwd, {
+      capability: 'harness',
+      sessionId: 'harness-a',
+      stage: 'developing',
+      reason: 'Harness failed because the inner loop failed.',
+      rawError: 'Loop failed during code_development.',
+      evidencePaths: ['/tmp/harness-events.jsonl'],
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        sourceFailureSignature: 'loop|code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
+        countTowardFailureIndex: false,
+      },
+    })
+
+    const index = JSON.parse(readFileSync(result.indexPath, 'utf-8')) as {
+      entries: Array<{
+        signature: string
+        count: number
+        capabilities: Record<string, number>
+      }>
+    }
+
+    expect(result.record.signature).toBe(
+      'code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.'
+    )
+    expect(index.entries).toHaveLength(1)
+    expect(index.entries[0]).toMatchObject({
+      signature: 'code_development|workflow_defect|cannot safely resume because no reliable checkpoint was recorded.',
+      count: 1,
+      capabilities: {
+        loop: 1,
+      },
+    })
   })
 
   it('parses shell-safe command arguments and rejects unsafe input', () => {

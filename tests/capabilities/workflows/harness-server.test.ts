@@ -580,6 +580,10 @@ integrations:
     })
     expect(blocked?.status).toBe('blocked')
     expect(blocked?.summary).toContain('missing queued input metadata')
+    const failureIndex = JSON.parse(readFileSync(join(cwd, '.magpie', 'failure-index.json'), 'utf-8')) as {
+      entries: Array<{ category: string }>
+    }
+    expect(failureIndex.entries[0]?.category).toBe('workflow_defect')
   })
 
   it('moves retryable execution failures into waiting_retry', async () => {
@@ -620,6 +624,10 @@ integrations:
         lastReliablePoint: 'waiting_retry',
       },
     })
+    const failureIndex = JSON.parse(readFileSync(join(cwd, '.magpie', 'failure-index.json'), 'utf-8')) as {
+      entries: Array<{ lastRecoveryAction: string }>
+    }
+    expect(failureIndex.entries[0]?.lastRecoveryAction).toBe('retry_with_backoff')
   })
 
   it('marks non-retryable execution failures as failed', async () => {
@@ -694,6 +702,7 @@ integrations:
 
     expect(recovered?.status).toBe('waiting_next_cycle')
     expect(recovered?.summary).toContain('queued to resume')
+    expect(() => readFileSync(join(cwd, '.magpie', 'failure-index.json'), 'utf-8')).toThrow()
   })
 
   it('launches the server in tmux and persists the running state', async () => {

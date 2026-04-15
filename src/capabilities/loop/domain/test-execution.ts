@@ -3,6 +3,8 @@ import { join } from 'path'
 import type { CommandRunResult } from '../../workflows/shared/runtime.js'
 import type { ResolvedCommandSafetyConfig } from '../../workflows/shared/runtime.js'
 import { runSafeCommand } from '../../workflows/shared/runtime.js'
+import { classifyFailureCategory } from '../../../core/failures/classifier.js'
+import type { FailureCategory } from '../../../core/failures/types.js'
 
 export interface StructuredTestResult {
   command: string
@@ -43,6 +45,11 @@ export function classifyStructuredTestResult(result: StructuredTestResult): Clas
     || lower.includes('dangerous command blocked')
     || lower.includes('command not found')
     || lower.includes('enoent')
+    || lower.includes('timeout')
+    || lower.includes('timed out')
+    || lower.includes('etimedout')
+    || lower.includes('429')
+    || lower.includes('rate limit')
     || lower.includes('unsupported shell metacharacters')
 
   return {
@@ -55,6 +62,23 @@ export function classifyStructuredTestResult(result: StructuredTestResult): Clas
     failedTests: extractFailedTests(result.output),
     firstError: extractFirstError(result.output),
   }
+}
+
+export function classifyStructuredTestFailureCategory(result: ClassifiedTestResult): FailureCategory {
+  return classifyFailureCategory({
+    capability: 'loop',
+    stage: 'code_development',
+    reason: result.status === 'passed'
+      ? 'Test command passed.'
+      : result.failureKind === 'execution'
+        ? result.firstError || 'Test command failed before assertions ran.'
+        : result.failedTests[0] || 'Implementation still fails tests.',
+    rawError: result.output,
+    metadata: {
+      failureKind: result.failureKind,
+      failedTests: result.failedTests,
+    },
+  })
 }
 
 export function runStructuredTestCommand(

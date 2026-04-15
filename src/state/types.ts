@@ -233,6 +233,9 @@ export interface LoopSession {
     tmuxSession?: string
     tmuxWindow?: string
     tmuxPane?: string
+    failureLogDir?: string
+    failureIndexPath?: string
+    lastFailurePath?: string
     roleRosterPath?: string
     roleMessagesPath?: string
     roleRoundsDir?: string

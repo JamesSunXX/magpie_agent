@@ -14,11 +14,13 @@ import { reviewCapability } from '../../../review/index.js'
 import { extractJsonBlock } from '../../../../trd/renderer.js'
 import { issueFixCapability } from '../../issue-fix/index.js'
 import {
+  appendWorkflowFailure,
   appendWorkflowEvent,
   generateWorkflowId,
   isRecoverableLoopSession,
   loadWorkflowSession,
   persistWorkflowSession,
+  resolveWorkflowFailureArtifacts,
   sessionDirFor,
 } from '../../shared/runtime.js'
 import { generateDocumentPlan, type DocumentPlan } from '../../../../core/project-documents/document-plan.js'
@@ -117,6 +119,7 @@ interface PersistedHarnessResumeEvidence {
     reviewRounds?: number
     testCommand?: string
     models?: string[]
+    modelsExplicit?: boolean
     complexity?: HarnessPreparedInput['complexity']
     host?: HarnessPreparedInput['host']
     priority?: HarnessPreparedInput['priority']
@@ -127,6 +130,7 @@ interface PersistedHarnessResumeEvidence {
     nextRetryAt?: string
     lastError?: string
     lastReliablePoint?: string
+    processId?: number
   }
 }
 
@@ -542,6 +546,7 @@ function mergeHarnessRuntimeEvidence(
   patch: {
     lastReliablePoint?: string
     pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+    processId?: number | null
   }
 ): Record<string, unknown> {
   const baseEvidence = existingEvidence && typeof existingEvidence === 'object'
@@ -558,6 +563,11 @@ function mergeHarnessRuntimeEvidence(
     delete runtime.pendingReviewCheckpoint
   } else if (patch.pendingReviewCheckpoint !== undefined) {
     runtime.pendingReviewCheckpoint = patch.pendingReviewCheckpoint
+  }
+  if (patch.processId === null) {
+    delete runtime.processId
+  } else if (patch.processId !== undefined) {
+    runtime.processId = patch.processId
   }
 
   return {
@@ -748,6 +758,7 @@ function buildPersistedHarnessResumeEvidence(
       ...(Number.isFinite(prepared.reviewRounds) ? { reviewRounds: prepared.reviewRounds } : {}),
       ...(prepared.testCommand ? { testCommand: prepared.testCommand } : {}),
       ...(prepared.models.length > 0 ? { models: prepared.models } : {}),
+      modelsExplicit: prepared.modelsExplicit,
       ...(prepared.complexity ? { complexity: prepared.complexity } : {}),
       ...(prepared.host ? { host: prepared.host } : {}),
       ...(prepared.priority ? { priority: prepared.priority } : {}),
@@ -758,6 +769,7 @@ function buildPersistedHarnessResumeEvidence(
       ...(typeof evidence.runtime?.nextRetryAt === 'string' ? { nextRetryAt: evidence.runtime.nextRetryAt } : {}),
       ...(typeof evidence.runtime?.lastError === 'string' ? { lastError: evidence.runtime.lastError } : {}),
       lastReliablePoint: evidence.runtime?.lastReliablePoint || 'queued',
+      ...(Number.isInteger(evidence.runtime?.processId) ? { processId: Number(evidence.runtime?.processId) } : {}),
     },
   }
 }
@@ -1817,7 +1829,7 @@ export async function executeHarness(
   prepared: HarnessPreparedInput,
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
-  const config = loadConfig(ctx.configPath)
+  const config = prepared.config || loadConfig(ctx.configPath)
   const notificationRouter = createNotificationRouter(config.integrations.notifications)
   const progressObserver = getHarnessProgressObserver(ctx)
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateWorkflowId('harness')
@@ -1890,6 +1902,7 @@ export async function executeHarness(
       providerSelectionPath,
       routingDecisionPath,
       eventsPath,
+      ...resolveWorkflowFailureArtifacts(ctx.cwd, 'harness', sessionId),
       roleRosterPath: roleArtifacts.rolesPath,
       roleMessagesPath: roleArtifacts.messagesPath,
       roleRoundsDir: roleArtifacts.roundsDir,
@@ -1933,6 +1946,7 @@ export async function executeHarness(
     patch: {
       lastReliablePoint?: string
       pendingReviewCheckpoint?: PendingHarnessReviewCheckpoint | null
+      processId?: number | null
     }
   ): Promise<void> => {
     await persistSession({
@@ -1987,6 +2001,37 @@ export async function executeHarness(
     } catch {
       return
     }
+  }
+
+  const recordHarnessFailure = async (
+    stage: HarnessStage,
+    input: {
+      reason: string
+      rawError?: string
+      evidencePaths: string[]
+      lastReliablePoint?: string
+      metadata?: Record<string, unknown>
+      retryableHint?: boolean
+    }
+  ): Promise<void> => {
+    const failure = await appendWorkflowFailure(ctx.cwd, {
+      sessionId,
+      capability: 'harness',
+      stage,
+      reason: input.reason,
+      rawError: input.rawError,
+      evidencePaths: input.evidencePaths,
+      lastReliablePoint: input.lastReliablePoint,
+      metadata: input.metadata,
+      retryableHint: input.retryableHint,
+    })
+    await persistSession({
+      artifacts: {
+        failureLogDir: resolveWorkflowFailureArtifacts(ctx.cwd, 'harness', sessionId).failureLogDir,
+        failureIndexPath: failure.indexPath,
+        lastFailurePath: failure.recordPath,
+      },
+    })
   }
 
   const emitStageEntered = async (
@@ -2144,7 +2189,15 @@ export async function executeHarness(
 
   await persistSession()
   if (!resumeState.isResume) {
-    await persistRuntimeEvidence({ lastReliablePoint: 'queued', pendingReviewCheckpoint: null })
+    await persistRuntimeEvidence({
+      lastReliablePoint: 'queued',
+      pendingReviewCheckpoint: null,
+      processId: session.artifacts.executionHost === 'foreground' ? process.pid : null,
+    })
+  } else {
+    await persistRuntimeEvidence({
+      processId: session.artifacts.executionHost === 'foreground' ? process.pid : null,
+    })
   }
   await appendEvent(resumeState.isResume ? 'workflow_resumed' : 'workflow_started', {
     stage: session.currentStage || 'queued',
@@ -2222,6 +2275,15 @@ export async function executeHarness(
   if (providerSelection.record.decision === 'fallback_failed') {
     const summary = `Harness failed before development started: Kiro fallback unavailable. ${providerSelection.record.kiroCheck.reason || ''}`.trim()
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, providerSelectionPath)
+    await recordHarnessFailure('failed', {
+      reason: summary,
+      rawError: providerSelection.record.kiroCheck.reason || summary,
+      evidencePaths: [providerSelectionPath, eventsPath],
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        providerFallbackFailed: true,
+      },
+    })
     await transitionStage('failed', summary, 'workflow_failed', {
       reason: providerSelection.record.kiroCheck.reason || 'Kiro fallback unavailable.',
     })
@@ -2398,6 +2460,32 @@ export async function executeHarness(
     }
 
     const summary = 'Harness failed during loop development stage.'
+    let sourceFailureSignature: string | undefined
+    let relatedFailurePath: string | undefined
+    if (loopResult.result.session?.artifacts?.lastFailurePath) {
+      relatedFailurePath = loopResult.result.session.artifacts.lastFailurePath
+      try {
+        const raw = JSON.parse(await readFile(relatedFailurePath, 'utf-8')) as { signature?: string; reason?: string }
+        sourceFailureSignature = raw.signature
+      } catch {
+        // Ignore: the inner failure artifact is optional.
+      }
+    }
+    await recordHarnessFailure('developing', {
+      reason: summary,
+      rawError: loopResult.output?.summary || loopResult.result.summary,
+      evidencePaths: [
+        eventsPath,
+        loopResult.result.session?.artifacts?.eventsPath,
+        relatedFailurePath,
+      ].filter((path): path is string => Boolean(path)),
+      lastReliablePoint: 'planning_completed',
+      metadata: {
+        loopSessionId: loopResult.result.session?.id,
+        ...(sourceFailureSignature ? { sourceFailureSignature } : {}),
+        ...(sourceFailureSignature ? { countTowardFailureIndex: false } : {}),
+      },
+    })
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, eventsPath)
     await transitionStage('failed', summary, 'workflow_failed', {
       loopSessionId: loopResult.result.session?.id,
@@ -2593,6 +2681,15 @@ export async function executeHarness(
     const message = err instanceof Error ? err.message : String(err)
     const summary = `Harness failed during review cycle: ${message}`
     const candidates = buildHarnessCandidates(prepared.goal, sessionId, false, summary, roundsPath)
+    await recordHarnessFailure('reviewing', {
+      reason: summary,
+      rawError: message,
+      evidencePaths: [roundsPath, eventsPath],
+      metadata: {
+        reviewCycleError: true,
+      },
+      retryableHint: message.toLowerCase().includes('timeout'),
+    })
     await transitionStage('failed', summary, 'workflow_failed', { error: message })
     await persistSession({
       status: 'failed',
@@ -2627,6 +2724,19 @@ export async function executeHarness(
     summary,
     roundsPath
   )
+  if (!approved) {
+    await recordHarnessFailure('reviewing', {
+      reason: summary,
+      rawError: cycles[cycles.length - 1]?.modelRationale || summary,
+      evidencePaths: [roundsPath, eventsPath],
+      lastReliablePoint: 'review_completed',
+      metadata: {
+        failureKind: 'quality',
+        finalApprovalDenied: true,
+        loopSessionId: session.artifacts.loopSessionId,
+      },
+    })
+  }
   await transitionStage(approved ? 'completed' : 'failed', summary, approved ? 'workflow_completed' : 'workflow_failed', {
     totalCycles: cycles.length,
   })

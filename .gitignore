@@ -7,3 +7,7 @@ coverage/
 .DS_Store
 .magpie
 .omx
+.worktrees/
+.claw/
+.omx/
+/human_confirmation.md
