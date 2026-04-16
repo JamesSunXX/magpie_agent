@@ -22,6 +22,9 @@ const validatorProviderMocks = vi.hoisted(() => ({
   kiro: vi.fn(async () => '```json\n{"decision":"approved","rationale":"kiro ok","unresolvedItems":[]}\n```'),
   codex: vi.fn(async () => '```json\n{"decision":"approved","rationale":"codex ok","unresolvedItems":[]}\n```'),
 }))
+const taskStatusMocks = vi.hoisted(() => ({
+  publishFeishuTaskStatusFromConfig: vi.fn().mockResolvedValue(true),
+}))
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>()
@@ -106,6 +109,10 @@ vi.mock('../../../src/providers/configured-provider.js', async (importOriginal) 
     }),
   }
 })
+
+vi.mock('../../../src/platform/integrations/im/feishu/task-status.js', () => ({
+  publishFeishuTaskStatusFromConfig: taskStatusMocks.publishFeishuTaskStatusFromConfig,
+}))
 
 interface ConfigOptions {
   loopPlannerModel?: string
@@ -261,6 +268,8 @@ describe('harness workflow', () => {
     validatorProviderMocks.claw.mockClear()
     validatorProviderMocks.kiro.mockClear()
     validatorProviderMocks.codex.mockClear()
+    taskStatusMocks.publishFeishuTaskStatusFromConfig.mockReset()
+    taskStatusMocks.publishFeishuTaskStatusFromConfig.mockResolvedValue(true)
     vi.restoreAllMocks()
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -348,6 +357,82 @@ describe('harness workflow', () => {
       expect(firstBody.card.header.title.content).toContain('[stage_entered]')
       expect(cardJson).toContain('**AI**: kiro / kiro')
       expect(cardJson).not.toContain('claude-code')
+    } finally {
+      delete process.env.MAGPIE_MOCK_RESPONSE
+    }
+  })
+
+  it('publishes a Feishu task status update when harness reaches a terminal state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-feishu-status-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'prd.md'), '# PRD', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath)
+    const configContent = readFileSync(configPath, 'utf-8').replace(
+      'integrations:\n  notifications:\n    enabled: false\n',
+      `integrations:\n  notifications:\n    enabled: false\n  im:\n    enabled: true\n    default_provider: feishu_main\n    providers:\n      feishu_main:\n        type: feishu-app\n        app_id: app-id\n        app_secret: app-secret\n        verification_token: verify-token\n        default_chat_id: oc_chat\n        approval_whitelist_open_ids: [ou_operator]\n`
+    )
+    writeFileSync(configPath, configContent, 'utf-8')
+    mockClaudeHealthy()
+
+    process.env.MAGPIE_MOCK_RESPONSE = JSON.stringify({
+      plan: ['Implement the requested change.'],
+      changes: ['Updated the delivery flow implementation.'],
+      tests: ['npm run test:run'],
+      risks: ['none'],
+    })
+
+    ;(runCapability as ReturnType<typeof vi.fn>).mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: {
+            status: 'completed',
+            session: {
+              id: 'loop-123',
+              goal: 'Deliver checkout v2',
+              status: 'completed',
+              branchName: 'sch/delivery-flow',
+              stages: ['prd_review'],
+              artifacts: {},
+            },
+          },
+          output: { summary: 'loop ok' },
+        }
+      }
+      if (module.name === 'review') {
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok', details: { issues: [] } } }
+      }
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+      }
+      return { prepared: {} as never, result: { status: 'completed' }, output: { summary: 'ok' } }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Deliver checkout v2',
+        prdPath: join(dir, 'docs', 'prd.md'),
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.status).toBe('failed')
+      expect(taskStatusMocks.publishFeishuTaskStatusFromConfig).toHaveBeenCalledWith(
+        dir,
+        expect.any(Object),
+        expect.objectContaining({
+          capability: 'harness',
+          sessionId: result.session!.id,
+          status: 'failed',
+          title: 'Deliver checkout v2',
+        })
+      )
     } finally {
       delete process.env.MAGPIE_MOCK_RESPONSE
     }

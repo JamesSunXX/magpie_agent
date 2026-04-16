@@ -29,6 +29,11 @@ async function saveProcessedEventIds(cwd: string, ids: string[]): Promise<void> 
 
 export function createImRuntime(cwd: string) {
   return {
+    async hasProcessedEvent(eventId: string): Promise<boolean> {
+      const existing = await loadProcessedEventIds(cwd)
+      return existing.includes(eventId)
+    },
+
     async markEventProcessed(eventId: string): Promise<boolean> {
       const existing = await loadProcessedEventIds(cwd)
       if (existing.includes(eventId)) {

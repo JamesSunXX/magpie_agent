@@ -34,6 +34,7 @@ import {
   extractPlanningItemKey,
 } from '../../../platform/integrations/planning/index.js'
 import { publishFeishuHumanConfirmationFromConfig } from '../../../platform/integrations/im/feishu/human-confirmation.js'
+import { publishFeishuTaskStatusFromConfig } from '../../../platform/integrations/im/feishu/task-status.js'
 import {
   appendWorkflowFailure,
   buildCommandSafetyConfig,
@@ -3764,9 +3765,26 @@ export async function executeLoop(
     return executeList(ctx)
   }
 
-  if (prepared.mode === 'resume') {
-    return executeResume(prepared, ctx)
+  const config = loadConfig(ctx.configPath)
+  const publishTerminalStatus = async (result: LoopExecutionResult): Promise<LoopExecutionResult> => {
+    if (!result.session || (result.status !== 'completed' && result.status !== 'failed')) {
+      return result
+    }
+
+    await publishFeishuTaskStatusFromConfig(ctx.cwd, config, {
+      capability: 'loop',
+      sessionId: result.session.id,
+      status: result.status,
+      title: result.session.goal,
+      summary: result.summary,
+    }).catch(() => {})
+
+    return result
   }
 
-  return executeRun(prepared, ctx)
+  if (prepared.mode === 'resume') {
+    return publishTerminalStatus(await executeResume(prepared, ctx))
+  }
+
+  return publishTerminalStatus(await executeRun(prepared, ctx))
 }

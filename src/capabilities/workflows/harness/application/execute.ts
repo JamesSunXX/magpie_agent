@@ -65,6 +65,7 @@ import {
   type HarnessArbitrationDecision,
 } from './arbitration.js'
 import { isGeminiBinding, isKnownGeminiModelError } from '../../shared/gemini-fallback.js'
+import { publishFeishuTaskStatusFromConfig } from '../../../../platform/integrations/im/feishu/task-status.js'
 
 const BLOCKING_SEVERITIES = new Set(['critical', 'high'])
 const HARNESS_REVIEWER_PROMPTS = [
@@ -1825,7 +1826,7 @@ async function runCycle(
   return { cycleResult, approved: false, routingDecision: nextRoutingDecision }
 }
 
-export async function executeHarness(
+async function executeHarnessInternal(
   prepared: HarnessPreparedInput,
   ctx: CapabilityContext
 ): Promise<HarnessResult> {
@@ -2777,4 +2778,24 @@ export async function executeHarness(
     status: approved ? 'completed' : 'failed',
     session,
   }
+}
+
+export async function executeHarness(
+  prepared: HarnessPreparedInput,
+  ctx: CapabilityContext
+): Promise<HarnessResult> {
+  const result = await executeHarnessInternal(prepared, ctx)
+  const config = prepared.config || loadConfig(ctx.configPath)
+
+  if (result.session && (result.status === 'completed' || result.status === 'failed')) {
+    await publishFeishuTaskStatusFromConfig(ctx.cwd, config, {
+      capability: 'harness',
+      sessionId: result.session.id,
+      status: result.status,
+      title: prepared.goal,
+      summary: result.session.summary,
+    }).catch(() => {})
+  }
+
+  return result
 }

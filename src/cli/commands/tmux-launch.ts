@@ -96,6 +96,15 @@ function resolveTmuxProvider(configPath?: string): TmuxOperationsProvider {
   throw new Error('tmux host requested but no enabled tmux operations provider is configured')
 }
 
+export function canLaunchMagpieInTmux(configPath?: string): boolean {
+  try {
+    resolveTmuxProvider(configPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function patchSessionArtifacts(
   capability: 'loop' | 'harness',
   cwd: string,

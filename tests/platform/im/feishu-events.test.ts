@@ -2,6 +2,60 @@ import { describe, expect, it } from 'vitest'
 import { parseFeishuEvent } from '../../../src/platform/integrations/im/feishu/events.js'
 
 describe('parseFeishuEvent', () => {
+  it('normalizes a Feishu text message into a task command event', () => {
+    const normalized = parseFeishuEvent({
+      header: {
+        event_id: 'evt-task-1',
+        event_type: 'im.message.receive_v1',
+      },
+      event: {
+        sender: {
+          sender_id: {
+            open_id: 'ou_requester',
+          },
+        },
+        message: {
+          message_id: 'om_source',
+          chat_id: 'oc_chat',
+          message_type: 'text',
+          content: JSON.stringify({
+            text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+          }),
+        },
+      },
+    })
+
+    expect(normalized).toEqual({
+      kind: 'task_command',
+      eventId: 'evt-task-1',
+      actorOpenId: 'ou_requester',
+      sourceMessageId: 'om_source',
+      chatId: 'oc_chat',
+      text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+    })
+  })
+
+  it('rejects unsupported Feishu message payloads', () => {
+    expect(() => parseFeishuEvent({
+      header: {
+        event_type: 'im.message.receive_v1',
+      },
+      event: {
+        sender: {
+          sender_id: {
+            open_id: 'ou_requester',
+          },
+        },
+        message: {
+          message_id: 'om_source',
+          chat_id: 'oc_chat',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_1' }),
+        },
+      },
+    })).toThrow('unsupported message_type image')
+  })
+
   it('normalizes a card action callback into a confirmation action event', () => {
     const normalized = parseFeishuEvent({
       header: { event_type: 'im.message.action.trigger' },

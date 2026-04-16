@@ -36,6 +36,10 @@ const knowledgeMocks = vi.hoisted(() => ({
   failPromote: false,
 }))
 
+const taskStatusMocks = vi.hoisted(() => ({
+  publishFeishuTaskStatusFromConfig: vi.fn().mockResolvedValue(true),
+}))
+
 const providerMocks = vi.hoisted(() => ({
   factory: null as null | ((
     input: ProviderBindingInput,
@@ -76,6 +80,10 @@ vi.mock('../../../src/knowledge/runtime.js', async (importOriginal) => {
   }
 })
 
+vi.mock('../../../src/platform/integrations/im/feishu/task-status.js', () => ({
+  publishFeishuTaskStatusFromConfig: taskStatusMocks.publishFeishuTaskStatusFromConfig,
+}))
+
 vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/platform/providers/index.js')>()
   return {
@@ -105,6 +113,8 @@ describe('loop capability', () => {
     providerMocks.factory = null
     providerMocks.autoBranchResponse = 'branch: delivery-flow'
     providerMocks.autoBranchFactoryError = null
+    taskStatusMocks.publishFeishuTaskStatusFromConfig.mockReset()
+    taskStatusMocks.publishFeishuTaskStatusFromConfig.mockResolvedValue(true)
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -182,6 +192,42 @@ describe('loop capability', () => {
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
+  })
+
+  it('publishes a Feishu task status update when a loop task completes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-feishu-status-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n  im:\n    enabled: true\n    default_provider: feishu_main\n    providers:\n      feishu_main:\n        type: feishu-app\n        app_id: app-id\n        app_secret: app-secret\n        verification_token: verify-token\n        default_chat_id: oc_chat\n        approval_whitelist_open_ids: [ou_operator]\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+    })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(taskStatusMocks.publishFeishuTaskStatusFromConfig).toHaveBeenCalledWith(
+      dir,
+      expect.any(Object),
+      expect.objectContaining({
+        capability: 'loop',
+        sessionId: result.result.session!.id,
+        status: 'completed',
+        title: 'Complete delivery flow',
+      })
+    )
   })
 
   it('completes the stage when evaluation JSON cannot be parsed under manual_only policy', async () => {

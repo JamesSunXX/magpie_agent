@@ -18,8 +18,9 @@ describe('im runtime', () => {
     dirs.push(tmpRepo)
 
     const runtime = createImRuntime(tmpRepo)
-    expect(await runtime.markEventProcessed('evt-1')).toBe(true)
-    expect(await runtime.markEventProcessed('evt-1')).toBe(false)
+    expect(await runtime.hasProcessedEvent('evt-1')).toBe(false)
+    await runtime.markEventProcessed('evt-1')
+    expect(await runtime.hasProcessedEvent('evt-1')).toBe(true)
   })
 
   it('persists and reloads im server status', async () => {

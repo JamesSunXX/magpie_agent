@@ -4,8 +4,10 @@ const spawnMock = vi.hoisted(() => vi.fn())
 const loadConfigMock = vi.hoisted(() => vi.fn())
 const loadImServerStatusMock = vi.hoisted(() => vi.fn())
 const saveImServerStatusMock = vi.hoisted(() => vi.fn())
+const hasProcessedEventMock = vi.hoisted(() => vi.fn().mockResolvedValue(false))
 const markEventProcessedMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 const createImRuntimeMock = vi.hoisted(() => vi.fn(() => ({
+  hasProcessedEvent: hasProcessedEventMock,
   markEventProcessed: markEventProcessedMock,
 })))
 const createFeishuCallbackServerMock = vi.hoisted(() => vi.fn())
@@ -13,6 +15,9 @@ const handleConfirmationActionMock = vi.hoisted(() => vi.fn().mockResolvedValue(
   status: 'applied',
   decision: 'approved',
 }))
+const isFeishuTaskCommandTextMock = vi.hoisted(() => vi.fn())
+const parseFeishuTaskCommandMock = vi.hoisted(() => vi.fn())
+const launchFeishuTaskMock = vi.hoisted(() => vi.fn())
 const replyTextMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: 'reply-1' }))
 const FeishuImClientMock = vi.hoisted(() => vi.fn(function FeishuImClient() {
   return {
@@ -44,6 +49,15 @@ vi.mock('../../src/platform/integrations/im/feishu/confirmation-bridge.js', () =
   handleConfirmationAction: handleConfirmationActionMock,
 }))
 
+vi.mock('../../src/platform/integrations/im/feishu/task-command.js', () => ({
+  isFeishuTaskCommandText: isFeishuTaskCommandTextMock,
+  parseFeishuTaskCommand: parseFeishuTaskCommandMock,
+}))
+
+vi.mock('../../src/platform/integrations/im/feishu/task-launch.js', () => ({
+  launchFeishuTask: launchFeishuTaskMock,
+}))
+
 vi.mock('../../src/platform/integrations/im/feishu/client.js', () => ({
   FeishuImClient: FeishuImClientMock,
 }))
@@ -55,6 +69,7 @@ vi.mock('../../src/platform/paths.js', () => ({
 describe('im-server command', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    hasProcessedEventMock.mockResolvedValue(false)
     markEventProcessedMock.mockResolvedValue(true)
     loadConfigMock.mockReturnValue({
       integrations: {
@@ -86,6 +101,20 @@ describe('im-server command', () => {
       off: vi.fn(),
       listen: vi.fn((_port: number, callback: () => void) => callback()),
       close: vi.fn((callback: () => void) => callback()),
+    })
+    isFeishuTaskCommandTextMock.mockImplementation((text: string) => text.startsWith('/magpie task'))
+    parseFeishuTaskCommandMock.mockReturnValue({
+      entryMode: 'command',
+      taskType: 'small',
+      capability: 'loop',
+      goal: 'Fix login timeout',
+      prdPath: 'docs/plans/login-timeout.md',
+    })
+    launchFeishuTaskMock.mockResolvedValue({
+      capability: 'loop',
+      sessionId: 'loop-999',
+      threadId: 'om_task_root',
+      status: 'running',
     })
     vi.spyOn(process, 'kill').mockImplementation(killMock as never)
   })
@@ -243,6 +272,7 @@ describe('im-server command', () => {
       cwd: process.cwd(),
     })
 
+    expect(hasProcessedEventMock).toHaveBeenCalledWith('evt-1')
     expect(markEventProcessedMock).toHaveBeenCalledWith('evt-1')
     expect(handleConfirmationActionMock).toHaveBeenCalledWith(
       process.cwd(),
@@ -279,7 +309,7 @@ describe('im-server command', () => {
       signalHandlers.set(event, handler)
       return process
     }) as typeof process.once)
-    markEventProcessedMock.mockResolvedValue(false)
+    hasProcessedEventMock.mockResolvedValue(true)
 
     createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
       once: vi.fn(),
@@ -309,6 +339,171 @@ describe('im-server command', () => {
     })
 
     expect(handleConfirmationActionMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).not.toHaveBeenCalled()
     expect(replyTextMessageMock).not.toHaveBeenCalled()
+  })
+
+  it('routes a task-command callback into the task launcher and replies in the task thread', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-task-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_source',
+            chatId: 'oc_chat',
+            text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(parseFeishuTaskCommandMock).toHaveBeenCalledWith('/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md')
+    expect(launchFeishuTaskMock).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          capability: 'loop',
+          goal: 'Fix login timeout',
+        }),
+        chatId: 'oc_chat',
+      })
+    )
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_task_root',
+      expect.stringContaining('Task accepted')
+    )
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-task-1')
+  })
+
+  it('ignores plain text messages that are not magpie task commands', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-chat-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_source',
+            chatId: 'oc_chat',
+            text: 'hello team',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(parseFeishuTaskCommandMock).not.toHaveBeenCalled()
+    expect(launchFeishuTaskMock).not.toHaveBeenCalled()
+    expect(replyTextMessageMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-chat-1')
+  })
+
+  it('does not mark an event processed when task launch fails before completion', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    launchFeishuTaskMock.mockRejectedValue(new Error('unexpected launch failure'))
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-task-fail-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_source',
+            chatId: 'oc_chat',
+            text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+          }).catch(() => {}))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(markEventProcessedMock).not.toHaveBeenCalledWith('evt-task-fail-1')
+  })
+
+  it('replies with a clear error when task launch is blocked by missing tmux support', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    launchFeishuTaskMock.mockRejectedValue(new Error('tmux host requested but no enabled tmux operations provider is configured'))
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-task-blocked-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_source',
+            chatId: 'oc_chat',
+            text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_source',
+      expect.stringContaining('Task rejected')
+    )
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-task-blocked-1')
   })
 })

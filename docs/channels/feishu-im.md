@@ -1,15 +1,17 @@
 # Feishu IM Control
 
-`magpie` 现在支持用飞书线程处理第一阶段的人工确认闭环。
+`magpie` 现在支持用飞书线程处理人工确认，也支持用固定格式消息直接发起第二阶段的新任务。
 
-当前范围只覆盖：
+当前范围覆盖：
 
 - `loop` 进入人工确认后的飞书线程推送
 - 飞书里的批准 / 驳回
 - 驳回原因和额外继续说明
+- 用固定格式消息发起 `loop` / `harness` 任务
+- 任务线程里的接收、排队、完成、失败状态回写
 - `magpie im-server` 回调服务
 
-后续“飞书里直接发起开发任务”和“表单 + 命令双入口”不在这份说明里。
+当前还没覆盖“表单发起任务”；这部分仍在后续阶段。
 
 ## 前置条件
 
@@ -65,7 +67,43 @@ magpie im-server stop
 
 ## 当前交互方式
 
-当 `loop` 进入人工确认时：
+### 1. 直接发起任务
+
+在飞书群里发送固定格式消息：
+
+```text
+/magpie task
+type: small
+goal: Fix login timeout
+prd: docs/plans/login-timeout.md
+```
+
+或：
+
+```text
+/magpie task
+type: formal
+goal: Deliver payment retry flow
+prd: docs/plans/payment-retry.md
+priority: high
+```
+
+规则：
+
+- `type: small` 走 `loop`
+- `type: formal` 走 `harness`
+- `goal` 和 `prd` 必填
+- `priority` 只对 `formal` 任务有意义
+- 当前只支持这种固定格式，不支持自由描述和表单
+
+发起后，Magpie 会：
+
+1. 在当前群里创建一条新的任务线程。
+2. 把任务绑定到新建的 `loop` 或 `harness` 会话。
+3. 在线程里回写接收结果。
+4. 在后续继续回写排队、运行、完成或失败状态。
+
+### 2. 人工确认
 
 1. Magpie 会在默认飞书群里为该会话创建或复用一条线程。
 2. 线程里会收到一张确认卡片。
@@ -97,6 +135,15 @@ magpie im-server stop
 
 这是当前设计要求：一个任务对应一条线程，避免确认、补充说明和状态更新串线。
 
-### 3. 如果飞书发消息失败，会不会把任务弄坏
+### 3. 为什么发起任务后没有被接收
+
+先检查：
+
+- 消息格式是不是严格以 `/magpie task` 开头
+- 是否写了 `type`、`goal`、`prd`
+- `type` 是否只用了 `small` 或 `formal`
+- `magpie im-server` 是否已经启动
+
+### 4. 如果飞书发消息失败，会不会把任务弄坏
 
 不会。任务状态还是以 `.magpie/` 里的会话为准。飞书发消息失败只会影响展示，不会改坏底层任务状态。

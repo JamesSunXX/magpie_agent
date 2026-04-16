@@ -15,7 +15,18 @@ export interface ConfirmationActionEvent {
   extraInstruction?: string
 }
 
-export type ImInboundEvent = ConfirmationActionEvent
+export interface TaskCommandEvent {
+  kind: 'task_command'
+  eventId?: string
+  actorOpenId: string
+  sourceMessageId: string
+  chatId: string
+  text: string
+}
+
+export type ImInboundEvent =
+  | ConfirmationActionEvent
+  | TaskCommandEvent
 
 export interface ImServerStatus {
   providerId: string

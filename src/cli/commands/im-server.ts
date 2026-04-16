@@ -8,6 +8,8 @@ import { createImRuntime, loadImServerStatus, saveImServerStatus } from '../../p
 import { createFeishuCallbackServer } from '../../platform/integrations/im/feishu/server.js'
 import { handleConfirmationAction } from '../../platform/integrations/im/feishu/confirmation-bridge.js'
 import { FeishuImClient } from '../../platform/integrations/im/feishu/client.js'
+import { isFeishuTaskCommandText, parseFeishuTaskCommand } from '../../platform/integrations/im/feishu/task-command.js'
+import { launchFeishuTask } from '../../platform/integrations/im/feishu/task-launch.js'
 
 export function resolveFeishuProvider(configPath?: string) {
   const config = loadConfig(configPath)
@@ -35,6 +37,11 @@ function replySummary(result: Awaited<ReturnType<typeof handleConfirmationAction
   return `Confirmation rejected: ${result.reason}`
 }
 
+function isUserActionableTaskLaunchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /tmux host requested but no enabled tmux operations provider is configured/i.test(message)
+}
+
 export async function runImServerLoop(options: { cwd: string; configPath?: string }): Promise<void> {
   const { id, provider } = resolveFeishuProvider(options.configPath)
   const runtime = createImRuntime(options.cwd)
@@ -49,26 +56,76 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
     path,
     verificationToken: provider.verification_token,
     onEvent: async (event) => {
-      if (event.eventId) {
-        const firstSeen = await runtime.markEventProcessed(event.eventId)
-        if (!firstSeen) {
-          return
-        }
+      if (event.eventId && await runtime.hasProcessedEvent(event.eventId)) {
+        return
       }
 
-      const result = await handleConfirmationAction(options.cwd, {
-        actorOpenId: event.actorOpenId,
-        whitelist: provider.approval_whitelist_open_ids,
-        action: event.action,
-        sessionId: event.sessionId,
-        confirmationId: event.confirmationId,
-        threadKey: event.threadKey,
-        chatId: event.chatId,
-        rejectionReason: event.rejectionReason,
-        extraInstruction: event.extraInstruction,
-      })
+      if (event.kind === 'confirmation_action') {
+        const result = await handleConfirmationAction(options.cwd, {
+          actorOpenId: event.actorOpenId,
+          whitelist: provider.approval_whitelist_open_ids,
+          action: event.action,
+          sessionId: event.sessionId,
+          confirmationId: event.confirmationId,
+          threadKey: event.threadKey,
+          chatId: event.chatId,
+          rejectionReason: event.rejectionReason,
+          extraInstruction: event.extraInstruction,
+        })
 
-      await client.replyTextMessage(event.threadKey, replySummary(result)).catch(() => {})
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
+        await client.replyTextMessage(event.threadKey, replySummary(result)).catch(() => {})
+        return
+      }
+
+      if (!isFeishuTaskCommandText(event.text)) {
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
+        return
+      }
+
+      let request
+      try {
+        request = parseFeishuTaskCommand(event.text)
+      } catch (error) {
+        await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
+        return
+      }
+
+      try {
+        const launched = await launchFeishuTask(options.cwd, {
+          appId: provider.app_id,
+          appSecret: provider.app_secret,
+          request,
+          chatId: event.chatId,
+          configPath: options.configPath,
+        })
+
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
+        await client.replyTextMessage(launched.threadId, [
+          'Task accepted.',
+          `Capability: ${launched.capability}`,
+          `Session: ${launched.sessionId}`,
+          `Status: ${launched.status}`,
+        ].join('\n')).catch(() => {})
+      } catch (error) {
+        if (!isUserActionableTaskLaunchError(error)) {
+          throw error
+        }
+
+        await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
+      }
     },
   })
 

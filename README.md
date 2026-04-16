@@ -135,14 +135,45 @@ magpie memory show --project
 
 ## Feishu IM 控制
 
-第一阶段已经支持把 `loop` 的人工确认卡点发到飞书线程里处理。当前做法是：
+现在飞书线程支持两类动作：
+
+- 处理人工确认
+- 用固定格式消息直接发起新任务
+
+当前做法是：
 
 1. 在配置里打开 `integrations.im`
 2. 配好飞书应用的 `app_id`、`app_secret`、`verification_token`
 3. 配一个接收任务线程的默认群 `default_chat_id`
 4. 启动回调服务：`magpie im-server start --foreground`
 
-当任务进入人工确认时，Magpie 会：
+发起新任务时，在群里发送固定格式消息：
+
+```text
+/magpie task
+type: small
+goal: Fix login timeout
+prd: docs/plans/login-timeout.md
+```
+
+或：
+
+```text
+/magpie task
+type: formal
+goal: Deliver payment retry flow
+prd: docs/plans/payment-retry.md
+priority: high
+```
+
+规则是：
+
+- `type: small` 走 `loop`
+- `type: formal` 走 `harness`
+- 一条任务对应一条飞书线程
+- 任务被接收后，线程里会继续收到排队、运行、完成或失败的状态回写
+
+人工确认场景下，Magpie 会：
 
 - 在默认飞书群里为这个任务创建或复用一条线程
 - 把当前确认卡点发到这条线程里
