@@ -2454,9 +2454,25 @@ process.exit(result.status ?? 1)
   })
 
   it('runs configured unit mock verification steps when provided', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nVerified unit mock stage.\n'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-custom-unit-mock-'))
-  it('skips the legacy default mock target when no matching tests exist', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-mock-target-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
     const prdPath = join(dir, 'docs', 'sample-prd.md')
@@ -2464,6 +2480,31 @@ process.exit(result.status ?? 1)
 
     const configPath = join(dir, 'config.yaml')
     writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_mock_test_steps:\n        - label: "Java Unit Tests"\n          command: "echo java-safe"\n        - label: "Shared Mock Checks"\n          command: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('## Java Unit Tests (echo java-safe)')
+    expect(artifact).toContain('java-safe')
+    expect(artifact).toContain('## Shared Mock Checks (echo mock-safe)')
+    expect(artifact).toContain('mock-safe')
+  })
+
+  it('skips the legacy default mock target when no matching tests exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-mock-target-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       name: 'mock-target-repro',
       private: true,
@@ -2494,16 +2535,56 @@ process.exit(result.status ?? 1)
     const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
 
     expect(result.result.status).toBe('completed')
-    expect(artifact).toContain('## Java Unit Tests (echo java-safe)')
-    expect(artifact).toContain('java-safe')
-    expect(artifact).toContain('## Shared Mock Checks (echo mock-safe)')
-    expect(artifact).toContain('mock-safe')
+    expect(artifact).toContain('## Mock Test ((skipped: no matching tests))')
+    expect(artifact).toContain('Skipped: no matching tests for legacy default mock target.')
   })
 
   it('prefers configured unit mock verification steps over legacy commands', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage ok."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nVerified unit mock stage.\n'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-custom-unit-mock-priority-'))
-    expect(artifact).toContain('## Mock Test ((skipped: no matching tests))')
-    expect(artifact).toContain('Skipped: no matching tests for legacy default mock target.')
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\n      mock_test: "node -e \\"process.exit(1)\\""\n      unit_mock_test_steps:\n        - label: "Shared Verification"\n          command: "echo shared-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(artifact).toContain('## Shared Verification (echo shared-safe)')
+    expect(artifact).toContain('shared-safe')
+    expect(artifact).not.toContain('process.exit(1)')
+    expect(artifact).not.toContain('## Unit Test (')
+    expect(artifact).not.toContain('## Mock Test (')
+    expect(artifact).not.toContain('Skipped: no matching tests for legacy default mock target.')
   })
 
   it('does not pause for human review when unit mock verification succeeds with an expected legacy mock skip', async () => {
@@ -2573,8 +2654,6 @@ process.exit(result.status ?? 1)
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
 
-    const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node -e \\"process.exit(1)\\""\n      mock_test: "node -e \\"process.exit(1)\\""\n      unit_mock_test_steps:\n        - label: "Shared Verification"\n          command: "echo shared-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       name: 'integration-target-repro',
       private: true,
@@ -2607,11 +2686,6 @@ process.exit(result.status ?? 1)
       dryRun: false,
     }, ctx)
 
-    const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'unit_mock_test.md'), 'utf-8')
-
-    expect(result.result.status).toBe('completed')
-    expect(artifact).toContain('## Shared Verification (echo shared-safe)')
-    expect(artifact).not.toContain('process.exit(1)')
     const artifact = readFileSync(join(result.result.session!.artifacts.sessionDir, 'integration_test.md'), 'utf-8')
 
     expect(result.result.status).toBe('completed')
@@ -2795,8 +2869,6 @@ process.exit(result.status ?? 1)
 
   it('keeps failed unit mock verification resumable instead of marking the loop failed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-resumable-'))
-  it('writes a workflow_defect failure record when resume checkpoint validation fails', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-failure-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
     const prdPath = join(dir, 'docs', 'sample-prd.md')
@@ -2827,7 +2899,14 @@ process.exit(result.status ?? 1)
     expect(events).not.toContain('"event":"human_confirmation_required"')
   })
 
-  it('keeps failed unit mock verification resumable after human approval to continue', async () => {
+  it('writes a workflow_defect failure record when resume checkpoint validation fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-resume-failure-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
     writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [code_development]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const stateManager = new StateManager(dir)
@@ -2876,22 +2955,12 @@ process.exit(result.status ?? 1)
     expect(failure.reason).toContain('no reliable checkpoint')
   })
 
-  it('writes a failure record when a stage crashes', async () => {
+  it('keeps failed unit mock verification resumable after human approval to continue', async () => {
     providerMocks.factory = (input, config, actual) => {
       if (input.logicalName === 'capabilities.loop.planner') {
         return {
           name: 'mock-planner',
           chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":["Hand results back to the developer provider."],"requireHumanConfirmation":true,"summary":"Verification still needs another provider pass."}'),
-          chat: vi.fn().mockResolvedValue('{"confidence":0.5,"risks":["boom"],"requireHumanConfirmation":false,"summary":"stage failed"}'),
-          chatStream: vi.fn(async function * () {}),
-        }
-      }
-      if (input.logicalName === 'capabilities.loop.executor') {
-        return {
-          name: 'mock-executor',
-          chat: vi.fn(async () => {
-            throw new Error('stage executor crashed hard')
-          }),
           chatStream: vi.fn(async function * () {}),
         }
       }
@@ -2901,8 +2970,6 @@ process.exit(result.status ?? 1)
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-unit-mock-human-approve-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
-    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-failure-'))
-    mkdirSync(join(dir, 'docs'), { recursive: true })
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
 
@@ -2951,6 +3018,35 @@ process.exit(result.status ?? 1)
     expect(result.result.session?.artifacts.nextRoundInputPath).toBeTruthy()
     expect(events).toContain('"event":"human_confirmation_required"')
     expect(events).not.toContain('"event":"stage_failed"')
+  })
+
+  it('writes a failure record when a stage crashes', async () => {
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.5,"risks":["boom"],"requireHumanConfirmation":false,"summary":"stage failed"}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            throw new Error('stage executor crashed hard')
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-failure-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
     writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [prd_review]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })

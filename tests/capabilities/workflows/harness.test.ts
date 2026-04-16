@@ -430,10 +430,11 @@ describe('harness workflow', () => {
       expect(hangingChat).toHaveBeenCalled()
       expect(fetchMock).toHaveBeenCalled()
       const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-      const firstText = firstBody.content.post.zh_cn.content[0][0].text as string
-      expect(firstBody.content.post.zh_cn.title).toContain('[stage_entered]')
-      expect(firstText).toContain('阶段: queued')
-      expect(firstText).toContain('下一步: 选择本轮可用模型并进入开发阶段。')
+      const cardJson = JSON.stringify(firstBody.card)
+      expect(firstBody.msg_type).toBe('interactive')
+      expect(firstBody.card.header.title.content).toContain('[stage_entered]')
+      expect(cardJson).toContain('**阶段**: queued')
+      expect(cardJson).toContain('**下一步**: 选择本轮可用模型并进入开发阶段。')
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

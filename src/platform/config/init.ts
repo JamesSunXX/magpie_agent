@@ -882,7 +882,6 @@ capabilities:
       #     command: "mvn test"
       #   - label: "Shared mock checks"
       #     command: "go test ./... -run TestWithMocks"
-      integration_test: "npm run test:run -- tests/integration"
       integration_test: "npm run test:run -- tests/e2e"
 
 # Integrations

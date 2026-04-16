@@ -1864,28 +1864,13 @@ async function executeStageAttempt(
         safety: commandSafety,
         interactive: process.stdin.isTTY && process.stdout.isTTY,
       })
-      const mock = runOptionalCommand(
-        runCwd,
-        runtime.commands.mockTest,
-        'Skipped: no mock test command configured.',
-        commandSafety
-      )
+      const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
       stageSucceeded = unit.passed && mock.passed
       testOutput = [
         `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
         `## Mock Test (${mock.commandLabel})\n${mock.output}`,
       ].join('\n\n')
     }
-    const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
-      safety: commandSafety,
-      interactive: process.stdin.isTTY && process.stdout.isTTY,
-    })
-    const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
-    stageSucceeded = unit.passed && mock.passed
-    testOutput = [
-      `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
-      `## Mock Test (${mock.commandLabel})\n${mock.output}`,
-    ].join('\n\n')
   } else if (stage === 'integration_test') {
     const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
       safety: commandSafety,

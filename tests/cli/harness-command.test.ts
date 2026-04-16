@@ -353,6 +353,32 @@ describe('top-level harness CLI command', () => {
       })
     isRecoverableHarnessSession.mockReturnValue(false)
     isRecoverableLoopSession.mockReturnValue(true)
+
+    try {
+      const { harnessCommand } = await import('../../src/cli/commands/harness.js')
+      await harnessCommand.parseAsync(
+        ['node', 'harness', 'resume', 'harness-late-stage-1'],
+        { from: 'node' }
+      )
+
+      expect(runCapability).toHaveBeenCalledWith(
+        { name: 'harness' },
+        expect.objectContaining({
+          goal: 'Ship checkout v2',
+          prdPath: '/tmp/prd.md',
+        }),
+        expect.any(Object)
+      )
+      expect(process.env.MAGPIE_SESSION_ID).toBe('harness-late-stage-1')
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.MAGPIE_SESSION_ID
+      } else {
+        process.env.MAGPIE_SESSION_ID = previousSessionId
+      }
+    }
+  })
+
   it('preserves persisted reviewer selection mode when resuming', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const previousSessionId = process.env.MAGPIE_SESSION_ID
@@ -382,7 +408,6 @@ describe('top-level harness CLI command', () => {
     try {
       const { harnessCommand } = await import('../../src/cli/commands/harness.js')
       await harnessCommand.parseAsync(
-        ['node', 'harness', 'resume', 'harness-late-stage-1'],
         ['node', 'harness', 'resume', 'harness-blocked-2'],
         { from: 'node' }
       )
@@ -392,16 +417,21 @@ describe('top-level harness CLI command', () => {
         expect.objectContaining({
           goal: 'Ship checkout v2',
           prdPath: '/tmp/prd.md',
+          models: ['kiro', 'codex'],
+          modelsExplicit: false,
         }),
-        expect.any(Object)
+        expect.objectContaining({
+          configPath: '/tmp/persisted.yaml',
+        })
       )
-      expect(process.env.MAGPIE_SESSION_ID).toBe('harness-late-stage-1')
+      expect(process.env.MAGPIE_SESSION_ID).toBe(previousSessionId)
     } finally {
       if (previousSessionId === undefined) {
         delete process.env.MAGPIE_SESSION_ID
       } else {
         process.env.MAGPIE_SESSION_ID = previousSessionId
       }
+      logSpy.mockRestore()
     }
   })
 
@@ -463,21 +493,13 @@ describe('top-level harness CLI command', () => {
         }),
         expect.any(Object)
       )
-          models: ['kiro', 'codex'],
-          modelsExplicit: false,
-        }),
-        expect.objectContaining({
-          configPath: '/tmp/persisted.yaml',
-        })
-      )
-      expect(process.env.MAGPIE_SESSION_ID).toBe(previousSessionId)
+      expect(process.env.MAGPIE_SESSION_ID).toBe('harness-legacy-1')
     } finally {
       if (previousSessionId === undefined) {
         delete process.env.MAGPIE_SESSION_ID
       } else {
         process.env.MAGPIE_SESSION_ID = previousSessionId
       }
-      logSpy.mockRestore()
     }
   })
 
