@@ -5,7 +5,7 @@ import { KiroProvider } from '../../src/providers/kiro.js'
 type MockChild = EventEmitter & {
   stdout: EventEmitter
   stderr: EventEmitter
-  stdin: { write: (chunk: string) => void; end: () => void }
+  stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }
   kill: ReturnType<typeof vi.fn>
 }
 
@@ -20,8 +20,8 @@ function createChild(): MockChild {
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
   child.stdin = {
-    write: () => undefined,
-    end: () => undefined,
+    write: vi.fn(),
+    end: vi.fn(),
   }
   child.kill = vi.fn(() => true)
   return child
@@ -150,6 +150,27 @@ describe('KiroProvider runtime behavior', () => {
     })
 
     await expect(promise).rejects.toThrow('Failed to run kiro-cli: spawn failed')
+  })
+
+  it('writes the prompt to stdin once for non-stream chat', async () => {
+    const child = createChild()
+    mockSpawn.mockReturnValue(child)
+
+    const provider = new KiroProvider() as unknown as KiroProvider & {
+      resolveAgent: () => Promise<string>
+    }
+    provider.resolveAgent = vi.fn().mockResolvedValue('architect')
+
+    const promise = provider.chat([{ role: 'user', content: 'send once' }], 'system prompt')
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('ok'))
+      child.emit('close', 0)
+    })
+
+    await expect(promise).resolves.toBe('ok')
+    expect(child.stdin.write).toHaveBeenCalledTimes(1)
+    expect(child.stdin.end).toHaveBeenCalledTimes(1)
+    expect(child.stdin.write).toHaveBeenCalledWith('System: system prompt\n\nuser: send once\n\n')
   })
 
   it('streams output chunks and strips ansi codes', async () => {

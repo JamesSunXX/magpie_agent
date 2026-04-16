@@ -175,10 +175,6 @@ export class KiroProvider implements AIProvider {
                 stdio: ['pipe', 'pipe', 'pipe']
             })
 
-            // Write prompt to stdin
-            child.stdin.write(prompt)
-            child.stdin.end()
-
             let output = ''
             let error = ''
             let settled = false
@@ -265,10 +261,6 @@ export class KiroProvider implements AIProvider {
             cwd: this.cwd,
             stdio: ['pipe', 'pipe', 'pipe']
         })
-
-        // Write prompt to stdin
-        child.stdin.write(prompt)
-        child.stdin.end()
 
         const chunks: string[] = []
         let resolveNext: ((value: { chunk: string | null }) => void) | null = null
