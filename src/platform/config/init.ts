@@ -231,6 +231,13 @@ function buildDefaultImConfig() {
   return {
     enabled: false,
     default_provider: 'feishu_main',
+    providers: {
+      feishu_main: {
+        type: 'feishu-app',
+        app_id: '${FEISHU_APP_ID}',
+        app_secret: '${FEISHU_APP_SECRET}',
+      },
+    },
   }
 }
 
