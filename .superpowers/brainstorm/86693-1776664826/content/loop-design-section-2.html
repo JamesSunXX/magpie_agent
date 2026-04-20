@@ -1,0 +1,117 @@
+<h2>Loop 新方案 v1: 工具交接规则</h2>
+<p class="subtitle">这一页只回答一件事：每个阶段默认怎么在 <code>claude-code</code>、<code>codex</code>、<code>gemini-cli</code>、<code>kiro-cli</code> 之间接力。</p>
+
+<div class="section">
+  <div class="label">统一交接规则</div>
+  <div class="mockup">
+    <div class="mockup-header">先定规矩，再看阶段</div>
+    <div class="mockup-body">
+      <p>每个阶段结束时，都必须产出一张<strong>阶段交接卡</strong>。</p>
+      <p>下一个工具默认只接这张卡和必要证据，不直接吃上一阶段的整段长上下文。</p>
+      <p>这样做的目的不是省字，而是避免不同工具在脏上下文里各说各话。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">默认接力矩阵</div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>1-3. 前三段</h3>
+        <p><strong>主说：</strong>claude-code</p>
+        <p><strong>复核：</strong>gemini-cli</p>
+        <p><strong>输出：</strong>决策卡 / 拆分卡 / 执行卡</p>
+        <p><strong>接棒人：</strong>下一阶段主工具</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>4. dev_preparation</h3>
+        <p><strong>主说：</strong>claude-code</p>
+        <p><strong>执行确认：</strong>codex</p>
+        <p><strong>输出：</strong>开发入口卡</p>
+        <p><strong>接棒人：</strong>red_test_confirmation</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>5. red_test_confirmation</h3>
+        <p><strong>主执行：</strong>codex</p>
+        <p><strong>阶段裁定：</strong>claude-code</p>
+        <p><strong>输出：</strong>失败基线卡 + 测试证据</p>
+        <p><strong>异常接管：</strong>kiro-cli</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>6. implementation</h3>
+        <p><strong>主执行：</strong>codex</p>
+        <p><strong>挑战复核：</strong>gemini-cli（按阶段规则可开关）</p>
+        <p><strong>输出：</strong>实现结果卡 + 变更说明</p>
+        <p><strong>异常接管：</strong>kiro-cli</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>7. green_fixup</h3>
+        <p><strong>主执行：</strong>codex 或 kiro-cli</p>
+        <p><strong>阶段裁定：</strong>claude-code</p>
+        <p><strong>输出：</strong>补修交接卡</p>
+        <p><strong>接棒人：</strong>unit_mock_test</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>8-9. 后置验证</h3>
+        <p><strong>主执行：</strong>当前阶段配置工具</p>
+        <p><strong>挑战复核：</strong>gemini-cli</p>
+        <p><strong>返工接管：</strong>kiro-cli</p>
+        <p><strong>阶段裁定：</strong>claude-code</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">交接卡里最少要有什么</div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>固定字段</h4>
+      <ul>
+        <li>这一阶段想解决什么</li>
+        <li>这阶段实际做了什么</li>
+        <li>结果是通过、返工还是阻塞</li>
+        <li>下一阶段最少需要知道什么</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>必要证据</h4>
+      <ul>
+        <li>关键文件或改动范围</li>
+        <li>测试输出或失败摘要</li>
+        <li>未解决风险</li>
+        <li>如果接管，需要从哪里继续</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="options">
+    <div class="option" data-choice="yes" onclick="toggleSelect(this)">
+      <div class="letter">Y</div>
+      <div class="content">
+        <h3>这段设计对</h3>
+        <p>可以继续往下写每个阶段的具体交付物格式。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="adjust" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>这段设计还要调</h3>
+        <p>工具接力规则还有要改的地方。</p>
+      </div>
+    </div>
+  </div>
+</div>

@@ -6,6 +6,7 @@ import { loadConfig } from '../../platform/config/loader.js'
 import { getRepoRoot } from '../../platform/paths.js'
 import { createImRuntime, loadImServerStatus, saveImServerStatus } from '../../platform/integrations/im/runtime.js'
 import { createFeishuCallbackServer } from '../../platform/integrations/im/feishu/server.js'
+import { startFeishuWsServer } from '../../platform/integrations/im/feishu/ws-server.js'
 import { handleConfirmationAction } from '../../platform/integrations/im/feishu/confirmation-bridge.js'
 import { FeishuImClient } from '../../platform/integrations/im/feishu/client.js'
 import {
@@ -16,6 +17,8 @@ import {
 } from '../../platform/integrations/im/feishu/task-command.js'
 import { buildFeishuTaskFormCard } from '../../platform/integrations/im/feishu/task-form.js'
 import { launchFeishuTask } from '../../platform/integrations/im/feishu/task-launch.js'
+import type { FeishuAppImProviderConfig } from '../../platform/config/types.js'
+import type { ImInboundEvent } from '../../platform/integrations/im/types.js'
 
 export function resolveFeishuProvider(configPath?: string) {
   const config = loadConfig(configPath)
@@ -55,100 +58,57 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
     appId: provider.app_id,
     appSecret: provider.app_secret,
   })
-  const path = provider.callback_path || '/callbacks/feishu'
-  const port = provider.callback_port || 9321
 
-  const server = createFeishuCallbackServer({
-    path,
-    verificationToken: provider.verification_token,
-    onEvent: async (event) => {
-      if (event.eventId && await runtime.hasProcessedEvent(event.eventId)) {
-        return
+  const onEvent = buildEventHandler({ cwd: options.cwd, provider, runtime, client, configPath: options.configPath })
+
+  if (provider.transport === 'websocket') {
+    return runWsServer({ id, provider, onEvent })
+  }
+
+  return runCallbackServer({ id, cwd: options.cwd, provider, onEvent })
+}
+
+/** Shared event handler used by both callback and websocket transports. */
+function buildEventHandler(ctx: {
+  cwd: string
+  provider: FeishuAppImProviderConfig
+  runtime: ReturnType<typeof createImRuntime>
+  client: FeishuImClient
+  configPath?: string
+}): (event: ImInboundEvent) => Promise<void> {
+  const { cwd, provider, runtime, client, configPath } = ctx
+
+  return async (event: ImInboundEvent) => {
+    if (event.eventId && await runtime.hasProcessedEvent(event.eventId)) {
+      return
+    }
+
+    if (event.kind === 'confirmation_action') {
+      const result = await handleConfirmationAction(cwd, {
+        actorOpenId: event.actorOpenId,
+        whitelist: provider.approval_whitelist_open_ids,
+        action: event.action,
+        sessionId: event.sessionId,
+        confirmationId: event.confirmationId,
+        threadKey: event.threadKey,
+        chatId: event.chatId,
+        rejectionReason: event.rejectionReason,
+        extraInstruction: event.extraInstruction,
+      })
+
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
       }
+      await client.replyTextMessage(event.threadKey, replySummary(result)).catch(() => {})
+      return
+    }
 
-      if (event.kind === 'confirmation_action') {
-        const result = await handleConfirmationAction(options.cwd, {
-          actorOpenId: event.actorOpenId,
-          whitelist: provider.approval_whitelist_open_ids,
-          action: event.action,
-          sessionId: event.sessionId,
-          confirmationId: event.confirmationId,
-          threadKey: event.threadKey,
-          chatId: event.chatId,
-          rejectionReason: event.rejectionReason,
-          extraInstruction: event.extraInstruction,
-        })
-
-        if (event.eventId) {
-          await runtime.markEventProcessed(event.eventId)
-        }
-        await client.replyTextMessage(event.threadKey, replySummary(result)).catch(() => {})
-        return
-      }
-
-      if (event.kind === 'task_form_submission') {
-        let request
-        try {
-          request = parseFeishuTaskForm(event.formValues)
-        } catch (error) {
-          await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
-          if (event.eventId) {
-            await runtime.markEventProcessed(event.eventId)
-          }
-          return
-        }
-
-        try {
-          const launched = await launchFeishuTask(options.cwd, {
-            appId: provider.app_id,
-            appSecret: provider.app_secret,
-            request,
-            chatId: event.chatId,
-            configPath: options.configPath,
-          })
-
-          if (event.eventId) {
-            await runtime.markEventProcessed(event.eventId)
-          }
-          await client.replyTextMessage(launched.threadId, [
-            'Task accepted.',
-            `Capability: ${launched.capability}`,
-            `Session: ${launched.sessionId}`,
-            `Status: ${launched.status}`,
-          ].join('\n')).catch(() => {})
-        } catch (error) {
-          if (!isUserActionableTaskLaunchError(error)) {
-            throw error
-          }
-
-          await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
-          if (event.eventId) {
-            await runtime.markEventProcessed(event.eventId)
-          }
-        }
-        return
-      }
-
-      if (isFeishuTaskFormText(event.text)) {
-        await client.replyInteractiveCard(event.sourceMessageId, buildFeishuTaskFormCard()).catch(() => {})
-        if (event.eventId) {
-          await runtime.markEventProcessed(event.eventId)
-        }
-        return
-      }
-
-      if (!isFeishuTaskCommandText(event.text)) {
-        if (event.eventId) {
-          await runtime.markEventProcessed(event.eventId)
-        }
-        return
-      }
-
+    if (event.kind === 'task_form_submission') {
       let request
       try {
-        request = parseFeishuTaskCommand(event.text)
+        request = parseFeishuTaskForm(event.formValues)
       } catch (error) {
-        await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+        await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
         if (event.eventId) {
           await runtime.markEventProcessed(event.eventId)
         }
@@ -156,12 +116,12 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
       }
 
       try {
-        const launched = await launchFeishuTask(options.cwd, {
+        const launched = await launchFeishuTask(cwd, {
           appId: provider.app_id,
           appSecret: provider.app_secret,
           request,
           chatId: event.chatId,
-          configPath: options.configPath,
+          configPath,
         })
 
         if (event.eventId) {
@@ -178,20 +138,93 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
           throw error
         }
 
-        await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+        await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
         if (event.eventId) {
           await runtime.markEventProcessed(event.eventId)
         }
       }
-    },
+      return
+    }
+
+    if (isFeishuTaskFormText(event.text)) {
+      await client.replyInteractiveCard(event.sourceMessageId, buildFeishuTaskFormCard()).catch(() => {})
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
+      }
+      return
+    }
+
+    if (!isFeishuTaskCommandText(event.text)) {
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
+      }
+      return
+    }
+
+    let request
+    try {
+      request = parseFeishuTaskCommand(event.text)
+    } catch (error) {
+      await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
+      }
+      return
+    }
+
+    try {
+      const launched = await launchFeishuTask(cwd, {
+        appId: provider.app_id,
+        appSecret: provider.app_secret,
+        request,
+        chatId: event.chatId,
+        configPath,
+      })
+
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
+      }
+      await client.replyTextMessage(launched.threadId, [
+        'Task accepted.',
+        `Capability: ${launched.capability}`,
+        `Session: ${launched.sessionId}`,
+        `Status: ${launched.status}`,
+      ].join('\n')).catch(() => {})
+    } catch (error) {
+      if (!isUserActionableTaskLaunchError(error)) {
+        throw error
+      }
+
+      await client.replyTextMessage(event.sourceMessageId, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
+      }
+    }
+  }
+}
+
+/** HTTP callback transport. */
+async function runCallbackServer(ctx: {
+  id: string
+  cwd: string
+  provider: FeishuAppImProviderConfig
+  onEvent: (event: ImInboundEvent) => Promise<void>
+}): Promise<void> {
+  const path = ctx.provider.callback_path || '/callbacks/feishu'
+  const port = ctx.provider.callback_port || 9321
+
+  const server = createFeishuCallbackServer({
+    path,
+    verificationToken: ctx.provider.verification_token,
+    onEvent: ctx.onEvent,
   })
 
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.once('error', rejectPromise)
     server.listen(port, async () => {
       server.off('error', rejectPromise)
-      await saveImServerStatus(options.cwd, {
-        providerId: id,
+      await saveImServerStatus(ctx.cwd, {
+        providerId: ctx.id,
         status: 'running',
         port,
         path,
@@ -202,8 +235,8 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
     })
 
     const shutdown = async () => {
-      await saveImServerStatus(options.cwd, {
-        providerId: id,
+      await saveImServerStatus(ctx.cwd, {
+        providerId: ctx.id,
         status: 'stopped',
         port,
         path,
@@ -212,6 +245,31 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
       server.close(() => resolvePromise())
     }
 
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
+  })
+}
+
+/** WebSocket long-connection transport. */
+async function runWsServer(ctx: {
+  id: string
+  provider: FeishuAppImProviderConfig
+  onEvent: (event: ImInboundEvent) => Promise<void>
+}): Promise<void> {
+  const wsClient = startFeishuWsServer({
+    appId: ctx.provider.app_id,
+    appSecret: ctx.provider.app_secret,
+    encryptKey: ctx.provider.encrypt_key,
+    onEvent: ctx.onEvent,
+  })
+
+  console.log('IM server connected via WebSocket long connection.')
+
+  await new Promise<void>((resolvePromise) => {
+    const shutdown = () => {
+      wsClient.close()
+      resolvePromise()
+    }
     process.once('SIGINT', shutdown)
     process.once('SIGTERM', shutdown)
   })

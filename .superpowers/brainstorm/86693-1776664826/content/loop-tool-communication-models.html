@@ -1,0 +1,47 @@
+<h2>四个工具怎么沟通</h2>
+<p class="subtitle">阶段骨架已经定了。现在只决定工具之间的基本沟通模型，不展开到每一段细节。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>A. 固定主次型</h3>
+      <p><strong>claude-code</strong>: 负责规划和阶段判断</p>
+      <p><strong>codex</strong>: 负责主要执行</p>
+      <p><strong>gemini-cli</strong>: 负责复核和把关</p>
+      <p><strong>kiro-cli</strong>: 只做超时或异常时的兜底</p>
+      <p>特点：最稳，最容易落地，但 kiro 的参与感会比较弱。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>B. 主执行 + 复核 + 救援型</h3>
+      <p><strong>claude-code</strong>: 负责前三段决策卡和阶段裁定</p>
+      <p><strong>codex</strong>: 负责开发主执行</p>
+      <p><strong>gemini-cli</strong>: 负责关键阶段复核、挑战和争议判断</p>
+      <p><strong>kiro-cli</strong>: 不只是兜底，也负责开发返工或接管异常轮次</p>
+      <p>特点：分工清楚，而且 kiro 有独立价值。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>C. 对等协作型</h3>
+      <p>四个工具都可以按阶段动态接棒。</p>
+      <p>谁规划、谁执行、谁复核，都按阶段或状态实时切换。</p>
+      <p>特点：最灵活。</p>
+      <p>代价：交接规则会明显更复杂，也更难排查问题。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">我的建议</div>
+    <div class="mockup-body">
+      <p>我倾向 <strong>B</strong>。</p>
+      <p>原因是你这次要的是“明确每个阶段怎么在工具之间沟通”。如果用 A，kiro 基本只是救火；如果用 C，规则会一下变复杂。</p>
+      <p>B 比较平衡：主流程还是清楚的，但异常轮次、返工轮次和争议轮次也有明确去处。</p>
+    </div>
+  </div>
+</div>

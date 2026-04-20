@@ -1,0 +1,116 @@
+<h2>Loop 新方案 v1: 配置和异常处理</h2>
+<p class="subtitle">这一页解决最后两件事：正式阶段怎么配置工具，以及异常轮次怎么处理但又不把配置搞炸。</p>
+
+<div class="section">
+  <div class="label">配置原则</div>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">按正式阶段配置</div>
+      <div class="mockup-body">
+        <p>每个正式阶段都可以配置：</p>
+        <p><strong>primary</strong>: 主说 / 主执行</p>
+        <p><strong>reviewer</strong>: 复核 / 挑战</p>
+        <p><strong>rescue</strong>: 异常接管 / 返工接管</p>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">异常先继承</div>
+      <div class="mockup-body">
+        <p>像“超时接管”“开发返工”“验证返工”这种异常轮次，先继承所属正式阶段的配置。</p>
+        <p>这样先把主线跑顺，不额外增加一套异常配置表。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">建议的配置长相</div>
+  <div class="mockup">
+    <div class="mockup-header">示意</div>
+    <div class="mockup-body">
+      <pre style="white-space:pre-wrap;font-size:13px;line-height:1.5">loop:
+  stages:
+    prd_review:
+      primary: claude-code
+      reviewer: gemini-cli
+      rescue: kiro-cli
+    implementation:
+      primary: codex
+      reviewer: gemini-cli
+      rescue: kiro-cli
+    integration_test:
+      primary: codex
+      reviewer: gemini-cli
+      rescue: kiro-cli</pre>
+      <p>意思很简单：只在正式阶段上写谁主说、谁复核、谁救援。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">异常处理规则</div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>超时或执行事故</h3>
+        <p>先交给当前阶段的 <strong>rescue</strong> 接管。</p>
+        <p>如果 rescue 也没法完成，再由阶段裁定决定是返工还是停住。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>开发返工</h3>
+        <p>不跳回一个模糊的大开发阶段。</p>
+        <p>而是回到 <code>green_fixup</code> 或 <code>implementation</code> 继续，仍沿用该阶段配置。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>验证返工</h3>
+        <p>失败时标成“验证返工”或“联调返工”。</p>
+        <p>允许补修，但阶段身份不变，避免把问题冲淡成普通开发。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">验证和落地检查</div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>文档侧</h4>
+      <ul>
+        <li>阶段定义文档要更新成 9 段</li>
+        <li>每段交付物字段要固定</li>
+        <li>阶段配置说明要补到能力文档里</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>实现侧</h4>
+      <ul>
+        <li>现有阶段枚举要改</li>
+        <li>现有 planner / executor 绑定要改成按阶段读取</li>
+        <li>现有 fallback 和确认逻辑要改成按阶段继承配置</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="options">
+    <div class="option" data-choice="yes" onclick="toggleSelect(this)">
+      <div class="letter">Y</div>
+      <div class="content">
+        <h3>这段也对</h3>
+        <p>设计已经可以收敛成正式文档。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="adjust" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>这段还要调</h3>
+        <p>配置方式或异常规则还要改。</p>
+      </div>
+    </div>
+  </div>
+</div>

@@ -21,7 +21,7 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 21
+export const CURRENT_CONFIG_VERSION = 22
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 const LOOP_STAGE_NAMES: LoopStageName[] = [

@@ -1,0 +1,93 @@
+<h2>建议的新阶段骨架</h2>
+<p class="subtitle">先只看阶段顺序和每段职责，不讨论具体由哪个工具执行。你这一步只需要判断这个骨架顺不顺。</p>
+
+<div class="section">
+  <div class="label">阶段列表</div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>1. prd_review</h3>
+        <p>把目标、范围、验收口径、主要疑点压成一张决策卡。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>2. domain_partition</h3>
+        <p>把子任务、边界、依赖、优先级压成一张拆分卡。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>3. trd_generation</h3>
+        <p>把执行方案、验证方式、风险回退压成一张执行卡。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>4. dev_preparation</h3>
+        <p>确认约束、改动范围、目标文件和这轮开发入口。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>5. red_test_confirmation</h3>
+        <p>先确认失败基线，证明问题真实存在、测试入口可用。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>6. implementation</h3>
+        <p>真正做改动，产出本轮实现结果和变更说明。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>7. green_fixup</h3>
+        <p>实现后先做本地补修、自检和交接整理，再送正式验证。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>8. unit_mock_test</h3>
+        <p>做较近距离验证；失败时允许继续补修，但要记录是“验证返工”。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>9. integration_test</h3>
+        <p>做更高层验证；失败时同样允许补修，但要记录是“联调返工”。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">我想强调的边界</div>
+  <div class="mockup">
+    <div class="mockup-header">关键变化</div>
+    <div class="mockup-body">
+      <p>前三段不再只是“继续想一想”，而是每段都要交一张可接下一棒的卡。</p>
+      <p>开发不再是一大坨，而是拆成准备、红测确认、实施、绿测前补修四段。</p>
+      <p>后两段仍然允许边验边修，但它们的失败要被明确定义成验证返工，而不是重新假装自己还是开发阶段。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="options">
+    <div class="option" data-choice="yes" onclick="toggleSelect(this)">
+      <div class="letter">Y</div>
+      <div class="content">
+        <h3>骨架基本对</h3>
+        <p>可以继续往下定义每段交付物和工具接力。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="adjust" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>骨架还要调</h3>
+        <p>阶段数量或顺序还需要改。</p>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,106 @@
+<h2>Loop 当前结构草图</h2>
+<p class="subtitle">先把“阶段”和“工具角色”分开看。这个图描述的是我从现有代码里读出来的真实现状，不是建议方案。</p>
+
+<div class="section">
+  <div class="label">当前阶段</div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>1. prd_review</h3>
+        <p>先看需求，形成阶段结论。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>2. domain_partition</h3>
+        <p>拆任务和边界，产出执行计划。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>3. trd_generation</h3>
+        <p>整理可执行设计和约束。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>4. code_development</h3>
+        <p>真正改代码。这里还混着约束检查、红测确认、修复重试。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>5. unit_mock_test</h3>
+        <p>跑项目定义的单测 / mock 检查。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>6. integration_test</h3>
+        <p>跑联调或更高层验证。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">当前工具角色</div>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Planner 角色</div>
+      <div class="mockup-body">
+        <p><strong>默认：</strong>claude-code</p>
+        <p>负责计划、阶段评估、风险判断、是否继续重试。</p>
+        <p>如果配置覆盖，也可以改成别的工具。</p>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">Executor 角色</div>
+      <div class="mockup-body">
+        <p><strong>默认：</strong>codex</p>
+        <p>负责执行当前阶段的实际工作，尤其是开发和修复。</p>
+        <p>如果 codex 超时，当前实现会自动切到 kiro 继续。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">当前判断链</div>
+  <div class="mockup">
+    <div class="mockup-header">阶段完成后的判断顺序</div>
+    <div class="mockup-body">
+      <p>Planner 先判断阶段结果。</p>
+      <p>如果只是低把握或普通失败，可进入多模型确认。</p>
+      <p>多模型确认会调用 reviewers；如果意见不一致，再交给 summarizer 裁定。</p>
+      <p>只有高风险或模型明确要求人工，才转人工确认。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">你这次要定的重点</div>
+  <div class="options">
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>主要重排阶段</h3>
+        <p>先把阶段本身改清楚，再决定每个阶段用谁。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content">
+        <h3>主要重排工具分工</h3>
+        <p>先把四个工具各自负责什么定清楚，再反推阶段。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="c" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>两者一起改</h3>
+        <p>阶段和工具沟通一起重做，允许改动更大。</p>
+      </div>
+    </div>
+  </div>
+</div>

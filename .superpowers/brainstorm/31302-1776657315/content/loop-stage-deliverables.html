@@ -1,0 +1,44 @@
+<h2>前三段保留，但交付物要定型</h2>
+<p class="subtitle">你已经定了保留 <code>prd_review</code>、<code>domain_partition</code>、<code>trd_generation</code>。现在只问一个问题：这三段的交付物，你更想偏哪种风格？</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>A. 轻文档型</h3>
+      <p><strong>prd_review</strong>: 需求摘要、范围、风险</p>
+      <p><strong>domain_partition</strong>: 模块拆分、边界、依赖</p>
+      <p><strong>trd_generation</strong>: 实现说明、测试说明</p>
+      <p>特点：文档最轻，推进快，但工具之间的接力规则会比较松。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>B. 决策卡型</h3>
+      <p><strong>prd_review</strong>: 目标、范围、验收口径、主要疑点</p>
+      <p><strong>domain_partition</strong>: 子任务、边界、依赖、优先级</p>
+      <p><strong>trd_generation</strong>: 执行方案、验证方式、风险回退</p>
+      <p>特点：每阶段都产出一张“能接下一棒”的卡，比较平衡。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>C. 强交接型</h3>
+      <p><strong>prd_review</strong>: 只确认需求事实和验收线</p>
+      <p><strong>domain_partition</strong>: 只确认技术拆分和责任边界</p>
+      <p><strong>trd_generation</strong>: 专门产出给后续工具的执行包和交接包</p>
+      <p>特点：阶段边界最硬，最适合多工具串行协作，但会更重。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">我目前的倾向</div>
+    <div class="mockup-body">
+      <p>如果你这次重点是梳理 <strong>工具之间如何沟通</strong>，我倾向于 <strong>B 或 C</strong>。</p>
+      <p>A 更像“把文档写清楚”，但对工具交接的约束还是偏弱。</p>
+    </div>
+  </div>
+</div>

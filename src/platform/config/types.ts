@@ -354,6 +354,8 @@ export interface FeishuAppImProviderConfig {
   encrypt_key?: string
   default_chat_id: string
   approval_whitelist_open_ids: string[]
+  /** 'callback' uses HTTP webhook server; 'websocket' uses Lark SDK long connection. */
+  transport?: 'callback' | 'websocket'
   callback_port?: number
   callback_path?: string
 }

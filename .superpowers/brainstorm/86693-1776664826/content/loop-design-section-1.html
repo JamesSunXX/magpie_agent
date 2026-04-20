@@ -1,0 +1,82 @@
+<h2>Loop 新方案 v1</h2>
+<p class="subtitle">这是把你刚才所有选择合并后的第一版正式结构。先只看“阶段骨架 + 工具配置边界”，不展开异常分支。</p>
+
+<div class="section">
+  <div class="label">阶段骨架</div>
+  <div class="cards">
+    <div class="card"><div class="card-body"><h3>1. prd_review</h3><p>交付：目标、范围、验收口径、主要疑点决策卡</p></div></div>
+    <div class="card"><div class="card-body"><h3>2. domain_partition</h3><p>交付：子任务、边界、依赖、优先级拆分卡</p></div></div>
+    <div class="card"><div class="card-body"><h3>3. trd_generation</h3><p>交付：执行方案、验证方式、风险回退执行卡</p></div></div>
+    <div class="card"><div class="card-body"><h3>4. dev_preparation</h3><p>交付：本轮改动范围、目标文件、开发入口卡</p></div></div>
+    <div class="card"><div class="card-body"><h3>5. red_test_confirmation</h3><p>交付：失败基线已确认、测试入口可用</p></div></div>
+    <div class="card"><div class="card-body"><h3>6. implementation</h3><p>交付：本轮代码改动与实现说明</p></div></div>
+    <div class="card"><div class="card-body"><h3>7. green_fixup</h3><p>交付：本地补修完成、准备进入正式验证</p></div></div>
+    <div class="card"><div class="card-body"><h3>8. unit_mock_test</h3><p>交付：近距离验证结果；失败记为验证返工</p></div></div>
+    <div class="card"><div class="card-body"><h3>9. integration_test</h3><p>交付：高层验证结果；失败记为联调返工</p></div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">工具沟通模型</div>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">默认职责</div>
+      <div class="mockup-body">
+        <p><strong>claude-code</strong>: 前三段决策卡 + 阶段裁定</p>
+        <p><strong>codex</strong>: 开发主执行</p>
+        <p><strong>gemini-cli</strong>: 关键阶段复核、挑战、争议判断</p>
+        <p><strong>kiro-cli</strong>: 开发返工、异常轮次接管、救援</p>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">配置边界</div>
+      <div class="mockup-body">
+        <p>工具绑定<strong>按正式阶段可配置</strong>。</p>
+        <p>也就是每个正式阶段可以改“谁主说、谁复核、谁救援”。</p>
+        <p><strong>异常分支先不单独配置</strong>，它们先继承所属正式阶段规则。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">这版结构的核心含义</div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>你得到的</h4>
+      <ul>
+        <li>前三段保留，但每段都有明确交付卡</li>
+        <li>开发段不再混成一坨</li>
+        <li>工具分工清楚，但每段仍可换人</li>
+        <li>异常分支不会把配置复杂度一下拉爆</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>暂时不做的</h4>
+      <ul>
+        <li>不做异常分支单独配置</li>
+        <li>不做四个工具完全对等协作</li>
+        <li>不在这一步处理 harness 外层流程</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="options">
+    <div class="option" data-choice="yes" onclick="toggleSelect(this)">
+      <div class="letter">Y</div>
+      <div class="content">
+        <h3>这版结构对</h3>
+        <p>继续往下定义每个阶段怎么交接。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="adjust" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>这版结构还要调</h3>
+        <p>阶段或配置边界还要改。</p>
+      </div>
+    </div>
+  </div>
+</div>

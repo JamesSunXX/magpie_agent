@@ -1,0 +1,51 @@
+<h2><code>code_development</code> 怎么拆</h2>
+<p class="subtitle">你已经定了要拆正式阶段。现在只看哪种拆法最适合四个工具接力。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>A. 三段式</h3>
+      <p><strong>dev_preparation</strong>: 约束检查、开发目标、测试目标</p>
+      <p><strong>implementation</strong>: 真正改代码</p>
+      <p><strong>dev_fixup</strong>: 本地自检、补修、准备交给后置验证</p>
+      <p>优点：最容易落地，改动小。</p>
+      <p>缺点：红测确认和实现后的修复还会混在一起。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>B. 四段式</h3>
+      <p><strong>dev_preparation</strong>: 约束检查、确定改动范围</p>
+      <p><strong>red_test_confirmation</strong>: 先确认失败基线</p>
+      <p><strong>implementation</strong>: 真正改代码</p>
+      <p><strong>green_fixup</strong>: 自检、补修、准备进入正式验证</p>
+      <p>优点：最符合现在真实流程，工具交接点清楚。</p>
+      <p>缺点：阶段数变多一些。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>C. 五段式</h3>
+      <p><strong>dev_preparation</strong>: 准备开发</p>
+      <p><strong>red_test_confirmation</strong>: 确认失败基线</p>
+      <p><strong>implementation</strong>: 改代码</p>
+      <p><strong>executor_self_review</strong>: 执行工具先自查</p>
+      <p><strong>green_fixup</strong>: 按自查结果补修并交棒</p>
+      <p>优点：最强调工具分工。</p>
+      <p>缺点：流程更重，容易让阶段太碎。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">我的建议</div>
+    <div class="mockup-body">
+      <p>我倾向 <strong>B. 四段式</strong>。</p>
+      <p>原因很简单：它把现在最乱的两件事单独拎出来了，一是“先确认失败基线”，二是“实现后补修再交给正式验证”。</p>
+      <p>这样每一段都能有明确交付物，也更容易定义 claude-code、codex、gemini-cli、kiro-cli 分别在哪一棒发言。</p>
+    </div>
+  </div>
+</div>
