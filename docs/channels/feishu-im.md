@@ -16,7 +16,7 @@
 
 1. 已创建可接收事件回调的飞书应用。
 2. 已拿到应用的 `app_id`、`app_secret`、`verification_token`。
-3. 已准备一个接收任务线程的默认群，并拿到 `chat_id`。
+3. 已准备一个只在没有现成线程、或需要兜底时才会用到的默认群，并拿到 `chat_id`。
 4. Magpie 运行机器可以被飞书事件回调访问到对应端口。
 
 ## 配置
@@ -44,7 +44,7 @@ integrations:
 
 字段说明：
 
-- `default_chat_id`：默认发任务线程的飞书群。
+- `default_chat_id`：只在没有现成线程、或需要兜底时才会使用的默认群。
 - `approval_whitelist_open_ids`：只有这些飞书用户可以批准或驳回。
 - `callback_port` / `callback_path`：本地回调服务监听地址。
 
@@ -95,8 +95,9 @@ priority: high
 
 - `type: small` 走 `loop`
 - `type: formal` 走 `harness`
-- `goal` 和 `prd` 必填
-- `priority` 只对 `formal` 任务有意义
+- `type`、`goal` 和 `prd` 都必填
+- `type` 只接受 `small / formal`
+- `priority` 只对 `formal` 任务有意义，且只接受 `interactive / high / normal / background`，其他值会被拒绝
 
 #### 方式 B：消息卡片表单
 
@@ -119,23 +120,25 @@ Magpie 会在当前对话里回一张表单卡片。填写后点击提交。
 
 - `type: small` 走 `loop`
 - `type: formal` 走 `harness`
-- `goal` 和 `prd` 必填
-- `priority` 只对 `formal` 任务有意义
+- `type`、`goal` 和 `prd` 都必填
+- `type` 只接受 `small / formal`
+- `priority` 只对 `formal` 任务有意义，且只接受 `interactive / high / normal / background`，其他值会被拒绝
 
 发起后，Magpie 会：
 
-1. 在当前群里创建一条新的任务线程。
+1. 在用户当前发消息的群里创建一条新的任务线程。
 2. 把任务绑定到新建的 `loop` 或 `harness` 会话。
 3. 在线程里回写接收结果。
 4. 在后续继续回写排队、运行、完成或失败状态。
 
 ### 2. 人工确认
 
-1. Magpie 会在默认飞书群里为该会话创建或复用一条线程。
-2. 线程里会收到一张确认卡片。
-3. 白名单用户可以直接批准或驳回。
-4. 驳回原因和补充说明会一起回写到原确认记录里。
-5. `magpie` 继续沿用原会话和原工作区往下跑。
+1. 如果这个会话已经绑过线程，Magpie 会直接复用原线程。
+2. 如果没有现成线程，或当前流程需要兜底，才会使用 `default_chat_id` 对应的默认群。
+3. 线程里会收到一张确认卡片。
+4. 白名单用户可以直接批准或驳回。
+5. 驳回原因和补充说明会一起回写到原确认记录里。
+6. `magpie` 继续沿用原会话和原工作区往下跑。
 
 ## 数据落点
 

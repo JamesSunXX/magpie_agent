@@ -23,7 +23,7 @@ export function buildFeishuTaskFormCard(): Record<string, unknown> {
       },
       {
         tag: 'input',
-        name: 'task_type',
+        name: 'type',
         placeholder: {
           tag: 'plain_text',
           content: 'small or formal',

@@ -36,6 +36,18 @@ describe('parseFeishuTaskCommand', () => {
     expect(() => parseFeishuTaskCommand('/magpie task\ngoal: Missing type')).toThrow('missing required field: type')
   })
 
+  it('rejects command lines without a colon separator', () => {
+    expect(() => parseFeishuTaskCommand('/magpie task\ntype small')).toThrow('invalid command line: type small')
+  })
+
+  it('rejects unsupported task types', () => {
+    expect(() => parseFeishuTaskCommand('/magpie task\ntype: medium\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md')).toThrow('unsupported task type: medium')
+  })
+
+  it('rejects unsupported priorities', () => {
+    expect(() => parseFeishuTaskCommand('/magpie task\ntype: formal\ngoal: Deliver payment retry flow\nprd: docs/plans/payment-retry.md\npriority: urgent')).toThrow('unsupported priority: urgent')
+  })
+
   it('detects the form-open command header', () => {
     expect(isFeishuTaskFormText('/magpie form')).toBe(true)
     expect(isFeishuTaskFormText('/magpie task')).toBe(false)

@@ -7,6 +7,21 @@ import {
 describe('buildFeishuTaskFormCard', () => {
   it('builds the task creation card with the expected fields and submit action', () => {
     const card = buildFeishuTaskFormCard()
+    const inputs = card.elements?.filter(
+      (element): element is { tag: string; name?: string } =>
+        typeof element === 'object' && element !== null && 'tag' in element && element.tag === 'input',
+    ) ?? []
+    const markdown = card.elements?.find(
+      (element): element is { tag: string; content?: string } =>
+        typeof element === 'object' && element !== null && 'tag' in element && element.tag === 'markdown',
+    )
+    const action = card.elements?.find(
+      (element): element is {
+        tag: string
+        actions?: Array<{ text?: { tag?: string; content?: string }; value?: { action?: string } }>
+      } =>
+        typeof element === 'object' && element !== null && 'tag' in element && element.tag === 'action',
+    )
 
     expect(card).toEqual({
       config: {
@@ -22,7 +37,7 @@ describe('buildFeishuTaskFormCard', () => {
       elements: expect.arrayContaining([
         expect.objectContaining({
           tag: 'input',
-          name: 'task_type',
+          name: 'type',
         }),
         expect.objectContaining({
           tag: 'input',
@@ -48,5 +63,20 @@ describe('buildFeishuTaskFormCard', () => {
         }),
       ]),
     })
+    expect(inputs).toHaveLength(4)
+    expect(inputs.map((input) => input.name)).toEqual(['type', 'goal', 'prd', 'priority'])
+    expect(markdown?.content).toContain('`type`: `small` or `formal`')
+    expect(markdown?.content).toContain('`priority` only matters for `formal` tasks')
+    expect(action?.actions).toEqual([
+      expect.objectContaining({
+        text: {
+          tag: 'plain_text',
+          content: 'Submit task',
+        },
+        value: {
+          action: FEISHU_TASK_FORM_SUBMIT_ACTION,
+        },
+      }),
+    ])
   })
 })

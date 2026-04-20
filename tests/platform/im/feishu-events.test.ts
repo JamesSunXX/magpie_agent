@@ -35,6 +35,15 @@ describe('parseFeishuEvent', () => {
     })
   })
 
+  it('rejects unknown callback event types with a stable error', () => {
+    expect(() => parseFeishuEvent({
+      header: {
+        event_type: 'im.unknown.callback',
+      },
+      event: {},
+    })).toThrow('unsupported event_type im.unknown.callback')
+  })
+
   it('rejects unsupported Feishu message payloads', () => {
     expect(() => parseFeishuEvent({
       header: {
@@ -54,6 +63,27 @@ describe('parseFeishuEvent', () => {
         },
       },
     })).toThrow('unsupported message_type image')
+  })
+
+  it('rejects malformed Feishu message content JSON', () => {
+    expect(() => parseFeishuEvent({
+      header: {
+        event_type: 'im.message.receive_v1',
+      },
+      event: {
+        sender: {
+          sender_id: {
+            open_id: 'ou_requester',
+          },
+        },
+        message: {
+          message_id: 'om_source',
+          chat_id: 'oc_chat',
+          message_type: 'text',
+          content: '{not-json',
+        },
+      },
+    })).toThrow('malformed event.message.content')
   })
 
   it('normalizes a card action callback into a confirmation action event', () => {
@@ -137,7 +167,7 @@ describe('parseFeishuEvent', () => {
             action: 'submit_task_form',
           },
           form_value: {
-            task_type: 'formal',
+            type: 'formal',
             goal: 'Deliver payment retry flow',
             prd: 'docs/plans/payment-retry.md',
             priority: 'high',
@@ -161,6 +191,46 @@ describe('parseFeishuEvent', () => {
         goal: 'Deliver payment retry flow',
         prdPath: 'docs/plans/payment-retry.md',
         priority: 'high',
+      },
+    })
+  })
+
+  it('keeps compatibility with legacy task_type form submissions', () => {
+    const normalized = parseFeishuEvent({
+      header: {
+        event_id: 'evt-form-legacy',
+        event_type: 'im.message.action.trigger',
+      },
+      event: {
+        operator: { open_id: 'ou_requester' },
+        action: {
+          value: {
+            action: 'submit_task_form',
+          },
+          form_value: {
+            task_type: 'small',
+            goal: 'Fix login timeout',
+            prd: 'docs/plans/login-timeout.md',
+          },
+        },
+        context: {
+          open_message_id: 'om_form_root',
+          open_chat_id: 'oc_chat',
+        },
+      },
+    })
+
+    expect(normalized).toEqual({
+      kind: 'task_form_submission',
+      eventId: 'evt-form-legacy',
+      actorOpenId: 'ou_requester',
+      threadKey: 'om_form_root',
+      chatId: 'oc_chat',
+      formValues: {
+        taskType: 'small',
+        goal: 'Fix login timeout',
+        prdPath: 'docs/plans/login-timeout.md',
+        priority: undefined,
       },
     })
   })

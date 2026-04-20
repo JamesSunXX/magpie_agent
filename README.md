@@ -145,7 +145,7 @@ magpie memory show --project
 
 1. 在配置里打开 `integrations.im`
 2. 配好飞书应用的 `app_id`、`app_secret`、`verification_token`
-3. 配一个接收任务线程的默认群 `default_chat_id`
+3. 配一个只在没有现成线程、或需要兜底时才会用到的默认群 `default_chat_id`
 4. 启动回调服务：`magpie im-server start --foreground`
 
 发起新任务时，在群里发送固定格式消息：
@@ -171,6 +171,9 @@ priority: high
 
 - `type: small` 走 `loop`
 - `type: formal` 走 `harness`
+- `type`、`goal` 和 `prd` 都必填
+- `type` 只接受 `small / formal`
+- `priority` 只对 `formal` 任务有意义，且只接受 `interactive / high / normal / background`
 - 一条任务对应一条飞书线程
 - 任务被接收后，线程里会继续收到排队、运行、完成或失败的状态回写
 
@@ -180,11 +183,13 @@ priority: high
 /magpie form
 ```
 
-系统会回一张表单卡片。填写 `type / goal / prd / priority` 后提交，后面的建线程、起任务和状态回写会走和文本命令完全相同的流程。`priority` 只对 `formal` 任务有意义。
+系统会回一张表单卡片。表单字段固定是 `type / goal / prd / priority`。填写后提交，后面的建线程、起任务和状态回写会走和文本命令完全相同的流程。`type`、`goal` 和 `prd` 都必填；`type` 只接受 `small / formal`；`priority` 只对 `formal` 任务有意义，且只接受 `interactive / high / normal / background`，其他值会被拒绝。
 
 人工确认场景下，Magpie 会：
 
-- 在默认飞书群里为这个任务创建或复用一条线程
+- 新任务会先在用户当前发消息的群里创建线程
+- 如果这个会话已经绑过线程，就复用原线程
+- 只有没有现成线程、或需要兜底时，才会使用 `default_chat_id` 对应的默认群
 - 把当前确认卡点发到这条线程里
 - 允许白名单里的飞书用户直接批准或拒绝
 - 把补充说明一并写回原任务，再继续跑

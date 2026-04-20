@@ -71,7 +71,11 @@ function parseTaskFormSubmissionEvent(payload: unknown): TaskFormSubmissionEvent
     threadKey: requireString(event?.context?.open_message_id, 'event.context.open_message_id'),
     chatId: requireString(event?.context?.open_chat_id, 'event.context.open_chat_id'),
     formValues: {
-      taskType: typeof formValue.task_type === 'string' ? formValue.task_type.trim() : undefined,
+      taskType: typeof formValue.type === 'string'
+        ? formValue.type.trim()
+        : typeof formValue.task_type === 'string'
+          ? formValue.task_type.trim()
+          : undefined,
       goal: typeof formValue.goal === 'string' ? formValue.goal.trim() : undefined,
       prdPath: typeof formValue.prd === 'string' ? formValue.prd.trim() : undefined,
       priority: typeof formValue.priority === 'string' ? formValue.priority.trim() : undefined,
@@ -133,6 +137,10 @@ export function parseFeishuEvent(payload: unknown): ImInboundEvent {
   const eventType = (payload as { header?: { event_type?: unknown } })?.header?.event_type
   if (eventType === 'im.message.receive_v1') {
     return parseTaskCommandEvent(payload)
+  }
+
+  if (eventType !== 'im.message.action.trigger') {
+    throw new Error(`Invalid Feishu callback payload: unsupported event_type ${String(eventType)}`)
   }
 
   return parseActionTriggerEvent(payload)

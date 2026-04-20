@@ -572,6 +572,14 @@ describe('im-server command', () => {
       signalHandlers.set(event, handler)
       return process
     }) as typeof process.once)
+    const parsedRequest = {
+      entryMode: 'form',
+      taskType: 'small',
+      capability: 'loop',
+      goal: 'Fix login timeout',
+      prdPath: 'docs/plans/login-timeout.md',
+    }
+    parseFeishuTaskFormMock.mockReturnValue(parsedRequest)
 
     createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
       once: vi.fn(),
@@ -609,17 +617,163 @@ describe('im-server command', () => {
     expect(launchFeishuTaskMock).toHaveBeenCalledWith(
       process.cwd(),
       expect.objectContaining({
-        request: expect.objectContaining({
-          entryMode: 'form',
-          capability: 'loop',
-        }),
+        request: parsedRequest,
         chatId: 'oc_chat',
       })
     )
+    expect(launchFeishuTaskMock.mock.calls[0][1].request).toBe(parsedRequest)
     expect(replyTextMessageMock).toHaveBeenCalledWith(
       'om_task_root',
       expect.stringContaining('Task accepted')
     )
     expect(markEventProcessedMock).toHaveBeenCalledWith('evt-form-submit-1')
+  })
+
+  it('skips duplicate task form submissions that were already processed', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    hasProcessedEventMock.mockResolvedValueOnce(true)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_form_submission',
+            eventId: 'evt-form-submit-dup-1',
+            actorOpenId: 'ou_requester',
+            threadKey: 'om_form_root',
+            chatId: 'oc_chat',
+            formValues: {
+              taskType: 'small',
+              goal: 'Fix login timeout',
+              prdPath: 'docs/plans/login-timeout.md',
+            },
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(hasProcessedEventMock).toHaveBeenCalledWith('evt-form-submit-dup-1')
+    expect(parseFeishuTaskFormMock).not.toHaveBeenCalled()
+    expect(launchFeishuTaskMock).not.toHaveBeenCalled()
+    expect(replyTextMessageMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).not.toHaveBeenCalledWith('evt-form-submit-dup-1')
+  })
+
+  it('reuses the clear rejection path when task form submission cannot launch', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    launchFeishuTaskMock.mockRejectedValue(new Error('tmux host requested but no enabled tmux operations provider is configured'))
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_form_submission',
+            eventId: 'evt-form-submit-blocked-1',
+            actorOpenId: 'ou_requester',
+            threadKey: 'om_form_root',
+            chatId: 'oc_chat',
+            formValues: {
+              taskType: 'small',
+              goal: 'Fix login timeout',
+              prdPath: 'docs/plans/login-timeout.md',
+            },
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(parseFeishuTaskFormMock).toHaveBeenCalledWith({
+      taskType: 'small',
+      goal: 'Fix login timeout',
+      prdPath: 'docs/plans/login-timeout.md',
+    })
+    expect(launchFeishuTaskMock).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          entryMode: 'form',
+          taskType: 'small',
+        }),
+        chatId: 'oc_chat',
+      })
+    )
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_form_root',
+      expect.stringContaining('Task rejected')
+    )
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-form-submit-blocked-1')
+  })
+
+  it('rejects an invalid task form submission with a clear message', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    parseFeishuTaskFormMock.mockImplementation(() => {
+      throw new Error('taskType is required')
+    })
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_form_submission',
+            eventId: 'evt-form-submit-bad-1',
+            actorOpenId: 'ou_requester',
+            threadKey: 'om_form_root',
+            chatId: 'oc_chat',
+            formValues: {
+              goal: 'Fix login timeout',
+            },
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_form_root',
+      expect.stringContaining('Task rejected: taskType is required')
+    )
+    expect(launchFeishuTaskMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-form-submit-bad-1')
   })
 })
