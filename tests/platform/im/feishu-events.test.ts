@@ -123,4 +123,45 @@ describe('parseFeishuEvent', () => {
       extraInstruction: 'Add a rollback rehearsal before continuing.',
     })
   })
+
+  it('normalizes a task form submission callback into a task form event', () => {
+    const normalized = parseFeishuEvent({
+      header: {
+        event_id: 'evt-form-1',
+        event_type: 'im.message.action.trigger',
+      },
+      event: {
+        operator: { open_id: 'ou_requester' },
+        action: {
+          value: {
+            action: 'submit_task_form',
+          },
+          form_value: {
+            task_type: 'formal',
+            goal: 'Deliver payment retry flow',
+            prd: 'docs/plans/payment-retry.md',
+            priority: 'high',
+          },
+        },
+        context: {
+          open_message_id: 'om_form_root',
+          open_chat_id: 'oc_chat',
+        },
+      },
+    })
+
+    expect(normalized).toEqual({
+      kind: 'task_form_submission',
+      eventId: 'evt-form-1',
+      actorOpenId: 'ou_requester',
+      threadKey: 'om_form_root',
+      chatId: 'oc_chat',
+      formValues: {
+        taskType: 'formal',
+        goal: 'Deliver payment retry flow',
+        prdPath: 'docs/plans/payment-retry.md',
+        priority: 'high',
+      },
+    })
+  })
 })

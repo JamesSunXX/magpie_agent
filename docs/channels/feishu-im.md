@@ -1,6 +1,6 @@
 # Feishu IM Control
 
-`magpie` 现在支持用飞书线程处理人工确认，也支持用固定格式消息直接发起第二阶段的新任务。
+`magpie` 现在支持用飞书线程处理人工确认，也支持两种方式发起新任务：固定格式消息和消息卡片表单。
 
 当前范围覆盖：
 
@@ -8,10 +8,9 @@
 - 飞书里的批准 / 驳回
 - 驳回原因和额外继续说明
 - 用固定格式消息发起 `loop` / `harness` 任务
+- 用 `/magpie form` 打开卡片表单发起 `loop` / `harness` 任务
 - 任务线程里的接收、排队、完成、失败状态回写
 - `magpie im-server` 回调服务
-
-当前还没覆盖“表单发起任务”；这部分仍在后续阶段。
 
 ## 前置条件
 
@@ -69,6 +68,10 @@ magpie im-server stop
 
 ### 1. 直接发起任务
 
+现在支持两个入口，但两条入口最后都会走同一套任务创建流程。
+
+#### 方式 A：固定格式消息
+
 在飞书群里发送固定格式消息：
 
 ```text
@@ -94,7 +97,30 @@ priority: high
 - `type: formal` 走 `harness`
 - `goal` 和 `prd` 必填
 - `priority` 只对 `formal` 任务有意义
-- 当前只支持这种固定格式，不支持自由描述和表单
+
+#### 方式 B：消息卡片表单
+
+先在飞书群里发送：
+
+```text
+/magpie form
+```
+
+Magpie 会在当前对话里回一张表单卡片。填写后点击提交。
+
+表单字段：
+
+- `type`
+- `goal`
+- `prd`
+- `priority`
+
+规则和文本命令完全一致：
+
+- `type: small` 走 `loop`
+- `type: formal` 走 `harness`
+- `goal` 和 `prd` 必填
+- `priority` 只对 `formal` 任务有意义
 
 发起后，Magpie 会：
 
@@ -139,7 +165,7 @@ priority: high
 
 先检查：
 
-- 消息格式是不是严格以 `/magpie task` 开头
+- 文本命令是不是严格以 `/magpie task` 开头，或表单入口是不是用了 `/magpie form`
 - 是否写了 `type`、`goal`、`prd`
 - `type` 是否只用了 `small` 或 `formal`
 - `magpie im-server` 是否已经启动

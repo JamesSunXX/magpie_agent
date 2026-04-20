@@ -24,9 +24,24 @@ export interface TaskCommandEvent {
   text: string
 }
 
+export interface TaskFormSubmissionEvent {
+  kind: 'task_form_submission'
+  eventId?: string
+  actorOpenId: string
+  threadKey: string
+  chatId: string
+  formValues: {
+    taskType?: string
+    goal?: string
+    prdPath?: string
+    priority?: string
+  }
+}
+
 export type ImInboundEvent =
   | ConfirmationActionEvent
   | TaskCommandEvent
+  | TaskFormSubmissionEvent
 
 export interface ImServerStatus {
   providerId: string

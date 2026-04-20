@@ -8,7 +8,13 @@ import { createImRuntime, loadImServerStatus, saveImServerStatus } from '../../p
 import { createFeishuCallbackServer } from '../../platform/integrations/im/feishu/server.js'
 import { handleConfirmationAction } from '../../platform/integrations/im/feishu/confirmation-bridge.js'
 import { FeishuImClient } from '../../platform/integrations/im/feishu/client.js'
-import { isFeishuTaskCommandText, parseFeishuTaskCommand } from '../../platform/integrations/im/feishu/task-command.js'
+import {
+  isFeishuTaskCommandText,
+  isFeishuTaskFormText,
+  parseFeishuTaskCommand,
+  parseFeishuTaskForm,
+} from '../../platform/integrations/im/feishu/task-command.js'
+import { buildFeishuTaskFormCard } from '../../platform/integrations/im/feishu/task-form.js'
 import { launchFeishuTask } from '../../platform/integrations/im/feishu/task-launch.js'
 
 export function resolveFeishuProvider(configPath?: string) {
@@ -77,6 +83,57 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
           await runtime.markEventProcessed(event.eventId)
         }
         await client.replyTextMessage(event.threadKey, replySummary(result)).catch(() => {})
+        return
+      }
+
+      if (event.kind === 'task_form_submission') {
+        let request
+        try {
+          request = parseFeishuTaskForm(event.formValues)
+        } catch (error) {
+          await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+          if (event.eventId) {
+            await runtime.markEventProcessed(event.eventId)
+          }
+          return
+        }
+
+        try {
+          const launched = await launchFeishuTask(options.cwd, {
+            appId: provider.app_id,
+            appSecret: provider.app_secret,
+            request,
+            chatId: event.chatId,
+            configPath: options.configPath,
+          })
+
+          if (event.eventId) {
+            await runtime.markEventProcessed(event.eventId)
+          }
+          await client.replyTextMessage(launched.threadId, [
+            'Task accepted.',
+            `Capability: ${launched.capability}`,
+            `Session: ${launched.sessionId}`,
+            `Status: ${launched.status}`,
+          ].join('\n')).catch(() => {})
+        } catch (error) {
+          if (!isUserActionableTaskLaunchError(error)) {
+            throw error
+          }
+
+          await client.replyTextMessage(event.threadKey, `Task rejected: ${error instanceof Error ? error.message : String(error)}`).catch(() => {})
+          if (event.eventId) {
+            await runtime.markEventProcessed(event.eventId)
+          }
+        }
+        return
+      }
+
+      if (isFeishuTaskFormText(event.text)) {
+        await client.replyInteractiveCard(event.sourceMessageId, buildFeishuTaskFormCard()).catch(() => {})
+        if (event.eventId) {
+          await runtime.markEventProcessed(event.eventId)
+        }
         return
       }
 

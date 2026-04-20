@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { parseFeishuTaskCommand } from '../../../src/platform/integrations/im/feishu/task-command.js'
+import {
+  isFeishuTaskFormText,
+  parseFeishuTaskCommand,
+  parseFeishuTaskForm,
+} from '../../../src/platform/integrations/im/feishu/task-command.js'
 
 describe('parseFeishuTaskCommand', () => {
   it('normalizes a small-task command into a loop request', () => {
@@ -30,5 +34,36 @@ describe('parseFeishuTaskCommand', () => {
 
   it('fails when required fields are missing', () => {
     expect(() => parseFeishuTaskCommand('/magpie task\ngoal: Missing type')).toThrow('missing required field: type')
+  })
+
+  it('detects the form-open command header', () => {
+    expect(isFeishuTaskFormText('/magpie form')).toBe(true)
+    expect(isFeishuTaskFormText('/magpie task')).toBe(false)
+  })
+
+  it('normalizes a form submission into a harness request', () => {
+    const request = parseFeishuTaskForm({
+      taskType: 'formal',
+      goal: 'Deliver payment retry flow',
+      prdPath: 'docs/plans/payment-retry.md',
+      priority: 'high',
+    })
+
+    expect(request).toEqual({
+      entryMode: 'form',
+      taskType: 'formal',
+      capability: 'harness',
+      goal: 'Deliver payment retry flow',
+      prdPath: 'docs/plans/payment-retry.md',
+      priority: 'high',
+    })
+  })
+
+  it('rejects invalid form submissions with the same validation rules', () => {
+    expect(() => parseFeishuTaskForm({
+      taskType: 'small',
+      goal: '',
+      prdPath: 'docs/plans/login-timeout.md',
+    })).toThrow('missing required field: goal')
   })
 })

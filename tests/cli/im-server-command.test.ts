@@ -16,12 +16,17 @@ const handleConfirmationActionMock = vi.hoisted(() => vi.fn().mockResolvedValue(
   decision: 'approved',
 }))
 const isFeishuTaskCommandTextMock = vi.hoisted(() => vi.fn())
+const isFeishuTaskFormTextMock = vi.hoisted(() => vi.fn())
 const parseFeishuTaskCommandMock = vi.hoisted(() => vi.fn())
+const parseFeishuTaskFormMock = vi.hoisted(() => vi.fn())
 const launchFeishuTaskMock = vi.hoisted(() => vi.fn())
 const replyTextMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: 'reply-1' }))
+const replyInteractiveCardMock = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: 'reply-card-1' }))
+const buildFeishuTaskFormCardMock = vi.hoisted(() => vi.fn(() => ({ type: 'card' })))
 const FeishuImClientMock = vi.hoisted(() => vi.fn(function FeishuImClient() {
   return {
     replyTextMessage: replyTextMessageMock,
+    replyInteractiveCard: replyInteractiveCardMock,
   }
 }))
 const getRepoRootMock = vi.hoisted(() => vi.fn())
@@ -51,7 +56,13 @@ vi.mock('../../src/platform/integrations/im/feishu/confirmation-bridge.js', () =
 
 vi.mock('../../src/platform/integrations/im/feishu/task-command.js', () => ({
   isFeishuTaskCommandText: isFeishuTaskCommandTextMock,
+  isFeishuTaskFormText: isFeishuTaskFormTextMock,
   parseFeishuTaskCommand: parseFeishuTaskCommandMock,
+  parseFeishuTaskForm: parseFeishuTaskFormMock,
+}))
+
+vi.mock('../../src/platform/integrations/im/feishu/task-form.js', () => ({
+  buildFeishuTaskFormCard: buildFeishuTaskFormCardMock,
 }))
 
 vi.mock('../../src/platform/integrations/im/feishu/task-launch.js', () => ({
@@ -103,8 +114,16 @@ describe('im-server command', () => {
       close: vi.fn((callback: () => void) => callback()),
     })
     isFeishuTaskCommandTextMock.mockImplementation((text: string) => text.startsWith('/magpie task'))
+    isFeishuTaskFormTextMock.mockImplementation((text: string) => text.startsWith('/magpie form'))
     parseFeishuTaskCommandMock.mockReturnValue({
       entryMode: 'command',
+      taskType: 'small',
+      capability: 'loop',
+      goal: 'Fix login timeout',
+      prdPath: 'docs/plans/login-timeout.md',
+    })
+    parseFeishuTaskFormMock.mockReturnValue({
+      entryMode: 'form',
       taskType: 'small',
       capability: 'loop',
       goal: 'Fix login timeout',
@@ -393,6 +412,45 @@ describe('im-server command', () => {
     expect(markEventProcessedMock).toHaveBeenCalledWith('evt-task-1')
   })
 
+  it('opens a task form card when the form command is received', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-form-open-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_source',
+            chatId: 'oc_chat',
+            text: '/magpie form',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(buildFeishuTaskFormCardMock).toHaveBeenCalled()
+    expect(replyInteractiveCardMock).toHaveBeenCalledWith('om_source', { type: 'card' })
+    expect(parseFeishuTaskCommandMock).not.toHaveBeenCalled()
+    expect(launchFeishuTaskMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-form-open-1')
+  })
+
   it('ignores plain text messages that are not magpie task commands', async () => {
     const onceSpy = vi.spyOn(process, 'once')
     const signalHandlers = new Map<string, () => void>()
@@ -505,5 +563,63 @@ describe('im-server command', () => {
       expect.stringContaining('Task rejected')
     )
     expect(markEventProcessedMock).toHaveBeenCalledWith('evt-task-blocked-1')
+  })
+
+  it('routes a task form submission into the task launcher and replies in the task thread', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_form_submission',
+            eventId: 'evt-form-submit-1',
+            actorOpenId: 'ou_requester',
+            threadKey: 'om_form_root',
+            chatId: 'oc_chat',
+            formValues: {
+              taskType: 'small',
+              goal: 'Fix login timeout',
+              prdPath: 'docs/plans/login-timeout.md',
+            },
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(parseFeishuTaskFormMock).toHaveBeenCalledWith({
+      taskType: 'small',
+      goal: 'Fix login timeout',
+      prdPath: 'docs/plans/login-timeout.md',
+    })
+    expect(launchFeishuTaskMock).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          entryMode: 'form',
+          capability: 'loop',
+        }),
+        chatId: 'oc_chat',
+      })
+    )
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_task_root',
+      expect.stringContaining('Task accepted')
+    )
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-form-submit-1')
   })
 })

@@ -1,4 +1,9 @@
-import type { ConfirmationActionEvent, ImInboundEvent, TaskCommandEvent } from '../types.js'
+import type {
+  ConfirmationActionEvent,
+  ImInboundEvent,
+  TaskCommandEvent,
+  TaskFormSubmissionEvent,
+} from '../types.js'
 
 function requireString(value: unknown, field: string): string {
   if (typeof value === 'string' && value.trim().length > 0) {
@@ -48,6 +53,45 @@ function parseConfirmationActionEvent(payload: unknown): ConfirmationActionEvent
   }
 }
 
+function parseTaskFormSubmissionEvent(payload: unknown): TaskFormSubmissionEvent {
+  const header = (payload as { header?: { event_id?: unknown } })?.header
+  const event = (payload as {
+    event?: {
+      operator?: { open_id?: unknown }
+      action?: { form_value?: Record<string, unknown> }
+      context?: { open_message_id?: unknown; open_chat_id?: unknown }
+    }
+  })?.event
+  const formValue = event?.action?.form_value || {}
+
+  return {
+    kind: 'task_form_submission',
+    eventId: typeof header?.event_id === 'string' ? header.event_id : undefined,
+    actorOpenId: requireString(event?.operator?.open_id, 'event.operator.open_id'),
+    threadKey: requireString(event?.context?.open_message_id, 'event.context.open_message_id'),
+    chatId: requireString(event?.context?.open_chat_id, 'event.context.open_chat_id'),
+    formValues: {
+      taskType: typeof formValue.task_type === 'string' ? formValue.task_type.trim() : undefined,
+      goal: typeof formValue.goal === 'string' ? formValue.goal.trim() : undefined,
+      prdPath: typeof formValue.prd === 'string' ? formValue.prd.trim() : undefined,
+      priority: typeof formValue.priority === 'string' ? formValue.priority.trim() : undefined,
+    },
+  }
+}
+
+function parseActionTriggerEvent(payload: unknown): ConfirmationActionEvent | TaskFormSubmissionEvent {
+  const action = requireString(
+    (payload as { event?: { action?: { value?: Record<string, unknown> } } })?.event?.action?.value?.action,
+    'event.action.value.action'
+  )
+
+  if (action === 'submit_task_form') {
+    return parseTaskFormSubmissionEvent(payload)
+  }
+
+  return parseConfirmationActionEvent(payload)
+}
+
 function parseTaskCommandEvent(payload: unknown): TaskCommandEvent {
   const header = (payload as { header?: { event_id?: unknown } })?.header
   const event = (payload as {
@@ -91,5 +135,5 @@ export function parseFeishuEvent(payload: unknown): ImInboundEvent {
     return parseTaskCommandEvent(payload)
   }
 
-  return parseConfirmationActionEvent(payload)
+  return parseActionTriggerEvent(payload)
 }

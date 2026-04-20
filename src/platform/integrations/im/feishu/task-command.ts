@@ -1,5 +1,5 @@
 export interface TaskCreationRequest {
-  entryMode: 'command'
+  entryMode: 'command' | 'form'
   taskType: 'formal' | 'small'
   capability: 'loop' | 'harness'
   goal: string
@@ -19,6 +19,47 @@ export function isFeishuTaskCommandText(text: string): boolean {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)[0] === '/magpie task'
+}
+
+export function isFeishuTaskFormText(text: string): boolean {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)[0] === '/magpie form'
+}
+
+function normalizeTaskCreationRequest(input: {
+  entryMode: TaskCreationRequest['entryMode']
+  taskType?: string
+  goal?: string
+  prdPath?: string
+  priority?: string
+}): TaskCreationRequest {
+  const type = input.taskType?.trim()
+  const goal = input.goal?.trim()
+  const prdPath = input.prdPath?.trim()
+  const priority = input.priority?.trim()
+
+  if (!type) throw new Error('missing required field: type')
+  if (!goal) throw new Error('missing required field: goal')
+  if (!prdPath) throw new Error('missing required field: prd')
+
+  if (type !== 'formal' && type !== 'small') {
+    throw new Error(`unsupported task type: ${type}`)
+  }
+
+  if (priority && !SUPPORTED_PRIORITIES.has(priority as TaskCreationRequest['priority'])) {
+    throw new Error(`unsupported priority: ${priority}`)
+  }
+
+  return {
+    entryMode: input.entryMode,
+    taskType: type,
+    capability: type === 'formal' ? 'harness' : 'loop',
+    goal,
+    prdPath,
+    priority: priority as TaskCreationRequest['priority'] | undefined,
+  }
 }
 
 export function parseFeishuTaskCommand(text: string): TaskCreationRequest {
@@ -47,25 +88,26 @@ export function parseFeishuTaskCommand(text: string): TaskCreationRequest {
   const goal = fields.goal
   const prdPath = fields.prd
 
-  if (!type) throw new Error('missing required field: type')
-  if (!goal) throw new Error('missing required field: goal')
-  if (!prdPath) throw new Error('missing required field: prd')
-
-  if (type !== 'formal' && type !== 'small') {
-    throw new Error(`unsupported task type: ${type}`)
-  }
-
-  const priority = fields.priority
-  if (priority && !SUPPORTED_PRIORITIES.has(priority as TaskCreationRequest['priority'])) {
-    throw new Error(`unsupported priority: ${priority}`)
-  }
-
-  return {
+  return normalizeTaskCreationRequest({
     entryMode: 'command',
     taskType: type,
-    capability: type === 'formal' ? 'harness' : 'loop',
     goal,
     prdPath,
-    priority: priority as TaskCreationRequest['priority'] | undefined,
-  }
+    priority: fields.priority,
+  })
+}
+
+export function parseFeishuTaskForm(fields: {
+  taskType?: string
+  goal?: string
+  prdPath?: string
+  priority?: string
+}): TaskCreationRequest {
+  return normalizeTaskCreationRequest({
+    entryMode: 'form',
+    taskType: fields.taskType,
+    goal: fields.goal,
+    prdPath: fields.prdPath,
+    priority: fields.priority,
+  })
 }

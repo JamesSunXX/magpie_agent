@@ -19,7 +19,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
-- `im-server`：接收飞书回调并驱动人工确认
+- `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
@@ -100,7 +100,7 @@ magpie harness reject <session-id> --by operator --note "Need safer split"
 前台运行的 `magpie harness submit` 如果被 `Ctrl+C`、终端挂断或系统终止打断，会先把当前会话改成可恢复状态，再退出；之后直接用 `magpie harness resume <session-id>` 接着跑。如果前台进程已经没了但会话还挂着“进行中”，`status`、`list`、`resume`、`attach` 和 `inspect` 也会先自动把它收成可恢复状态。
 
 # 10) 需要后台托管时显式交给 tmux
-# 12) 启动飞书 IM 回调服务（第一阶段先支持人工确认）
+# 12) 启动飞书 IM 回调服务
 magpie im-server start --foreground
 
 # 13) 需要后台托管时显式交给 tmux
@@ -135,10 +135,11 @@ magpie memory show --project
 
 ## Feishu IM 控制
 
-现在飞书线程支持两类动作：
+现在飞书线程支持三类动作：
 
 - 处理人工确认
 - 用固定格式消息直接发起新任务
+- 用消息卡片表单直接发起新任务
 
 当前做法是：
 
@@ -172,6 +173,14 @@ priority: high
 - `type: formal` 走 `harness`
 - 一条任务对应一条飞书线程
 - 任务被接收后，线程里会继续收到排队、运行、完成或失败的状态回写
+
+也可以先发：
+
+```text
+/magpie form
+```
+
+系统会回一张表单卡片。填写 `type / goal / prd / priority` 后提交，后面的建线程、起任务和状态回写会走和文本命令完全相同的流程。`priority` 只对 `formal` 任务有意义。
 
 人工确认场景下，Magpie 会：
 
