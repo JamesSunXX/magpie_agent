@@ -59,7 +59,7 @@ export async function runImServerLoop(options: { cwd: string; configPath?: strin
     appSecret: provider.app_secret,
   })
 
-  const onEvent = buildEventHandler({ cwd: options.cwd, provider, runtime, client, configPath: options.configPath })
+  const onEvent = buildEventHandler({ cwd: options.cwd, provider, runtime, client, configPath: options.configPath, transport: provider.transport || 'callback' })
 
   if (provider.transport === 'websocket') {
     return runWsServer({ id, provider, onEvent })
@@ -75,8 +75,9 @@ function buildEventHandler(ctx: {
   runtime: ReturnType<typeof createImRuntime>
   client: FeishuImClient
   configPath?: string
+  transport: 'callback' | 'websocket'
 }): (event: ImInboundEvent) => Promise<void> {
-  const { cwd, provider, runtime, client, configPath } = ctx
+  const { cwd, provider, runtime, client, configPath, transport } = ctx
 
   return async (event: ImInboundEvent) => {
     if (event.eventId && await runtime.hasProcessedEvent(event.eventId)) {
@@ -147,7 +148,18 @@ function buildEventHandler(ctx: {
     }
 
     if (isFeishuTaskFormText(event.text)) {
-      await client.replyInteractiveCard(event.sourceMessageId, buildFeishuTaskFormCard()).catch(() => {})
+      if (transport === 'websocket') {
+        await client.replyTextMessage(event.sourceMessageId, [
+          'Please use text command instead:',
+          '/magpie task',
+          'type: small',
+          'goal: <describe your task>',
+          'prd: <path/to/prd.md>',
+          'priority: normal',
+        ].join('\n')).catch(() => {})
+      } else {
+        await client.replyInteractiveCard(event.sourceMessageId, buildFeishuTaskFormCard()).catch(() => {})
+      }
       if (event.eventId) {
         await runtime.markEventProcessed(event.eventId)
       }
