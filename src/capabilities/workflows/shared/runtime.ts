@@ -124,6 +124,7 @@ const RECOVERABLE_LOOP_POINTS = new Set<LoopReliablePoint>([
 
 const RECOVERABLE_LOOP_STAGES = new Set([
   'code_development',
+  'implementation',
   'unit_mock_test',
   'integration_test',
 ])

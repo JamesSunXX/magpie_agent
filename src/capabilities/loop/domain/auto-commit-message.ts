@@ -30,8 +30,12 @@ const TITLE_PATTERN = /^(feat|fix|docs|style|refactor|test|chore)(\([^)]+\))?:\s
 const MAX_TITLE_LENGTH = 50
 const MAX_SUMMARY_CHARS = 4000
 
+function normalizeStageForCommit(stage: LoopStageName): LoopStageName | 'implementation' {
+  return stage === ('code_development' as LoopStageName) ? 'implementation' : stage
+}
+
 export function defaultAutoCommitMessage(stage: LoopStageName): string {
-  return `feat(loop): 完成${stage}`
+  return `feat(loop): 完成${normalizeStageForCommit(stage)}`
 }
 
 export interface AutoCommitMessageResult {

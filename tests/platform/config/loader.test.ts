@@ -44,6 +44,18 @@ const validConfig: MagpieConfigV2 = {
   },
 }
 
+const newLoopStages = [
+  'prd_review',
+  'domain_partition',
+  'trd_generation',
+  'dev_preparation',
+  'red_test_confirmation',
+  'implementation',
+  'green_fixup',
+  'unit_mock_test',
+  'integration_test',
+] as const
+
 describe('platform config loader', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -169,6 +181,37 @@ describe('platform config loader', () => {
     expect(() => loadConfig('/path/to/config.yaml')).toThrow(
       'Config error: capabilities.routing.fallback_chain.planning.simple entries must include a non-empty tool or model'
     )
+  })
+
+  it('accepts the new loop stage timeout overrides and stage bindings', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.loop = {
+      enabled: true,
+      stages: [...newLoopStages],
+      execution_timeout: {
+        stage_overrides_ms: {
+          prd_review: 1000,
+          domain_partition: 1000,
+          trd_generation: 1000,
+          dev_preparation: 1000,
+          red_test_confirmation: 1000,
+          implementation: 1000,
+          green_fixup: 1000,
+          unit_mock_test: 1000,
+          integration_test: 1000,
+        },
+      },
+      stage_bindings: {
+        implementation: {
+          primary: { tool: 'codex' },
+          reviewer: { model: 'gemini-cli' },
+          rescue: { tool: 'kiro' },
+        },
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
   })
 
   it('accepts harness defaults and validator checks when they use known reviewers and bindings', () => {

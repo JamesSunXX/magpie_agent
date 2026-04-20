@@ -16,7 +16,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `discuss`：多模型讨论
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
 - `quality unit-test-eval`：检查单测质量，可选顺手跑测试
-- `loop`：目标驱动的阶段化执行，简单任务会先过规则再先跑失败测试
+- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进，每段都会留下交接卡和可恢复现场
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
@@ -96,29 +96,27 @@ magpie harness status <session-id> --node build-ui
 magpie harness approve <session-id> --node release-approval --by operator
 magpie harness reject <session-id> --by operator --note "Need safer split"
 
-# 12) 需要后台托管时显式交给 tmux
+# 12) 前台 harness 被打断后可直接恢复
 前台运行的 `magpie harness submit` 如果被 `Ctrl+C`、终端挂断或系统终止打断，会先把当前会话改成可恢复状态，再退出；之后直接用 `magpie harness resume <session-id>` 接着跑。如果前台进程已经没了但会话还挂着“进行中”，`status`、`list`、`resume`、`attach` 和 `inspect` 也会先自动把它收成可恢复状态。
 
-# 10) 需要后台托管时显式交给 tmux
-# 12) 启动飞书 IM 回调服务
+# 13) 启动飞书 IM 回调服务
 magpie im-server start --foreground
 
-# 13) 需要后台托管时显式交给 tmux
+# 14) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 14) 跑工程 workflow
+# 15) 跑工程 workflow
 magpie workflow docs-sync
 
-# 15) 查看长期记忆
+# 16) 查看长期记忆
 magpie memory show --project
 ```
 
-`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；如果已经留下了可继续的工作区、测试产物和下一步提示，就会把这次结果记成“可恢复阻塞”而不是直接判死，后面可以直接 `loop resume` 接着干，不会自动清理现场。
-`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 在进入开发前会先读取这份约束；对适合的小任务，会先确认测试先失败，再继续往下做。后面如果测试还是没过，它会先按小次数继续尝试；超过阈值后才停下来等人处理。复杂任务如果需要独立工作区，`loop` 现在会自动准备本地 `.worktrees/` 目录，并把它写进本地 Git 忽略，不再要求先手工创建。
+`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 现在把开发主线拆成 9 个正式阶段。前三段分别产出需求决策卡、拆分卡和执行卡；开发中段拆成准备开发、确认失败基线、实施改动、实现后补修；后两段保留为正式验证阶段，失败时会明确标记成验证返工或联调返工。正式阶段可以按 `primary/reviewer/rescue` 配置工具，异常轮次会继承当前阶段的 `rescue`。每个阶段结束后都会留下结构化交接卡，`loop inspect` 也能直接看到最新交接卡路径，方便接着跑。
 
 如果想把 `unit_mock_test` 复用到 Java、Go 或别的项目，不一定非要沿用默认的 `unit_test` / `mock_test` 命令名。现在可以直接在 `capabilities.loop.commands.unit_mock_test_steps` 里按顺序写项目自己的检查步骤，每一步自己起名字、自己填命令；只有没配这组步骤时，才会回退到原来的旧配置。
 
-`loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`，`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
+`loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`；生效的评审人列表必须至少有 2 个不同评审人，否则配置会直接报错。`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。默认的联调阶段会跑 `tests/e2e`，如果仓库有自己的联调命令，可以在 `capabilities.loop.commands.integration_test` 里改掉。
 
@@ -130,8 +128,7 @@ magpie memory show --project
 
 如果开启阶段通知里的 `stage_ai` 摘要，可以用 `integrations.notifications.stage_ai.timeout_ms` 控制它最长等多久；超时后会直接回退到内置摘要，不会卡住主流程。
 
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`。`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`，`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
 
 ## Feishu IM 控制
 
@@ -145,8 +142,9 @@ magpie memory show --project
 
 1. 在配置里打开 `integrations.im`
 2. 配好飞书应用的 `app_id`、`app_secret`、`verification_token`
-3. 配一个只在没有现成线程、或需要兜底时才会用到的默认群 `default_chat_id`
-4. 启动回调服务：`magpie im-server start --foreground`
+3. 配好允许批准/驳回人工确认的 `approval_whitelist_open_ids`
+4. 配一个只在没有现成线程、或需要兜底时才会用到的默认群 `default_chat_id`
+5. 启动回调服务：`magpie im-server start --foreground`
 
 发起新任务时，在群里发送固定格式消息：
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { advanceRepairState } from '../../../src/capabilities/loop/domain/repair.js'
+import {
+  advanceRepairState,
+  resolveLoopReworkOrigin,
+} from '../../../src/capabilities/loop/domain/repair.js'
 
 describe('loop repair state', () => {
   it('moves quality failures into revising before the threshold', () => {
@@ -36,5 +39,11 @@ describe('loop repair state', () => {
     expect(next.currentLoopState).toBe('blocked_for_human')
     expect(next.repairAttemptCount).toBe(3)
     expect(next.blockedForHuman).toBe(true)
+  })
+
+  it('derives rework origin from the current formal stage', () => {
+    expect(resolveLoopReworkOrigin('implementation')).toBe('implementation')
+    expect(resolveLoopReworkOrigin('unit_mock_test')).toBe('verification')
+    expect(resolveLoopReworkOrigin('integration_test')).toBe('integration')
   })
 })

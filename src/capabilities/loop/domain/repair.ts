@@ -1,5 +1,7 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
+import type { LoopStageName } from '../../../config/types.js'
+import type { LoopReworkOrigin } from '../../../state/types.js'
 import type { ClassifiedTestResult } from './test-execution.js'
 
 interface AdvanceRepairStateInput {
@@ -33,6 +35,18 @@ export function advanceRepairState(input: AdvanceRepairStateInput): RepairStateT
     executionRetryCount,
     blockedForHuman: executionRetryCount >= 2,
   }
+}
+
+export function resolveLoopReworkOrigin(stage: LoopStageName): LoopReworkOrigin {
+  if (stage === 'unit_mock_test') {
+    return 'verification'
+  }
+
+  if (stage === 'integration_test') {
+    return 'integration'
+  }
+
+  return 'implementation'
 }
 
 export async function writeRepairArtifacts(input: {

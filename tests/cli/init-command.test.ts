@@ -324,6 +324,24 @@ describe('init CLI command helpers', () => {
     errorSpy.mockRestore()
   })
 
+  it('generates loop defaults with the expanded stage list and implementation bindings', async () => {
+    const { generateConfig } = await vi.importActual<typeof import('../../src/platform/config/init.js')>(
+      '../../src/platform/config/init.js'
+    )
+
+    const content = generateConfig(['codex', 'gemini-cli', 'kiro'])
+
+    expect(content).toContain('stages: [prd_review, domain_partition, trd_generation, dev_preparation, red_test_confirmation, implementation, green_fixup, unit_mock_test, integration_test]')
+    expect(content).toContain('stage_bindings:')
+    expect(content).toContain('implementation:')
+    expect(content).toContain('primary:')
+    expect(content).toContain('tool: codex')
+    expect(content).toContain('reviewer:')
+    expect(content).toContain('model: gemini-cli')
+    expect(content).toContain('rescue:')
+    expect(content).toContain('tool: kiro')
+  })
+
   it('upgrades config via --upgrade with dry-run and custom path', async () => {
     const upgradeConfigWithResult = vi.fn(() => ({
       configPath: '/tmp/custom.yaml',

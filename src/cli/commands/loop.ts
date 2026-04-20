@@ -256,6 +256,13 @@ loopCommand
         return
       }
       await printDocumentPlanSummary(session.artifacts.documentPlanPath)
+      const latestHandoff = [...session.stageResults]
+        .reverse()
+        .find((stageResult) => stageResult.handoffPath)
+        ?.handoffPath
+      if (latestHandoff) {
+        console.log(`Latest handoff: ${latestHandoff}`)
+      }
       await printKnowledgeInspectView(session.artifacts, legacyLoopKnowledgeState(session))
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))

@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前 `loop` 的默认阶段是：
+本次改造前，`loop` 的默认阶段是：
 
 1. `prd_review`
 2. `domain_partition`
@@ -22,7 +22,7 @@
 - `claude-code` 默认承担 planner / 阶段评估职责
 - `codex` 默认承担 executor / 开发执行职责
 - `gemini-cli` 主要出现在 reviewer / challenge 路径
-- `kiro-cli` 主要出现在超时兜底或异常接管路径
+- `kiro` 主要出现在超时兜底或异常接管路径
 
 这使得“每个阶段如何在工具之间交接”难以清晰表达，也不利于后续做按阶段配置。
 
@@ -33,7 +33,7 @@
 1. 保留前置三段，但把每段交付物说清楚。
 2. 把 `code_development` 拆成更明确的正式阶段。
 3. 保留后置验证阶段“允许返工”的能力，但明确返工语义。
-4. 把 `claude-code`、`codex`、`gemini-cli`、`kiro-cli` 的默认沟通模型固定下来。
+4. 把 `claude-code`、`codex`、`gemini-cli`、`kiro` 的默认沟通模型固定下来。
 5. 支持按正式阶段配置工具，不在第一版里为异常分支单独配一套规则。
 6. 让下一个工具默认只接收结构化交接卡和必要证据，而不是无边界地继承整段上下文。
 
@@ -95,7 +95,7 @@
 - `claude-code`：前三段决策卡 + 阶段裁定
 - `codex`：开发主执行
 - `gemini-cli`：关键阶段复核、挑战、争议判断
-- `kiro-cli`：开发返工、异常轮次接管、救援
+- `kiro`：开发返工、异常轮次接管、救援
 
 但这不是写死绑定。第一版支持按正式阶段配置：
 
@@ -127,9 +127,9 @@
 
 | 阶段 | 默认 primary | 默认 reviewer | 默认 rescue | 默认输出 |
 | --- | --- | --- | --- | --- |
-| `prd_review` | `claude-code` | `gemini-cli` | `kiro-cli` | 需求决策卡 |
-| `domain_partition` | `claude-code` | `gemini-cli` | `kiro-cli` | 拆分卡 |
-| `trd_generation` | `claude-code` | `gemini-cli` | `kiro-cli` | 执行卡 |
+| `prd_review` | `claude-code` | `gemini-cli` | `kiro` | 需求决策卡 |
+| `domain_partition` | `claude-code` | `gemini-cli` | `kiro` | 拆分卡 |
+| `trd_generation` | `claude-code` | `gemini-cli` | `kiro` | 执行卡 |
 
 默认规则：
 
@@ -141,24 +141,23 @@
 
 | 阶段 | 默认 primary | 默认 reviewer | 默认 rescue | 默认输出 |
 | --- | --- | --- | --- | --- |
-| `dev_preparation` | `claude-code` | `codex` | `kiro-cli` | 开发入口卡 |
-| `red_test_confirmation` | `codex` | `claude-code` | `kiro-cli` | 失败基线卡 |
-| `implementation` | `codex` | `gemini-cli` | `kiro-cli` | 实现结果卡 |
-| `green_fixup` | `codex` | `claude-code` | `kiro-cli` | 补修交接卡 |
+| `dev_preparation` | 执行器绑定 | 规划器绑定 | `kiro` | 开发入口卡 |
+| `red_test_confirmation` | 执行器绑定 | 规划器绑定 | `kiro` | 失败基线卡 |
+| `implementation` | 执行器绑定 | `gemini-cli` | `kiro` | 实现结果卡 |
+| `green_fixup` | 执行器绑定 | 规划器绑定 | `kiro` | 补修交接卡 |
 
 默认规则：
 
-1. `dev_preparation` 由 `claude-code` 把执行卡进一步压缩成本轮开发入口。
-2. `red_test_confirmation` 和 `implementation` 以 `codex` 为主执行。
-3. `gemini-cli` 不默认深度参与每个开发动作，而是在关键开发阶段承担挑战和复核。
-4. `kiro-cli` 既是超时兜底，也承担返工或异常轮次接管。
+1. `dev_preparation`、`red_test_confirmation` 和 `green_fixup` 默认继承执行器作为 primary，同时把规划器留在 reviewer 位做阶段性校准。
+2. `implementation` 默认由执行器主执行，`gemini-cli` 负责挑战和复核。
+3. `kiro` 既是超时兜底，也承担返工或异常轮次接管。
 
 ### 后置两段
 
 | 阶段 | 默认 primary | 默认 reviewer | 默认 rescue | 默认输出 |
 | --- | --- | --- | --- | --- |
-| `unit_mock_test` | 阶段配置决定 | `gemini-cli` | `kiro-cli` | 验证结果卡 |
-| `integration_test` | 阶段配置决定 | `gemini-cli` | `kiro-cli` | 联调结果卡 |
+| `unit_mock_test` | 执行器绑定 | `gemini-cli` | `kiro` | 验证结果卡 |
+| `integration_test` | 执行器绑定 | `gemini-cli` | `kiro` | 联调结果卡 |
 
 默认规则：
 
@@ -230,20 +229,30 @@
 ### 建议配置形态
 
 ```yaml
-loop:
-  stages:
-    prd_review:
-      primary: claude-code
-      reviewer: gemini-cli
-      rescue: kiro-cli
-    implementation:
-      primary: codex
-      reviewer: gemini-cli
-      rescue: kiro-cli
-    integration_test:
-      primary: codex
-      reviewer: gemini-cli
-      rescue: kiro-cli
+capabilities:
+  loop:
+    stage_bindings:
+      prd_review:
+        primary:
+          tool: claude-code
+        reviewer:
+          tool: gemini-cli
+        rescue:
+          tool: kiro
+      implementation:
+        primary:
+          tool: codex
+        reviewer:
+          tool: gemini-cli
+        rescue:
+          tool: kiro
+      integration_test:
+        primary:
+          tool: codex
+        reviewer:
+          tool: gemini-cli
+        rescue:
+          tool: kiro
 ```
 
 这意味着：
@@ -334,7 +343,14 @@ loop:
 方案落地后，至少要验证：
 
 1. 阶段顺序是否能覆盖当前 loop 主线。
-2. 按阶段配置是否能覆盖默认 `claude-code / codex / gemini-cli / kiro-cli` 分工。
+2. 按阶段配置是否能覆盖默认 `claude-code / codex / gemini-cli / kiro` 分工。
 3. `rescue` 是否能正确继承正式阶段配置。
 4. 开发返工与验证返工是否能保持清晰的阶段身份。
 5. 交接卡是否足够支撑下一个工具继续执行，而不需要重新读取整段旧上下文。
+
+## Implementation Notes
+
+- 阶段绑定从 `capabilities.loop.stage_bindings` 读取。
+- 异常轮次继承当前正式阶段的 `rescue` 绑定。
+- 每个阶段完成后都会在 loop 会话目录里落盘交接卡；首次写成 `handoff-<stage>.json`，同阶段重复出现时会顺延成 `handoff-<stage>-2.json` 这类名字。
+- `loop inspect` 会在存在交接卡时直接打印最新一张交接卡路径。

@@ -16,12 +16,26 @@ import type {
   LoopExecutionTimeoutConfig,
   LoopStageName,
   LoopConfig,
+  LoopStageBindingConfig,
+  LoopStageBindingsConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 18
+export const CURRENT_CONFIG_VERSION = 19
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
+const LOOP_STAGE_NAMES: LoopStageName[] = [
+  'prd_review',
+  'domain_partition',
+  'trd_generation',
+  'dev_preparation',
+  'red_test_confirmation',
+  'implementation',
+  'green_fixup',
+  'unit_mock_test',
+  'integration_test',
+]
+const LOOP_STAGE_BINDING_KEYS = ['primary', 'reviewer', 'rescue'] as const
 
 export interface ConfigVersionStatus {
   path: string
@@ -150,6 +164,10 @@ function validateBinding(name: string, binding: Pick<ReviewerConfig, 'tool' | 'm
   if (providerName !== 'kiro') {
     throw new Error(`Config error: ${name}.agent is only supported when tool/model resolves to kiro`)
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function expandEnvVars(value: string): string {
@@ -317,6 +335,8 @@ function validateLoopConfig(
     validateBinding('capabilities.loop.role_bindings.developer', loop.role_bindings.developer)
   }
 
+  validateLoopStages(loop?.stages)
+  validateLoopStageBindings(loop?.stage_bindings)
   validateLoopCommands(loop?.commands)
 
   const humanConfirmation = loop?.human_confirmation
@@ -346,6 +366,45 @@ function validateLoopConfig(
     : []
   if (distinctReviewerIds.length < 2) {
     throw new Error('Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy')
+  }
+}
+
+function validateLoopStages(stages: LoopStageName[] | undefined): void {
+  if (stages === undefined) return
+  if (!Array.isArray(stages)) {
+    throw new Error('Config error: capabilities.loop.stages must be an array')
+  }
+
+  for (const [index, stage] of stages.entries()) {
+    if (typeof stage !== 'string' || !LOOP_STAGE_NAMES.includes(stage as LoopStageName)) {
+      throw new Error(`Config error: capabilities.loop.stages[${index}] must be one of ${LOOP_STAGE_NAMES.join(', ')}`)
+    }
+  }
+}
+
+function validateLoopStageBindings(stageBindings: LoopStageBindingsConfig | undefined): void {
+  if (stageBindings === undefined) return
+  if (!isRecord(stageBindings)) {
+    throw new Error('Config error: capabilities.loop.stage_bindings must be an object')
+  }
+
+  for (const [stageName, bindings] of Object.entries(stageBindings)) {
+    if (!LOOP_STAGE_NAMES.includes(stageName as LoopStageName)) {
+      throw new Error(`Config error: capabilities.loop.stage_bindings has unknown stage "${stageName}"`)
+    }
+    if (!isRecord(bindings)) {
+      throw new Error(`Config error: capabilities.loop.stage_bindings.${stageName} must be an object`)
+    }
+
+    for (const [bindingKey, binding] of Object.entries(bindings)) {
+      if (!LOOP_STAGE_BINDING_KEYS.includes(bindingKey as (typeof LOOP_STAGE_BINDING_KEYS)[number])) {
+        throw new Error(`Config error: capabilities.loop.stage_bindings.${stageName} has unknown binding key "${bindingKey}"`)
+      }
+      validateBinding(
+        `capabilities.loop.stage_bindings.${stageName}.${bindingKey}`,
+        binding as LoopStageBindingConfig[keyof LoopStageBindingConfig]
+      )
+    }
   }
 }
 
@@ -410,15 +469,13 @@ function validateLoopExecutionTimeout(timeout: LoopExecutionTimeoutConfig | unde
     return
   }
 
-  const stages: LoopStageName[] = [
-    'prd_review',
-    'domain_partition',
-    'trd_generation',
-    'code_development',
-    'unit_mock_test',
-    'integration_test',
-  ]
-  for (const stage of stages) {
+  for (const key of Object.keys(stageOverrides)) {
+    if (!LOOP_STAGE_NAMES.includes(key as LoopStageName)) {
+      throw new Error(`Config error: capabilities.loop.execution_timeout.stage_overrides_ms has unknown stage "${key}"`)
+    }
+  }
+
+  for (const stage of LOOP_STAGE_NAMES) {
     validatePositiveNumber(`capabilities.loop.execution_timeout.stage_overrides_ms.${stage}`, stageOverrides[stage])
   }
 }

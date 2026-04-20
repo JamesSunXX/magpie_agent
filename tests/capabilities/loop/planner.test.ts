@@ -43,25 +43,25 @@ describe('generateLoopPlan', () => {
       planner,
       'Ship harness fix',
       '/tmp/prd.md',
-      ['prd_review', 'code_development']
+      ['prd_review', 'code_development' as never]
     )
 
     expect(tasks).toEqual([
       {
         id: 'task-1',
         stage: 'prd_review',
-        title: 'prd_review',
-        description: 'Execute stage prd_review for goal: Ship harness fix',
+        title: 'PRD review',
+        description: 'Review the PRD and lock the core problem, scope, and acceptance bar for: Ship harness fix',
         dependencies: [],
-        successCriteria: ['Stage prd_review completed without blocking issues'],
+        successCriteria: ['PRD scope, assumptions, and open questions are clear for execution'],
       },
       {
         id: 'task-2',
         stage: 'code_development',
-        title: 'code_development',
-        description: 'Execute stage code_development for goal: Ship harness fix',
+        title: 'Implementation',
+        description: 'Make the primary code changes required to deliver: Ship harness fix',
         dependencies: ['task-1'],
-        successCriteria: ['Stage code_development completed without blocking issues'],
+        successCriteria: ['The planned code changes are in place and aligned with the accepted scope'],
       },
     ])
   })
@@ -90,10 +90,10 @@ describe('generateLoopPlan', () => {
       {
         id: 'task-1',
         stage: 'prd_review',
-        title: 'prd_review',
-        description: 'Execute stage prd_review for goal: Ship harness fix',
+        title: 'PRD review',
+        description: 'Review the PRD and lock the core problem, scope, and acceptance bar for: Ship harness fix',
         dependencies: [],
-        successCriteria: ['Stage prd_review completed without blocking issues'],
+        successCriteria: ['PRD scope, assumptions, and open questions are clear for execution'],
       },
     ])
   })

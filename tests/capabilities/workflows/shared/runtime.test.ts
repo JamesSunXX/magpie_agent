@@ -307,6 +307,7 @@ describe('workflow shared runtime helpers', () => {
       status: 'failed',
       currentStageIndex: 1,
       stages: ['code_development', 'unit_mock_test'],
+      reworkOrigin: 'verification',
       lastReliablePoint: 'constraints_validated',
       artifacts: {
         workspacePath: '/tmp/workspace',
@@ -320,6 +321,30 @@ describe('workflow shared runtime helpers', () => {
         risks: ['rerun after fixing the failing mock setup'],
         retryCount: 0,
         artifacts: ['/tmp/unit-mock-test.md'],
+        timestamp: new Date('2026-04-15T00:00:00.000Z'),
+      }],
+    })).toBe(true)
+  })
+
+  it('treats a failed integration rework stage with saved artifacts as recoverable', () => {
+    expect(isRecoverableLoopSession({
+      status: 'failed',
+      currentStageIndex: 0,
+      stages: ['integration_test'],
+      reworkOrigin: 'integration',
+      lastReliablePoint: 'constraints_validated',
+      artifacts: {
+        workspacePath: '/tmp/workspace',
+        nextRoundInputPath: '/tmp/next.md',
+      },
+      stageResults: [{
+        stage: 'integration_test',
+        success: false,
+        confidence: 0.4,
+        summary: 'Integration verification failed and needs another pass.',
+        risks: ['rerun after fixing the environment drift'],
+        retryCount: 0,
+        artifacts: ['/tmp/integration-test.md'],
         timestamp: new Date('2026-04-15T00:00:00.000Z'),
       }],
     })).toBe(true)

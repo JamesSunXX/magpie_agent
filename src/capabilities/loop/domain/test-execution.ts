@@ -64,10 +64,13 @@ export function classifyStructuredTestResult(result: StructuredTestResult): Clas
   }
 }
 
-export function classifyStructuredTestFailureCategory(result: ClassifiedTestResult): FailureCategory {
+export function classifyStructuredTestFailureCategory(
+  result: ClassifiedTestResult,
+  stage: string
+): FailureCategory {
   return classifyFailureCategory({
     capability: 'loop',
-    stage: 'code_development',
+    stage,
     reason: result.status === 'passed'
       ? 'Test command passed.'
       : result.failureKind === 'execution'

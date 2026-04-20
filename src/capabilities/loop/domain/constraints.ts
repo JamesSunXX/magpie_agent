@@ -5,6 +5,12 @@ import type { LoopStageName } from '../../../config/types.js'
 import type { LoopTask } from '../../../core/state/index.js'
 import type { TrdConstraintsArtifact } from '../../trd/types.js'
 
+const LEGACY_CODE_DEVELOPMENT_STAGE = 'code_development' as unknown as LoopStageName
+
+function isDevelopmentCompatibilityStage(stage: LoopStageName): boolean {
+  return stage === 'implementation' || stage === LEGACY_CODE_DEVELOPMENT_STAGE
+}
+
 export interface ConstraintCheckResult {
   status: 'pass' | 'needs_revision' | 'blocked'
   reasons: string[]
@@ -50,7 +56,7 @@ export async function createConstraintsSnapshot(
 }
 
 export function evaluatePlanningConstraints(input: EvaluatePlanningConstraintsInput): ConstraintCheckResult {
-  if (input.stage !== 'code_development' || input.constraints.rules.length === 0) {
+  if (!isDevelopmentCompatibilityStage(input.stage) || input.constraints.rules.length === 0) {
     return {
       status: 'pass',
       reasons: [],

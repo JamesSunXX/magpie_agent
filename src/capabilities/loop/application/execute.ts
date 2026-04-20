@@ -25,6 +25,7 @@ import type {
   LoopVerificationStepConfig,
   MagpieConfig,
 } from '../../../config/types.js'
+import type { LoopStageBindingsConfig } from '../../../platform/config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
 import { dispatchStageNotification } from '../../../platform/integrations/notifications/stage-dispatch.js'
@@ -79,8 +80,10 @@ import {
 } from '../domain/test-execution.js'
 import {
   advanceRepairState,
+  resolveLoopReworkOrigin,
   writeRepairArtifacts,
 } from '../domain/repair.js'
+import { resolveRescueBinding } from '../domain/stage-bindings.js'
 import {
   buildRoleRoster,
   createRoleRoundResult,
@@ -89,7 +92,12 @@ import {
   resolveRoleBindings,
   serializeRoleMessage,
 } from '../../../core/roles/index.js'
-import type { LoopExecutionResult, LoopPreparedInput } from '../types.js'
+import type {
+  LoopExecutionResult,
+  LoopPreparedInput,
+  LoopStageHandoffCard,
+  LoopStageResultType,
+} from '../types.js'
 import {
   createTaskKnowledge,
   promoteKnowledgeCandidatesWithMemorySync,
@@ -106,10 +114,52 @@ const DEFAULT_STAGES: LoopStageName[] = [
   'prd_review',
   'domain_partition',
   'trd_generation',
-  'code_development',
+  'dev_preparation',
+  'red_test_confirmation',
+  'implementation',
+  'green_fixup',
   'unit_mock_test',
   'integration_test',
 ]
+const LEGACY_CODE_DEVELOPMENT_STAGE = 'code_development' as unknown as LoopStageName
+
+function usesLegacyCodeDevelopmentFlow(stage: LoopStageName): boolean {
+  return stage === LEGACY_CODE_DEVELOPMENT_STAGE
+}
+
+function hasStage(stages: LoopStageName[], stage: LoopStageName): boolean {
+  return stages.includes(stage)
+}
+
+function isImplementationStage(stage: LoopStageName): boolean {
+  return stage === 'implementation' || usesLegacyCodeDevelopmentFlow(stage)
+}
+
+function isDevelopmentResumeCheckpointStage(stage: LoopStageName): boolean {
+  return stage === 'dev_preparation'
+    || stage === 'red_test_confirmation'
+    || stage === 'implementation'
+    || stage === 'green_fixup'
+    || usesLegacyCodeDevelopmentFlow(stage)
+}
+
+function shouldRunConstraintPreparation(stage: LoopStageName, stages: LoopStageName[]): boolean {
+  return stage === 'dev_preparation'
+    || usesLegacyCodeDevelopmentFlow(stage)
+    || (stage === 'implementation' && !hasStage(stages, 'dev_preparation'))
+}
+
+function shouldConfirmRedTest(stage: LoopStageName, stages: LoopStageName[]): boolean {
+  return stage === 'red_test_confirmation'
+    || usesLegacyCodeDevelopmentFlow(stage)
+    || (stage === 'implementation' && !hasStage(stages, 'red_test_confirmation'))
+}
+
+function shouldRunGreenFixup(stage: LoopStageName, stages: LoopStageName[]): boolean {
+  return stage === 'green_fixup'
+    || usesLegacyCodeDevelopmentFlow(stage)
+    || (stage === 'implementation' && !hasStage(stages, 'green_fixup'))
+}
 
 const LEGACY_DEFAULT_MOCK_TEST_COMMAND = 'npm run test:run -- tests/mock'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
@@ -148,6 +198,7 @@ interface LoopRuntimeConfig {
       command: string
     }>
   }
+  stageBindings?: LoopStageBindingsConfig
   executionTimeout: {
     defaultMs: number
     minMs: number
@@ -331,7 +382,7 @@ function isReliablePoint(value: unknown): value is LoopReliablePoint {
 
 function validateResumeCheckpoint(session: LoopSession): string | null {
   const stage = session.stages[session.currentStageIndex]
-  if (stage !== 'code_development') {
+  if (!isDevelopmentResumeCheckpointStage(stage)) {
     return null
   }
 
@@ -347,7 +398,7 @@ function validateResumeCheckpoint(session: LoopSession): string | null {
   }
 
   if (!session.lastReliablePoint) {
-    return 'Cannot safely resume because no reliable checkpoint was recorded for code development.'
+    return 'Cannot safely resume because no reliable checkpoint was recorded for the development path.'
   }
 
   if (!isReliablePoint(session.lastReliablePoint)) {
@@ -387,7 +438,7 @@ function buildTestFailureSummary(
 
 function buildRepairPrompt(stage: LoopStageName, session: LoopSession, summary: string): string {
   return [
-    `You are retrying the implementation for stage "${stage}".`,
+    `You are retrying work for stage "${stage}".`,
     '',
     `Goal: ${session.goal}`,
     '',
@@ -486,6 +537,7 @@ function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: s
       integrationTest: config?.commands?.integration_test || DEFAULT_INTEGRATION_TEST_COMMAND,
       unitMockTestSteps: resolveUnitMockTestSteps(config?.commands?.unit_mock_test_steps),
     },
+    stageBindings: config?.stage_bindings,
     executionTimeout: {
       defaultMs: config?.execution_timeout?.default_ms ?? 15 * 60 * 1000,
       minMs: config?.execution_timeout?.min_ms ?? 5 * 60 * 1000,
@@ -498,6 +550,51 @@ function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: s
       stageOverridesMs: config?.execution_timeout?.stage_overrides_ms || {},
     },
   }
+}
+
+async function createStageRescueProvider(input: {
+  stage: LoopStageName
+  session: LoopSession
+  runtime: LoopRuntimeConfig
+  config: MagpieConfig
+  providerSessionsPath: string
+  timeoutMs: number
+  fallbackProvider: AIProvider
+}): Promise<AIProvider> {
+  try {
+    const rescueBinding = resolveRescueBinding(input.stage, input.runtime, input.runtime.stageBindings)
+    if (!rescueBinding || (!rescueBinding.tool && !rescueBinding.model)) {
+      return input.fallbackProvider
+    }
+
+    const provider = await withProviderSessionScope({
+      sessionsPath: input.providerSessionsPath,
+      workflowSessionId: input.session.id,
+      namespace: 'loop',
+    }, async () => createConfiguredProvider({
+      logicalName: `capabilities.loop.stage_rescue.${input.stage}`,
+      ...(rescueBinding.tool ? { tool: rescueBinding.tool } : {}),
+      ...(rescueBinding.model ? { model: rescueBinding.model } : {}),
+      ...(rescueBinding.agent ? { agent: rescueBinding.agent } : {}),
+    }, input.config))
+    provider.setTimeoutMs?.(input.timeoutMs)
+    return provider
+  } catch {
+    return input.fallbackProvider
+  }
+}
+
+function setLoopReworkState(
+  session: LoopSession,
+  stage: LoopStageName,
+  currentLoopState: LoopSession['currentLoopState']
+): void {
+  session.currentLoopState = currentLoopState
+  session.reworkOrigin = resolveLoopReworkOrigin(stage)
+}
+
+function clearLoopReworkState(session: LoopSession): void {
+  session.reworkOrigin = undefined
 }
 
 function clampTimeoutMs(value: number, minMs: number, maxMs: number): number {
@@ -845,7 +942,7 @@ async function persistLoopNextRoundInput(input: {
         artifactRefs: input.session.stageResults[input.session.stageResults.length - 1].artifacts.map((path) => ({ path })),
       }
       : undefined,
-    testResult: input.stage === 'code_development'
+    testResult: isDevelopmentResumeCheckpointStage(input.stage)
       ? {
         status: input.finalAction === 'revise' ? 'failed' : 'blocked',
         summary: input.reason,
@@ -946,6 +1043,23 @@ function buildStagePrompt(stage: LoopStageName, session: LoopSession, tasks: Loo
     return `Task ${task.id}: ${task.title}\n${task.description}\nSuccess Criteria:\n${criteria}`
   }).join('\n\n')
 
+  const stageGuidance = (() => {
+    switch (stage) {
+      case 'dev_preparation':
+        return '5. Confirm scope, constraints, and execution boundaries before writing or changing code.'
+      case 'red_test_confirmation':
+        return '5. Create or refine the failing baseline only. Do not implement production code in this stage.'
+      case 'implementation':
+        return session.tddEligible && session.redTestConfirmed
+          ? '5. The failing baseline is already confirmed. Focus on the minimal code changes needed to satisfy it.'
+          : '5. Make the primary code changes for the planned work.'
+      case 'green_fixup':
+        return '5. Clean up the implementation, close obvious gaps, and prepare it for formal verification.'
+      default:
+        return ''
+    }
+  })()
+
   return `You are executing Magpie loop stage "${stage}".
 
 Goal:
@@ -964,9 +1078,7 @@ Execution requirements:
 2. Keep changes minimal and aligned with the goal.
 3. At the end, output a concise stage report in markdown.
 4. Include a section "Artifacts" with file paths touched or generated.
-${stage === 'code_development' && session.tddEligible && session.redTestConfirmed
-  ? '5. TDD state: red test has already been confirmed. Focus on the minimal implementation needed to satisfy that failing test.'
-  : ''}
+${stageGuidance}
 
 Return markdown only.`
 }
@@ -1123,6 +1235,113 @@ function buildProviderRetryStageResult(input: {
 
 function buildModelGateArtifactPath(sessionDir: string, stage: LoopStageName, sequence: number): string {
   return join(sessionDir, `model_gate_${stage}_${sequence}.json`)
+}
+
+function buildStageHandoffPath(
+  sessionDir: string,
+  stage: LoopStageName,
+  occurrence: number,
+): string {
+  return occurrence <= 1
+    ? join(sessionDir, `handoff-${stage}.json`)
+    : join(sessionDir, `handoff-${stage}-${occurrence}.json`)
+}
+
+function resolveStageResultType(input: Pick<StageRunResult, 'paused' | 'failed' | 'pauseKind'>): LoopStageResultType {
+  if (input.pauseKind === 'provider_retry') return 'rework'
+  if (input.pauseKind === 'human_confirmation' || input.failed) return 'blocked'
+  return 'passed'
+}
+
+function resolveNextStageForHandoff(
+  session: LoopSession,
+  stage: LoopStageName,
+  resultType: LoopStageResultType,
+  occurrence: number,
+): LoopStageName | undefined {
+  if (resultType === 'passed') {
+    let matched = 0
+    for (let index = 0; index < session.stages.length; index += 1) {
+      if (session.stages[index] !== stage) {
+        continue
+      }
+      matched += 1
+      if (matched === occurrence) {
+        return session.stages[index + 1]
+      }
+    }
+
+    return undefined
+  }
+
+  return stage
+}
+
+async function writeStageHandoffCard(input: {
+  session: LoopSession
+  stageResult: LoopStageResult
+  stageReport: string
+  testOutput: string
+  resultType: LoopStageResultType
+}): Promise<string> {
+  const occurrence = input.session.stageResults.filter((result) => result.stage === input.stageResult.stage).length + 1
+  const handoffPath = buildStageHandoffPath(input.session.artifacts.sessionDir, input.stageResult.stage, occurrence)
+  const nextStage = resolveNextStageForHandoff(
+    input.session,
+    input.stageResult.stage,
+    input.resultType,
+    occurrence,
+  )
+  const evidenceRefs = [...new Set(input.stageResult.artifacts.filter((path) => path !== handoffPath))]
+  const handoff: LoopStageHandoffCard = {
+    stage: input.stageResult.stage,
+    goal: input.session.goal,
+    work_done: input.stageResult.summary,
+    result: input.resultType,
+    next_stage: nextStage,
+    next_input_minimum: evidenceRefs,
+    open_risks: input.stageResult.risks,
+    evidence_refs: evidenceRefs,
+  }
+
+  await mkdir(dirname(handoffPath), { recursive: true })
+  await writeFile(handoffPath, `${JSON.stringify(handoff, null, 2)}\n`, 'utf-8')
+
+  input.stageResult.handoffPath = handoffPath
+  input.stageResult.resultType = input.resultType
+  if (!input.stageResult.artifacts.includes(handoffPath)) {
+    input.stageResult.artifacts.push(handoffPath)
+  }
+
+  return handoffPath
+}
+
+async function finalizeStageRunResult(input: {
+  session: LoopSession
+  stageResult: LoopStageResult
+  paused: boolean
+  failed: boolean
+  pauseKind?: 'human_confirmation' | 'provider_retry'
+  stageReport: string
+  testOutput: string
+}): Promise<StageRunResult> {
+  const resultType = resolveStageResultType(input)
+  await writeStageHandoffCard({
+    session: input.session,
+    stageResult: input.stageResult,
+    stageReport: input.stageReport,
+    testOutput: input.testOutput,
+    resultType,
+  })
+
+  return {
+    stageResult: input.stageResult,
+    paused: input.paused,
+    failed: input.failed,
+    ...(input.pauseKind ? { pauseKind: input.pauseKind } : {}),
+    stageReport: input.stageReport,
+    testOutput: input.testOutput,
+  }
 }
 
 function buildModelRevisionGuidance(result: LoopModelConfirmationResult): string {
@@ -1764,7 +1983,7 @@ async function consumeApprovedHumanConfirmation(
     return false
   }
 
-  const codeDevelopmentNeedsVerification = stage === 'code_development'
+  const codeDevelopmentNeedsVerification = shouldRunGreenFixup(stage, session.stages)
     && session.tddEligible === true
     && session.redTestConfirmed === true
     && !session.artifacts.greenTestResultPath
@@ -1982,14 +2201,15 @@ async function requestHumanConfirmation(input: {
   }, input.progressObserver)
 
   if (!input.waitHuman) {
-    return {
+    return finalizeStageRunResult({
+      session: input.session,
       stageResult: input.stageResult,
       paused: true,
       failed: false,
       pauseKind: 'human_confirmation',
       stageReport: input.stageReport,
       testOutput: input.testOutput,
-    }
+    })
   }
 
   const decided = await waitForHumanDecision(
@@ -2000,14 +2220,15 @@ async function requestHumanConfirmation(input: {
   )
 
   if (!decided) {
-    return {
+    return finalizeStageRunResult({
+      session: input.session,
       stageResult: input.stageResult,
       paused: true,
       failed: false,
       pauseKind: 'human_confirmation',
       stageReport: input.stageReport,
       testOutput: input.testOutput,
-    }
+    })
   }
 
   confirmationItem.decision = decided.decision
@@ -2018,20 +2239,25 @@ async function requestHumanConfirmation(input: {
   if (decided.decision === 'approved') {
     if (!input.stageSucceeded && shouldReturnStageToExecutor(input.stage, input.stageReport, input.testOutput)) {
       input.stageResult.success = false
-      return buildProviderRetryStageResult({
+      return finalizeStageRunResult({
+        session: input.session,
         stageResult: input.stageResult,
+        paused: true,
+        failed: false,
+        pauseKind: 'provider_retry',
         stageReport: input.stageReport,
         testOutput: input.testOutput,
       })
     }
 
-    return {
+    return finalizeStageRunResult({
+      session: input.session,
       stageResult: input.stageResult,
       paused: false,
       failed: !input.stageSucceeded,
       stageReport: input.stageReport,
       testOutput: input.testOutput,
-    }
+    })
   }
 
   if (decided.decision === 'rejected' || decided.decision === 'revise') {
@@ -2056,13 +2282,22 @@ async function requestHumanConfirmation(input: {
       const replanPrompt = `Human rejected stage ${input.stage}. Retry ${attempt}/${maxRetries}. Rerun this stage with this rationale:\n${decided.rationale || '(none provided)'}\n\nGoal: ${input.session.goal}`
       const replanOutput = await input.planner.chat([{ role: 'user', content: replanPrompt }])
       await appendFile(stageArtifactPath, `\n\n## Human Replan Guidance (Retry ${attempt})\n${replanOutput}\n`, 'utf-8')
+      const rescueProvider = await createStageRescueProvider({
+        stage: input.stage,
+        session: input.session,
+        runtime: input.runtime,
+        config: input.config,
+        providerSessionsPath: input.providerSessionsPath,
+        timeoutMs: input.timeoutMs,
+        fallbackProvider: input.executor,
+      })
 
       const retried = await executeStageAttempt(
         input.stage,
         input.session,
         input.tasks,
         input.documentPlan,
-        input.executor,
+        rescueProvider,
         input.config,
         input.providerSessionsPath,
         input.dryRun,
@@ -2101,13 +2336,14 @@ async function requestHumanConfirmation(input: {
         && finalEval.confidence >= input.runtime.confidenceThreshold
         && !finalEval.requireHumanConfirmation
       if (passed) {
-        return {
+        return finalizeStageRunResult({
+          session: input.session,
           stageResult: input.stageResult,
           paused: false,
           failed: false,
           stageReport: finalStageReport,
           testOutput: finalTestOutput,
-        }
+        })
       }
     }
 
@@ -2117,30 +2353,36 @@ async function requestHumanConfirmation(input: {
     input.stageResult.success = false
 
     if (shouldReturnStageToExecutor(input.stage, finalStageReport, finalTestOutput)) {
-      return buildProviderRetryStageResult({
+      return finalizeStageRunResult({
+        session: input.session,
         stageResult: input.stageResult,
+        paused: true,
+        failed: false,
+        pauseKind: 'provider_retry',
         stageReport: finalStageReport,
         testOutput: finalTestOutput,
       })
     }
 
-    return {
+    return finalizeStageRunResult({
+      session: input.session,
       stageResult: input.stageResult,
       paused: false,
       failed: true,
       stageReport: finalStageReport,
       testOutput: finalTestOutput,
-    }
+    })
   }
 
-  return {
+  return finalizeStageRunResult({
+    session: input.session,
     stageResult: input.stageResult,
     paused: true,
     failed: false,
     pauseKind: 'human_confirmation',
     stageReport: input.stageReport,
     testOutput: input.testOutput,
-  }
+  })
 }
 
 async function runSingleStage(
@@ -2239,20 +2481,25 @@ async function runSingleStage(
 
   if (gateStrategy === 'none') {
     if (!stageSucceeded && shouldReturnStageToExecutor(stage, stageReport, testOutput)) {
-      return buildProviderRetryStageResult({
+      return finalizeStageRunResult({
+        session,
         stageResult,
+        paused: true,
+        failed: false,
+        pauseKind: 'provider_retry',
         stageReport,
         testOutput,
       })
     }
 
-    return {
+    return finalizeStageRunResult({
+      session,
       stageResult,
       paused: false,
       failed: !stageSucceeded,
       stageReport,
       testOutput,
-    }
+    })
   }
 
   while (gateStrategy === 'model') {
@@ -2312,13 +2559,14 @@ async function runSingleStage(
     }, progressObserver)
 
     if (confirmation.decision === 'approved') {
-      return {
+      return finalizeStageRunResult({
+        session,
         stageResult,
         paused: false,
         failed: false,
         stageReport,
         testOutput,
-      }
+      })
     }
 
     if (confirmation.decision === 'human_required') {
@@ -2341,20 +2589,25 @@ async function runSingleStage(
         : ['Model confirmation exceeded max revision attempts.']
 
       if (shouldReturnStageToExecutor(stage, stageReport, testOutput)) {
-        return buildProviderRetryStageResult({
+        return finalizeStageRunResult({
+          session,
           stageResult,
+          paused: true,
+          failed: false,
+          pauseKind: 'provider_retry',
           stageReport,
           testOutput,
         })
       }
 
-      return {
+      return finalizeStageRunResult({
+        session,
         stageResult,
         paused: false,
         failed: true,
         stageReport,
         testOutput,
-      }
+      })
     }
 
     modelRevisionCount += 1
@@ -2364,13 +2617,22 @@ async function runSingleStage(
       await writeFile(stageArtifactPath, stageReport || `# Stage ${stage}`, 'utf-8')
     }
     await appendFile(stageArtifactPath, `\n\n## Model Revision Guidance (${modelRevisionCount})\n${revisionGuidance}\n`, 'utf-8')
+    const rescueProvider = await createStageRescueProvider({
+      stage,
+      session,
+      runtime,
+      config,
+      providerSessionsPath,
+      timeoutMs,
+      fallbackProvider: executor,
+    })
 
     const revisedAttempt = await executeStageAttempt(
       stage,
       session,
       tasks,
       documentPlan,
-      executor,
+      rescueProvider,
       config,
       providerSessionsPath,
       dryRun,
@@ -2411,13 +2673,14 @@ async function runSingleStage(
     )
 
     if (gateStrategy === 'none') {
-      return {
+      return finalizeStageRunResult({
+        session,
         stageResult,
         paused: false,
         failed: !stageSucceeded,
         stageReport,
         testOutput,
-      }
+      })
     }
   }
 
@@ -2470,11 +2733,11 @@ async function continueSession(
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
     const timeoutMs = applyLoopProviderTimeouts(planner, executor, runtime, stage, timeoutTier)
-    const resumedExecutionRetry = stage === 'code_development'
+    const resumedExecutionRetry = shouldRunGreenFixup(stage, session.stages)
       && session.currentLoopState === 'retrying_execution'
       && session.lastReliablePoint === 'test_result_recorded'
       && Boolean(session.artifacts.greenTestResultPath)
-    if (stage === 'code_development') {
+    if (shouldRunConstraintPreparation(stage, session.stages)) {
       const constraints = await loadLoopConstraints(session.artifacts.repoRootPath || runCwd)
       if (constraints) {
         session.artifacts.constraintsSnapshotPath = await createConstraintsSnapshot(session.artifacts.sessionDir, constraints)
@@ -2504,8 +2767,8 @@ async function continueSession(
       await updateLoopState(session, {
         currentStage: stage,
         lastReliableResult: constraintCheck.status === 'pass'
-          ? 'Constraint checks passed before code development.'
-          : 'Constraint checks require attention before code development.',
+          ? 'Constraint checks passed before implementation work.'
+          : 'Constraint checks require attention before implementation work.',
         nextAction: constraintCheck.status === 'pass'
           ? `Execute ${stage}.`
           : 'Revise the plan or constraints before continuing.',
@@ -2544,7 +2807,9 @@ async function continueSession(
           session,
         }
       }
+    }
 
+    if (shouldConfirmRedTest(stage, session.stages)) {
       const tdd = assessTddEligibility({
         goal: session.goal,
         stageTasks: session.plan.filter((task) => task.stage === stage),
@@ -2641,6 +2906,7 @@ async function continueSession(
           })
 
           session.currentLoopState = repairState.currentLoopState
+          session.reworkOrigin = resolveLoopReworkOrigin(stage)
           session.repairAttemptCount = repairState.repairAttemptCount
           session.executionRetryCount = repairState.executionRetryCount
           session.currentStageIndex = i
@@ -2771,8 +3037,9 @@ async function continueSession(
       completionStageResult = stageRun.stageResult
       session.stageResults.push(stageRun.stageResult)
       session.updatedAt = new Date()
-      if (stage === 'code_development' && session.tddEligible && session.redTestConfirmed) {
+      if (isImplementationStage(stage) && session.tddEligible && session.redTestConfirmed) {
         session.lastReliablePoint = 'implementation_generated'
+        clearLoopReworkState(session)
         await saveLoopSessionWithObserver(stateManager, session, progressObserver)
       }
     } else {
@@ -2832,9 +3099,12 @@ async function continueSession(
       // Reuse the existing resumable pause status for both human gates and
       // autonomous provider handoffs so resume keeps the same stage and workspace.
       session.status = 'paused_for_human'
-      session.currentLoopState = stageRun.pauseKind === 'provider_retry'
-        ? 'revising'
-        : 'blocked_for_human'
+      if (stageRun.pauseKind === 'provider_retry') {
+        setLoopReworkState(session, stage, 'revising')
+      } else {
+        session.currentLoopState = 'blocked_for_human'
+        clearLoopReworkState(session)
+      }
       session.lastFailureReason = completionStageResult?.summary || undefined
       await persistLoopNextRoundInput({
         session,
@@ -2918,7 +3188,7 @@ async function continueSession(
       )
     }
 
-    if (stage === 'code_development' && session.tddEligible && session.redTestConfirmed) {
+    if (shouldRunGreenFixup(stage, session.stages) && session.tddEligible && session.redTestConfirmed) {
       while (true) {
         const greenTestResult = runStructuredTestCommand(
           runCwd,
@@ -2955,6 +3225,7 @@ async function continueSession(
         })
 
         session.currentLoopState = repairState.currentLoopState
+        session.reworkOrigin = resolveLoopReworkOrigin(stage)
         session.repairAttemptCount = repairState.repairAttemptCount
         session.executionRetryCount = repairState.executionRetryCount
         session.lastFailureReason = summary
@@ -3012,7 +3283,16 @@ async function continueSession(
 
         if (greenTestResult.failureKind === 'quality') {
           if (prepared.dryRun !== true) {
-            await executor.chat([{
+            const rescueProvider = await createStageRescueProvider({
+              stage,
+              session,
+              runtime,
+              config,
+              providerSessionsPath,
+              timeoutMs,
+              fallbackProvider: executor,
+            })
+            await rescueProvider.chat([{
               role: 'user',
               content: buildRepairPrompt(stage, session, summary),
             }], undefined)
@@ -3064,6 +3344,7 @@ async function continueSession(
     }, progressObserver)
 
     session.currentStageIndex = i + 1
+    clearLoopReworkState(session)
     if (runtime.autoCommit && session.branchName && (completionStageResult?.success ?? true) && prepared.dryRun !== true) {
       const commitResult = await commitIfChanged(stage, runCwd, autoCommitProvider, session.branchName)
       await appendObservedEvent(session.artifacts.eventsPath, session.id, {
@@ -3081,6 +3362,7 @@ async function continueSession(
 
   session.status = 'completed'
   session.currentLoopState = 'completed'
+  clearLoopReworkState(session)
   session.lastReliablePoint = 'completed'
   session.updatedAt = new Date()
   await saveLoopSessionWithObserver(stateManager, session, progressObserver)
@@ -3635,7 +3917,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
       progressObserver,
     })
     await saveLoopSessionWithObserver(stateManager, session, progressObserver)
-    await recordLoopFailure(session, session.stages[session.currentStageIndex] || 'code_development', session.artifacts.workspacePath || ctx.cwd, stateManager, {
+    await recordLoopFailure(session, session.stages[session.currentStageIndex] || LEGACY_CODE_DEVELOPMENT_STAGE, session.artifacts.workspacePath || ctx.cwd, stateManager, {
       reason: resumeCheckpointError,
       rawError: resumeCheckpointError,
       evidencePaths: [

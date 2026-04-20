@@ -125,7 +125,10 @@ export type LoopStageName =
   | 'prd_review'
   | 'domain_partition'
   | 'trd_generation'
-  | 'code_development'
+  | 'dev_preparation'
+  | 'red_test_confirmation'
+  | 'implementation'
+  | 'green_fixup'
   | 'unit_mock_test'
   | 'integration_test'
 
@@ -133,6 +136,14 @@ export interface LoopVerificationStepConfig {
   label?: string
   command: string
 }
+
+export interface LoopStageBindingConfig {
+  primary?: RoleBinding
+  reviewer?: RoleBinding
+  rescue?: RoleBinding
+}
+
+export type LoopStageBindingsConfig = Partial<Record<LoopStageName, LoopStageBindingConfig>>
 
 export interface LoopCommandsConfig {
   unit_test?: string
@@ -182,6 +193,7 @@ export interface LoopConfig {
   }
   auto_commit_model?: string
   stages?: LoopStageName[]
+  stage_bindings?: LoopStageBindingsConfig
   confidence_threshold?: number
   retries_per_stage?: number
   max_iterations?: number

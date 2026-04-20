@@ -257,6 +257,30 @@ function buildDefaultLoopExecutionTimeoutConfig() {
   }
 }
 
+function buildDefaultLoopStages() {
+  return [
+    'prd_review',
+    'domain_partition',
+    'trd_generation',
+    'dev_preparation',
+    'red_test_confirmation',
+    'implementation',
+    'green_fixup',
+    'unit_mock_test',
+    'integration_test',
+  ]
+}
+
+function buildDefaultLoopStageBindingsConfig() {
+  return {
+    implementation: {
+      primary: { tool: 'codex' },
+      reviewer: { model: 'gemini-cli' },
+      rescue: { tool: 'kiro' },
+    },
+  }
+}
+
 function buildDefaultLoopMrConfig() {
   return {
     enabled: false,
@@ -666,6 +690,8 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const appleScriptTargetsYaml = notifications.imessageAppleScriptTargets
     .map(target => `          - ${yamlDoubleQuoted(target)}`)
     .join('\n')
+  const loopStages = buildDefaultLoopStages()
+  const loopStageBindings = buildDefaultLoopStageBindingsConfig()
 
   return `# Magpie Configuration
 
@@ -849,7 +875,15 @@ capabilities:
     enabled: true
     planner_model: ${analyzerModel}
     executor_model: codex
-    stages: [prd_review, domain_partition, trd_generation, code_development, unit_mock_test, integration_test]
+    stages: [${loopStages.join(', ')}]
+    stage_bindings:
+      implementation:
+        primary:
+${formatBindingLines(loopStageBindings.implementation.primary, 10)}
+        reviewer:
+${formatBindingLines(loopStageBindings.implementation.reviewer, 10)}
+        rescue:
+${formatBindingLines(loopStageBindings.implementation.rescue, 10)}
     execution_timeout:
       default_ms: 900000
       min_ms: 300000

@@ -54,7 +54,8 @@ describe('loop structured test execution', () => {
       blocked: false,
     })
 
-    expect(classifyStructuredTestFailureCategory(timeout)).toBe('transient')
-    expect(classifyStructuredTestFailureCategory(quality)).toBe('quality')
+    expect(classifyStructuredTestFailureCategory(timeout, 'implementation')).toBe('transient')
+    expect(classifyStructuredTestFailureCategory(quality, 'implementation')).toBe('quality')
+    expect(classifyStructuredTestFailureCategory(timeout, 'code_development')).toBe('transient')
   })
 })

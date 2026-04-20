@@ -78,7 +78,18 @@ describe('loop CLI command', () => {
       currentStageIndex: 0,
       stages: ['prd_review'],
       plan: [],
-      stageResults: [],
+      stageResults: [{
+        stage: 'prd_review',
+        success: true,
+        confidence: 0.9,
+        summary: 'Plan synced.',
+        risks: [],
+        retryCount: 0,
+        artifacts: [join(cwd, '.magpie', 'sessions', 'loop', 'loop-123', 'prd_review.md')],
+        handoffPath: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123', 'handoff-prd_review.json'),
+        resultType: 'passed',
+        timestamp: new Date('2026-04-11T00:06:00.000Z'),
+      }],
       humanConfirmations: [],
       artifacts: {
         sessionDir: join(cwd, '.magpie', 'sessions', 'loop', 'loop-123'),
@@ -112,6 +123,7 @@ describe('loop CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('State: prd_review | next: Run PRD review stage. | blocker: Waiting for PRD review output.')
     expect(logSpy).toHaveBeenCalledWith('Document mode: fallback')
     expect(logSpy).toHaveBeenCalledWith(`Formal docs root: ${join(cwd, '.magpie', 'project-docs', 'loop-123')}`)
+    expect(logSpy).toHaveBeenCalledWith(`Latest handoff: ${join(cwd, '.magpie', 'sessions', 'loop', 'loop-123', 'handoff-prd_review.json')}`)
     expect(logSpy).toHaveBeenCalledWith('Latest summary: Latest stage summary')
     expect(logSpy).toHaveBeenCalledWith('Open issues: Waiting for canary verification')
     expect(logSpy).toHaveBeenCalledWith(`Knowledge: ${knowledgeDir}`)

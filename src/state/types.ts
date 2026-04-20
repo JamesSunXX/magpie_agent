@@ -163,6 +163,8 @@ export interface LoopStageResult {
   risks: string[]
   retryCount: number
   artifacts: string[]
+  handoffPath?: string
+  resultType?: 'passed' | 'rework' | 'blocked'
   timestamp: Date
 }
 
@@ -193,6 +195,8 @@ export type LoopReliablePoint =
   | RoleReliablePoint
   | 'completed'
 
+export type LoopReworkOrigin = 'implementation' | 'verification' | 'integration'
+
 export interface LoopSession {
   id: string
   title: string
@@ -212,6 +216,7 @@ export interface LoopSession {
   tddEligible?: boolean
   redTestConfirmed?: boolean
   currentLoopState?: 'revising' | 'retrying_execution' | 'blocked_for_human' | 'completed'
+  reworkOrigin?: LoopReworkOrigin
   repairAttemptCount?: number
   executionRetryCount?: number
   lastReliablePoint?: LoopReliablePoint

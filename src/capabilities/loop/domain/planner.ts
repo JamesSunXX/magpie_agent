@@ -15,15 +15,88 @@ interface PlanJson {
 }
 
 const DEFAULT_PLANNER_TIMEOUT_MS = 60_000
+const LEGACY_CODE_DEVELOPMENT_STAGE = 'code_development'
+
+const STAGE_DEFAULT_COPY: Record<LoopStageName, {
+  title: string
+  description: (goal: string) => string
+  successCriteria: string[]
+}> = {
+  prd_review: {
+    title: 'PRD review',
+    description: (goal) => `Review the PRD and lock the core problem, scope, and acceptance bar for: ${goal}`,
+    successCriteria: ['PRD scope, assumptions, and open questions are clear for execution'],
+  },
+  domain_partition: {
+    title: 'Domain partition',
+    description: (goal) => `Break the work for "${goal}" into clear domain responsibilities and execution slices`,
+    successCriteria: ['Domain boundaries and ownership are explicit enough to implement safely'],
+  },
+  trd_generation: {
+    title: 'TRD generation',
+    description: (goal) => `Produce or refine the technical delivery notes needed to implement: ${goal}`,
+    successCriteria: ['Technical approach and key implementation decisions are documented'],
+  },
+  dev_preparation: {
+    title: 'Development preparation',
+    description: (goal) => `Confirm constraints, guardrails, and execution scope before changing code for: ${goal}`,
+    successCriteria: ['Constraints and execution boundaries are validated before implementation starts'],
+  },
+  red_test_confirmation: {
+    title: 'Red test confirmation',
+    description: (goal) => `Establish the failing baseline that proves the target behavior is not implemented yet for: ${goal}`,
+    successCriteria: ['A real failing baseline is confirmed before production changes'],
+  },
+  implementation: {
+    title: 'Implementation',
+    description: (goal) => `Make the primary code changes required to deliver: ${goal}`,
+    successCriteria: ['The planned code changes are in place and aligned with the accepted scope'],
+  },
+  green_fixup: {
+    title: 'Green fixup',
+    description: (goal) => `Tidy and repair the implementation until it is ready for formal verification for: ${goal}`,
+    successCriteria: ['The implementation is stabilized and ready for formal verification'],
+  },
+  unit_mock_test: {
+    title: 'Unit and mock test',
+    description: (goal) => `Run the unit and mock verification path for: ${goal}`,
+    successCriteria: ['Unit and mock verification complete without blocking issues'],
+  },
+  integration_test: {
+    title: 'Integration test',
+    description: (goal) => `Run the integration verification path for: ${goal}`,
+    successCriteria: ['Integration verification completes without blocking issues'],
+  },
+}
+
+function getLegacyStageDefaultCopy(): typeof STAGE_DEFAULT_COPY.implementation {
+  return STAGE_DEFAULT_COPY.implementation
+}
+
+function getGenericStageDefaultCopy(stage: string) {
+  return {
+    title: stage,
+    description: (goal: string) => `Execute stage ${stage} for goal: ${goal}`,
+    successCriteria: [`Stage ${stage} completed without blocking issues`],
+  }
+}
+
+function getStageDefaultCopy(stage: LoopStageName | string) {
+  if (stage === LEGACY_CODE_DEVELOPMENT_STAGE) {
+    return getLegacyStageDefaultCopy()
+  }
+
+  return STAGE_DEFAULT_COPY[stage as LoopStageName] || getGenericStageDefaultCopy(stage)
+}
 
 function defaultTasks(goal: string, stages: LoopStageName[]): LoopTask[] {
   return stages.map((stage, idx) => ({
     id: `task-${idx + 1}`,
     stage,
-    title: stage,
-    description: `Execute stage ${stage} for goal: ${goal}`,
+    title: getStageDefaultCopy(stage).title,
+    description: getStageDefaultCopy(stage).description(goal),
     dependencies: idx === 0 ? [] : [`task-${idx}`],
-    successCriteria: [`Stage ${stage} completed without blocking issues`],
+    successCriteria: [...getStageDefaultCopy(stage).successCriteria],
   }))
 }
 
@@ -41,12 +114,12 @@ function normalizeTasks(goal: string, stages: LoopStageName[], parsed: PlanJson 
     tasks.push({
       id: task.id || `task-${idx + 1}`,
       stage,
-      title: task.title || stage,
-      description: task.description || `Execute ${stage}`,
+      title: task.title || getStageDefaultCopy(stage).title,
+      description: task.description || getStageDefaultCopy(stage).description(goal),
       dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
       successCriteria: Array.isArray(task.successCriteria) && task.successCriteria.length > 0
         ? task.successCriteria
-        : [`Stage ${stage} completed`],
+        : [...getStageDefaultCopy(stage).successCriteria],
     })
   }
 

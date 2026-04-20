@@ -194,6 +194,208 @@ describe('loop capability', () => {
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
   })
 
+  it('persists a stage handoff card and records its path on the stage result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-handoff-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+    })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    const stageResult = result.result.session?.stageResults[0]
+    expect(stageResult?.handoffPath).toBe(join(result.result.session!.artifacts.sessionDir, 'handoff-prd_review.json'))
+    expect(stageResult?.artifacts).toContain(stageResult?.handoffPath)
+    expect(stageResult?.resultType).toBe('passed')
+    expect(existsSync(stageResult!.handoffPath!)).toBe(true)
+
+    const handoff = JSON.parse(readFileSync(stageResult!.handoffPath!, 'utf-8'))
+    expect(handoff).toMatchObject({
+      stage: 'prd_review',
+      goal: 'Complete delivery flow',
+      result: 'passed',
+      work_done: stageResult?.summary,
+      open_risks: stageResult?.risks,
+    })
+    expect(handoff.next_stage).toBeUndefined()
+    expect(handoff.next_input_minimum).toEqual(
+      stageResult?.artifacts.filter((path): path is string => Boolean(path) && path !== stageResult?.handoffPath)
+    )
+    expect(handoff.evidence_refs).toEqual(
+      stageResult?.artifacts.filter((path): path is string => Boolean(path) && path !== stageResult?.handoffPath)
+    )
+  })
+
+  it('uses the 9-stage default runtime sequence when loop stages are not configured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-default-stages-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+    })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.stages).toEqual([
+      'prd_review',
+      'domain_partition',
+      'trd_generation',
+      'dev_preparation',
+      'red_test_confirmation',
+      'implementation',
+      'green_fixup',
+      'unit_mock_test',
+      'integration_test',
+    ])
+    expect(result.result.session?.stages).not.toContain('code_development')
+  })
+
+  it('keeps distinct handoff cards when the same stage appears more than once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-handoff-repeat-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [prd_review, prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+    })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    const handoffPaths = result.result.session?.stageResults
+      .map((stageResult) => stageResult.handoffPath)
+      .filter((path): path is string => Boolean(path)) || []
+
+    expect(handoffPaths).toEqual([
+      join(result.result.session!.artifacts.sessionDir, 'handoff-prd_review.json'),
+      join(result.result.session!.artifacts.sessionDir, 'handoff-prd_review-2.json'),
+    ])
+    expect(new Set(handoffPaths).size).toBe(2)
+    expect(handoffPaths.every((path) => existsSync(path))).toBe(true)
+
+    const firstHandoff = JSON.parse(readFileSync(handoffPaths[0]!, 'utf-8'))
+    const secondHandoff = JSON.parse(readFileSync(handoffPaths[1]!, 'utf-8'))
+    expect(firstHandoff.next_stage).toBe('prd_review')
+    expect(secondHandoff.next_stage).toBeUndefined()
+  })
+
+  it('resumes a legacy code_development session even when the saved plan is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-legacy-resume-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const plannerModule = await vi.importActual<typeof import('../../../src/capabilities/loop/domain/planner.js')>(
+      '../../../src/capabilities/loop/domain/planner.js'
+    )
+    plannerMocks.generateLoopPlan.mockImplementationOnce((...args) => plannerModule.generateLoopPlan(...args))
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('not-json'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    const sessionId = 'loop-legacy-resume'
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    mkdirSync(sessionDir, { recursive: true })
+
+    const session: LoopSession = {
+      id: sessionId,
+      title: 'Legacy resume',
+      goal: 'Complete delivery flow',
+      prdPath,
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+      status: 'paused_for_human',
+      currentStageIndex: 0,
+      stages: ['code_development' as never],
+      plan: [],
+      stageResults: [],
+      humanConfirmations: [],
+      lastReliablePoint: 'constraints_validated',
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(sessionDir, 'human_confirmation.md'),
+      },
+    }
+    await stateManager.saveLoopSession(session)
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: true,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.plan).toHaveLength(1)
+    expect(result.result.session?.plan[0]).toMatchObject({
+      stage: 'code_development',
+      title: 'Implementation',
+    })
+    expect(result.result.session?.stageResults[0]?.stage).toBe('code_development')
+  })
+
   it('publishes a Feishu task status update when a loop task completes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-feishu-status-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
@@ -751,7 +953,7 @@ describe('loop capability', () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Implement checkout client',
         description: 'Use axios to call the upstream service',
         dependencies: [],
@@ -785,7 +987,7 @@ describe('loop capability', () => {
       ],
     }, null, 2), 'utf-8')
 
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(loopCapability, {
@@ -873,7 +1075,7 @@ describe('loop capability', () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Add amount formatter utility',
         description: 'Implement a pure formatter for checkout amounts',
         dependencies: [],
@@ -889,7 +1091,7 @@ describe('loop capability', () => {
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
     writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     let executorCalls = 0
     providerMocks.factory = (input, config, actual) => {
@@ -939,7 +1141,7 @@ describe('loop capability', () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Add amount formatter utility',
         description: 'Implement a pure formatter for checkout amounts',
         dependencies: [],
@@ -953,7 +1155,7 @@ describe('loop capability', () => {
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "magpie-command-that-does-not-exist"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "magpie-command-that-does-not-exist"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(loopCapability, {
@@ -968,6 +1170,7 @@ describe('loop capability', () => {
     expect(result.result.status).toBe('paused')
     expect(result.result.session?.redTestConfirmed).not.toBe(true)
     expect(result.result.session?.currentLoopState).toBe('retrying_execution')
+    expect(result.result.session?.reworkOrigin).toBe('implementation')
     expect(result.result.session?.executionRetryCount).toBe(1)
     expect(result.result.session?.lastFailureReason).toContain('Red test could not be established')
     expect(events).toContain('"event":"red_test_execution_retry_required"')
@@ -977,7 +1180,7 @@ describe('loop capability', () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Add amount formatter utility',
         description: 'Implement a pure formatter for checkout amounts',
         dependencies: [],
@@ -993,19 +1196,28 @@ describe('loop capability', () => {
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
     writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     let executorCalls = 0
+    let rescueCalls = 0
     providerMocks.factory = (input, config, actual) => {
       if (input.logicalName === 'capabilities.loop.executor') {
         return {
           name: 'mock-executor',
           chat: vi.fn(async () => {
             executorCalls += 1
-            if (executorCalls >= 3) {
-              writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
-            }
             return '# Stage Report\n\nPrepared code development output.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.stage_rescue.implementation') {
+        return {
+          name: 'mock-rescue',
+          chat: vi.fn(async () => {
+            rescueCalls += 1
+            writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            return '# Rescue Report\n\nApplied the quality fix.\n'
           }),
           chatStream: vi.fn(async function * () {}),
         }
@@ -1025,14 +1237,15 @@ describe('loop capability', () => {
     expect(result.result.status).toBe('completed')
     expect(result.result.session?.repairAttemptCount).toBe(1)
     expect(result.result.session?.currentLoopState).toBe('completed')
-    expect(executorCalls).toBe(3)
+    expect(executorCalls).toBe(2)
+    expect(rescueCalls).toBe(1)
   })
 
   it('pauses with revising state when post-implementation tests still fail', async () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Add amount formatter utility',
         description: 'Implement a pure formatter for checkout amounts',
         dependencies: [],
@@ -1045,8 +1258,19 @@ describe('loop capability', () => {
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
     writeFileSync(join(dir, 'script.js'), 'process.exit(process.env.RED_PHASE === "1" ? 1 : 1)\n', 'utf-8')
+
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.stage_rescue.implementation') {
+        return {
+          name: 'mock-rescue',
+          chat: vi.fn(async () => '# Rescue Report\n\nAttempted repair.\n'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
 
     const originalEnv = process.env.RED_PHASE
     process.env.RED_PHASE = '1'
@@ -1077,7 +1301,7 @@ describe('loop capability', () => {
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
     writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const sessionId = 'loop-resume-red'
     const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
@@ -1108,11 +1332,11 @@ describe('loop capability', () => {
       updatedAt: new Date('2026-04-12T00:00:00.000Z'),
       status: 'paused_for_human',
       currentStageIndex: 0,
-      stages: ['code_development'],
+      stages: ['implementation'],
       plan: [
         {
           id: 'task-1',
-          stage: 'code_development',
+          stage: 'implementation',
           title: 'Add amount formatter utility',
           description: 'Implement a pure formatter for checkout amounts',
           dependencies: [],
@@ -1183,7 +1407,7 @@ describe('loop capability', () => {
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
     writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const sessionId = 'loop-resume-failed-red'
     const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
@@ -1217,11 +1441,11 @@ describe('loop capability', () => {
       updatedAt: new Date('2026-04-12T00:00:00.000Z'),
       status: 'failed',
       currentStageIndex: 0,
-      stages: ['code_development'],
+      stages: ['implementation'],
       plan: [
         {
           id: 'task-1',
-          stage: 'code_development',
+          stage: 'implementation',
           title: 'Add amount formatter utility',
           description: 'Implement a pure formatter for checkout amounts',
           dependencies: [],
@@ -1292,7 +1516,7 @@ describe('loop capability', () => {
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development, unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "echo unit-safe"\n      mock_test: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation, unit_mock_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "echo unit-safe"\n      mock_test: "echo mock-safe"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const sessionId = 'loop-resume-failed-unit-mock'
     const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
@@ -1313,11 +1537,11 @@ describe('loop capability', () => {
       updatedAt: new Date('2026-04-12T00:10:00.000Z'),
       status: 'failed',
       currentStageIndex: 1,
-      stages: ['code_development', 'unit_mock_test'],
+      stages: ['implementation', 'unit_mock_test'],
       plan: [
         {
           id: 'task-1',
-          stage: 'code_development',
+          stage: 'implementation',
           title: 'Implement formatter',
           description: 'Implement a pure formatter for checkout amounts',
           dependencies: [],
@@ -1333,13 +1557,13 @@ describe('loop capability', () => {
         },
       ],
       stageResults: [{
-        stage: 'code_development',
+        stage: 'implementation',
         success: true,
         confidence: 0.8,
         summary: 'Implementation completed.',
         risks: [],
         retryCount: 0,
-        artifacts: [join(sessionDir, 'code_development.md')],
+        artifacts: [join(sessionDir, 'implementation.md')],
         timestamp: new Date('2026-04-12T00:05:00.000Z'),
       }, {
         stage: 'unit_mock_test',
@@ -1408,7 +1632,7 @@ describe('loop capability', () => {
     const prdPath = join(dir, 'docs', 'sample-prd.md')
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const sessionId = 'loop-invalid-checkpoint'
     const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
@@ -1427,11 +1651,11 @@ describe('loop capability', () => {
       updatedAt: new Date('2026-04-12T00:00:00.000Z'),
       status: 'paused_for_human',
       currentStageIndex: 0,
-      stages: ['code_development'],
+      stages: ['implementation'],
       plan: [
         {
           id: 'task-1',
-          stage: 'code_development',
+          stage: 'implementation',
           title: 'Add amount formatter utility',
           description: 'Implement a pure formatter for checkout amounts',
           dependencies: [],
@@ -1608,7 +1832,7 @@ describe('loop capability', () => {
     plannerMocks.generateLoopPlan.mockResolvedValueOnce([
       {
         id: 'task-1',
-        stage: 'code_development',
+        stage: 'implementation',
         title: 'Add amount formatter utility',
         description: 'Implement a pure formatter for checkout amounts',
         dependencies: [],
@@ -1633,7 +1857,7 @@ if (result.error) {
 }
 process.exit(result.status ?? 1)
 `, 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     providerMocks.factory = (input, config, actual) => {
       if (input.logicalName === 'capabilities.loop.executor') {
@@ -1678,7 +1902,7 @@ process.exit(result.status ?? 1)
     const configPath = join(dir, 'config.yaml')
     writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
     writeFileSync(join(dir, 'runner.js'), 'const fs = require("fs"); process.exit(fs.existsSync("resume-ok.flag") ? 0 : 1)\n', 'utf-8')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [code_development]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n    model: mock\n    prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node runner.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const sessionId = 'loop-execution-resume'
     const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
@@ -1707,11 +1931,11 @@ process.exit(result.status ?? 1)
       updatedAt: new Date('2026-04-12T00:00:00.000Z'),
       status: 'paused_for_human',
       currentStageIndex: 0,
-      stages: ['code_development'],
+      stages: ['implementation'],
       plan: [
         {
           id: 'task-1',
-          stage: 'code_development',
+          stage: 'implementation',
           title: 'Add amount formatter utility',
           description: 'Implement a pure formatter for checkout amounts',
           dependencies: [],
@@ -1720,7 +1944,7 @@ process.exit(result.status ?? 1)
       ],
       stageResults: [
         {
-          stage: 'code_development',
+          stage: 'implementation',
           success: true,
           confidence: 0.91,
           summary: 'Implementation already generated before the retry.',
@@ -2937,12 +3161,123 @@ process.exit(result.status ?? 1)
     expect(result.result.status).toBe('paused')
     expect(result.result.session?.status).toBe('paused_for_human')
     expect(result.result.session?.currentLoopState).toBe('revising')
+    expect(result.result.session?.reworkOrigin).toBe('verification')
+    expect(result.result.session?.currentStageIndex).toBe(0)
     expect(result.result.session?.stageResults.at(-1)?.stage).toBe('unit_mock_test')
     expect(result.result.session?.stageResults.at(-1)?.success).toBe(false)
+    expect(result.result.session?.stageResults.at(-1)?.resultType).toBe('rework')
     expect(result.result.session?.artifacts.nextRoundInputPath).toBeTruthy()
     expect(existsSync(result.result.session!.artifacts.humanConfirmationPath)).toBe(false)
     expect(events).not.toContain('"event":"stage_failed"')
     expect(events).not.toContain('"event":"human_confirmation_required"')
+
+    const stateManager = new StateManager(dir)
+    const persisted = await stateManager.loadLoopSession(result.result.session!.id)
+    expect(persisted?.reworkOrigin).toBe('verification')
+
+    const resumed = await runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId: result.result.session!.id,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(resumed.result.status).toBe('paused')
+    expect(resumed.result.session?.currentStageIndex).toBe(0)
+    expect(resumed.result.session?.reworkOrigin).toBe('verification')
+    expect(resumed.result.session?.stageResults.at(-1)?.stage).toBe('unit_mock_test')
+  })
+
+  it('keeps failed integration verification resumable on the integration stage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-integration-resumable-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [integration_test]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      integration_test: "node -e \\"process.exit(1)\\""\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('paused')
+    expect(result.result.session?.status).toBe('paused_for_human')
+    expect(result.result.session?.currentLoopState).toBe('revising')
+    expect(result.result.session?.reworkOrigin).toBe('integration')
+    expect(result.result.session?.currentStageIndex).toBe(0)
+    expect(result.result.session?.stageResults.at(-1)?.stage).toBe('integration_test')
+    expect(result.result.session?.stageResults.at(-1)?.success).toBe(false)
+    expect(result.result.session?.stageResults.at(-1)?.resultType).toBe('rework')
+  })
+
+  it('uses the current stage rescue binding for implementation repair retries', async () => {
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'implementation',
+        title: 'Add amount formatter utility',
+        description: 'Implement a pure formatter for checkout amounts',
+        dependencies: [],
+        successCriteria: ['Formatter output matches the spec'],
+      },
+    ])
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-stage-rescue-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    mkdirSync(join(dir, '.magpie'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(prdPath, '# PRD\n\nAmount formatter utility.', 'utf-8')
+    writeFileSync(join(dir, 'script.js'), 'const fs = require("fs"); process.exit(fs.existsSync("ready.flag") ? 0 : 1)\n', 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    planner_agent: kiro_planner\n    executor_model: mock\n    stages: [implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    auto_branch_prefix: "sch/"\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\n    commands:\n      unit_test: "node script.js"\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    let executorCalls = 0
+    let rescueCalls = 0
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async () => {
+            executorCalls += 1
+            return '# Stage Report\n\nPrepared code development output.\n\n## Artifacts\n- /tmp/generated.md'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.stage_rescue.implementation') {
+        return {
+          name: 'mock-rescue',
+          chat: vi.fn(async () => {
+            rescueCalls += 1
+            writeFileSync(join(dir, 'ready.flag'), 'ready', 'utf-8')
+            return '# Rescue Report\n\nApplied a focused repair.\n'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Add amount formatter utility',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(executorCalls).toBe(2)
+    expect(rescueCalls).toBeGreaterThan(0)
   })
 
   it('writes a workflow_defect failure record when resume checkpoint validation fails', async () => {
@@ -2953,7 +3288,7 @@ process.exit(result.status ?? 1)
     writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [code_development]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [implementation]\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const stateManager = new StateManager(dir)
     await stateManager.initLoopSessions()
@@ -2968,7 +3303,7 @@ process.exit(result.status ?? 1)
       updatedAt: new Date('2026-04-12T00:00:00.000Z'),
       status: 'running',
       currentStageIndex: 0,
-      stages: ['code_development'],
+      stages: ['implementation'],
       plan: [],
       stageResults: [],
       humanConfirmations: [],
@@ -3184,9 +3519,12 @@ process.exit(result.status ?? 1)
           chatStream: vi.fn(async function * () {}),
         }
       }
-      if (input.logicalName === 'capabilities.loop.executor') {
+      if (
+        input.logicalName === 'capabilities.loop.executor'
+        || input.logicalName === 'capabilities.loop.stage_rescue.prd_review'
+      ) {
         return {
-          name: 'mock-executor',
+          name: String(input.logicalName),
           chat: vi.fn().mockImplementation(async (messages) => {
             executorPrompts.push(String(messages.at(-1)?.content ?? ''))
             return '# Stage Report\n\nCompleted with some risk.\n\n## Artifacts\n- /tmp/generated.md'
