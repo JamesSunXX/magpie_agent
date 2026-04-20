@@ -123,13 +123,17 @@ function parseTaskCommandEvent(payload: unknown): TaskCommandEvent {
     throw new Error('Invalid Feishu callback payload: malformed event.message.content')
   }
 
+  // Strip @mention placeholders (e.g. "@_user_1 ") that Feishu prepends in group chats.
+  const rawText = requireString(content.text, 'event.message.content.text')
+  const text = rawText.replace(/@_user_\d+\s*/g, '').trim()
+
   return {
     kind: 'task_command',
     eventId: typeof header?.event_id === 'string' ? header.event_id : undefined,
     actorOpenId: requireString(event?.sender?.sender_id?.open_id, 'event.sender.sender_id.open_id'),
     sourceMessageId: requireString(event?.message?.message_id, 'event.message.message_id'),
     chatId: requireString(event?.message?.chat_id, 'event.message.chat_id'),
-    text: requireString(content.text, 'event.message.content.text'),
+    text,
   }
 }
 
