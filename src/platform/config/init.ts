@@ -624,6 +624,15 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     upgradeCodexModelField(capabilities.issue_fix, 'executor_model', 'capabilities.issue_fix.executor_model', changes)
   }
   if (isObjectRecord(capabilities.loop)) {
+    // Migrate legacy code_development stage to the new split stages
+    if (Array.isArray(capabilities.loop.stages)) {
+      const idx = (capabilities.loop.stages as string[]).indexOf('code_development')
+      if (idx !== -1) {
+        const replacement = ['dev_preparation', 'red_test_confirmation', 'implementation', 'green_fixup']
+        capabilities.loop.stages.splice(idx, 1, ...replacement)
+        changes.push('Replaced legacy code_development stage with dev_preparation, red_test_confirmation, implementation, green_fixup.')
+      }
+    }
     upgradeCodexModelField(capabilities.loop, 'planner_model', 'capabilities.loop.planner_model', changes)
     upgradeCodexModelField(capabilities.loop, 'executor_model', 'capabilities.loop.executor_model', changes)
     const commands = isObjectRecord(capabilities.loop.commands) ? capabilities.loop.commands : undefined
