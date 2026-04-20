@@ -1,3 +1,6 @@
+import { createReadStream } from 'fs'
+import { basename } from 'path'
+
 function joinOpenApi(path: string): string {
   return `https://open.feishu.cn${path}`
 }
@@ -117,4 +120,67 @@ export class FeishuImClient {
 
     return { messageId: replyId }
   }
+
+  /** Upload a file and return its file_key. */
+  async uploadFile(filePath: string, fileType: 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream' = 'stream'): Promise<string> {
+    const token = await this.getTenantAccessToken()
+    const form = new FormData()
+    form.append('file_type', fileType)
+    form.append('file_name', basename(filePath))
+    form.append('file', await fileToBlob(filePath))
+
+    const response = await fetch(joinOpenApi('/open-apis/im/v1/files'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to upload file to Feishu: HTTP ${response.status}`)
+    }
+
+    const data = await readJson(response)
+    const fileKey = data?.data?.file_key
+    if (typeof fileKey !== 'string' || fileKey.trim().length === 0) {
+      throw new Error('Failed to upload file to Feishu: missing data.file_key')
+    }
+
+    return fileKey
+  }
+
+  /** Reply with a file attachment in a thread. */
+  async replyFileMessage(messageId: string, filePath: string): Promise<{ messageId: string }> {
+    const fileKey = await this.uploadFile(filePath)
+    const token = await this.getTenantAccessToken()
+    const response = await fetch(joinOpenApi(`/open-apis/im/v1/messages/${messageId}/reply`), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        msg_type: 'file',
+        content: JSON.stringify({ file_key: fileKey }),
+        reply_in_thread: true,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to reply file message: HTTP ${response.status}`)
+    }
+
+    const data = await readJson(response)
+    const replyId = data?.data?.message_id
+    if (typeof replyId !== 'string' || replyId.trim().length === 0) {
+      throw new Error('Failed to reply file message: missing data.message_id')
+    }
+
+    return { messageId: replyId }
+  }
+}
+
+async function fileToBlob(filePath: string): Promise<Blob> {
+  const { readFile } = await import('fs/promises')
+  const buffer = await readFile(filePath)
+  return new Blob([buffer])
 }
