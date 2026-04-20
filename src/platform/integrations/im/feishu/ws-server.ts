@@ -36,6 +36,21 @@ export function startFeishuWsServer(options: {
     },
   })
 
+  // Card action events (confirmation buttons, task form submissions).
+  // The SDK routes by event_type string internally; cast to bypass strict IHandles typing.
+  ;(eventDispatcher as any).register({
+    'card.action.trigger': async (data: any) => {
+      const payload = {
+        header: {
+          event_id: data.event_id,
+          event_type: 'im.message.action.trigger',
+        },
+        event: data,
+      }
+      await options.onEvent(parseFeishuEvent(payload))
+    },
+  })
+
   const wsClient = new Lark.WSClient({
     appId: options.appId,
     appSecret: options.appSecret,
