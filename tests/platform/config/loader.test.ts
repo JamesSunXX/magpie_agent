@@ -279,6 +279,84 @@ describe('platform config loader', () => {
     )
   })
 
+  it('accepts trd convergence config when at least two reviewers are available', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude', 'route-codex'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+        max_cycles: 5,
+        discuss_rounds: 2,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
+
+  it('rejects trd convergence when enabled with fewer than two reviewers', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.trd_convergence requires at least 2 distinct reviewers when enabled'
+    )
+  })
+
+  it('rejects invalid trd convergence max cycles', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude', 'route-codex'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+        max_cycles: 0,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.trd_convergence.max_cycles must be a positive integer'
+    )
+  })
+
+  it('rejects trd convergence reviewer_ids when they include unknown reviewers', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude', 'route-codex'],
+    }
+    config.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+        reviewer_ids: ['claude', 'unknown-reviewer'],
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.trd_convergence.reviewer_ids includes unknown reviewer "unknown-reviewer"'
+    )
+  })
+
   it('rejects empty custom unit mock verification commands', () => {
     const config = structuredClone(validConfig)
     config.capabilities.loop = {

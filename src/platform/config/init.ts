@@ -251,6 +251,13 @@ function buildDefaultHarnessConfig(defaultReviewers: string[]) {
   }
 }
 
+function buildDefaultSafetyConfig() {
+  return {
+    allow_dangerous_commands: false,
+    require_confirmation_for_dangerous: true,
+  }
+}
+
 function buildDefaultLoopExecutionTimeoutConfig() {
   return {
     default_ms: 900000,
@@ -300,6 +307,16 @@ function buildDefaultLoopHumanConfirmationConfig() {
     gate_policy: 'multi_model',
     poll_interval_sec: 8,
     max_model_revisions: 1,
+  }
+}
+
+function buildDefaultLoopTrdConvergenceConfig(defaultReviewers: string[]) {
+  return {
+    enabled: true,
+    max_cycles: 5,
+    discuss_rounds: 2,
+    reviewer_ids: defaultReviewers,
+    auto_back_to_prd: true,
   }
 }
 
@@ -604,15 +621,23 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   } else if (deepMergeMissing(capabilities.harness, upgradeHarnessDefaults)) {
     changes.push('Filled missing capabilities.harness defaults.')
   }
+  if (!isObjectRecord(capabilities.safety)) {
+    capabilities.safety = buildDefaultSafetyConfig()
+    changes.push('Added capabilities.safety defaults.')
+  } else if (deepMergeMissing(capabilities.safety, buildDefaultSafetyConfig())) {
+    changes.push('Filled missing capabilities.safety defaults.')
+  }
   if (!isObjectRecord(capabilities.loop)) {
     capabilities.loop = {
       execution_timeout: buildDefaultLoopExecutionTimeoutConfig(),
       mr: buildDefaultLoopMrConfig(),
       human_confirmation: buildDefaultLoopHumanConfirmationConfig(),
+      trd_convergence: buildDefaultLoopTrdConvergenceConfig(upgradeDefaultReviewerIds),
     }
     changes.push('Added capabilities.loop execution timeout defaults.')
     changes.push('Added capabilities.loop MR defaults.')
     changes.push('Added capabilities.loop human confirmation defaults.')
+    changes.push('Added capabilities.loop TRD convergence defaults.')
   } else {
     if (deepMergeMissing(capabilities.loop, { execution_timeout: buildDefaultLoopExecutionTimeoutConfig() })) {
       changes.push('Filled missing capabilities.loop execution timeout defaults.')
@@ -622,6 +647,9 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
     }
     if (deepMergeMissing(capabilities.loop, { human_confirmation: buildDefaultLoopHumanConfirmationConfig() })) {
       changes.push('Added capabilities.loop human confirmation defaults.')
+    }
+    if (deepMergeMissing(capabilities.loop, { trd_convergence: buildDefaultLoopTrdConvergenceConfig(upgradeDefaultReviewerIds) })) {
+      changes.push('Added capabilities.loop TRD convergence defaults.')
     }
   }
   upgradeRoutingBindings(isObjectRecord(capabilities.routing) ? capabilities.routing : undefined, changes)
@@ -887,6 +915,9 @@ capabilities:
     enabled: true
     evaluator_model: ${analyzerModel}
     commands: ["npm run test:run", "npm run build"]
+  safety:
+    allow_dangerous_commands: false
+    require_confirmation_for_dangerous: true
   loop:
     enabled: true
     planner_model: ${analyzerModel}
@@ -924,6 +955,12 @@ ${formatBindingLines(loopStageBindings.implementation.rescue, 10)}
       gate_policy: "multi_model"
       poll_interval_sec: 8
       max_model_revisions: 1
+    trd_convergence:
+      enabled: true
+      max_cycles: 5
+      discuss_rounds: 2
+      reviewer_ids: [${defaultReviewers.join(', ')}]
+      auto_back_to_prd: true
     commands:
       unit_test: "npm run test:run"
       # For non-Node repos, replace the legacy unit/mock commands with project-specific checks:

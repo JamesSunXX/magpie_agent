@@ -258,6 +258,10 @@ export interface LoopSession {
     knowledgeStatePath?: string
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
+    trdConvergenceStatePath?: string
+    trdConvergenceCyclesDir?: string
+    trdConvergenceTrdSessionId?: string
+    trdConvergenceDiscussSessionId?: string
     documentPlanPath?: string
     providerSessionsPath?: string
   }

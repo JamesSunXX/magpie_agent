@@ -18,10 +18,11 @@ import type {
   LoopConfig,
   LoopStageBindingConfig,
   LoopStageBindingsConfig,
+  SafetyConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 22
+export const CURRENT_CONFIG_VERSION = 23
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 const LOOP_STAGE_NAMES: LoopStageName[] = [
@@ -325,6 +326,38 @@ function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Re
   }
 }
 
+function validateSafetyConfig(safety: SafetyConfig | undefined): void {
+  if (!safety) return
+
+  if (
+    safety.allow_dangerous_commands !== undefined
+    && typeof safety.allow_dangerous_commands !== 'boolean'
+  ) {
+    throw new Error('Config error: capabilities.safety.allow_dangerous_commands must be a boolean')
+  }
+
+  if (
+    safety.require_confirmation_for_dangerous !== undefined
+    && typeof safety.require_confirmation_for_dangerous !== 'boolean'
+  ) {
+    throw new Error('Config error: capabilities.safety.require_confirmation_for_dangerous must be a boolean')
+  }
+
+  if (safety.dangerous_patterns === undefined) {
+    return
+  }
+
+  if (!Array.isArray(safety.dangerous_patterns)) {
+    throw new Error('Config error: capabilities.safety.dangerous_patterns must be an array')
+  }
+
+  for (const [index, pattern] of safety.dangerous_patterns.entries()) {
+    if (typeof pattern !== 'string' || pattern.trim().length === 0) {
+      throw new Error(`Config error: capabilities.safety.dangerous_patterns[${index}] must be a non-empty string`)
+    }
+  }
+}
+
 function validateLoopConfig(
   loop: LoopConfig | undefined,
   reviewers: Record<string, ReviewerConfig>,
@@ -341,6 +374,7 @@ function validateLoopConfig(
 
   const humanConfirmation = loop?.human_confirmation
   if (!humanConfirmation) {
+    validateLoopTrdConvergence(loop?.trd_convergence, reviewers, discussReviewers)
     return
   }
 
@@ -357,6 +391,7 @@ function validateLoopConfig(
   }
 
   if (humanConfirmation.gate_policy !== 'multi_model') {
+    validateLoopTrdConvergence(loop?.trd_convergence, reviewers, discussReviewers)
     return
   }
 
@@ -366,6 +401,41 @@ function validateLoopConfig(
     : []
   if (distinctReviewerIds.length < 2) {
     throw new Error('Config error: capabilities.loop.human_confirmation requires at least 2 distinct reviewers for multi_model gate policy')
+  }
+
+  validateLoopTrdConvergence(loop?.trd_convergence, reviewers, discussReviewers)
+}
+
+function validatePositiveInteger(name: string, value: number | undefined): void {
+  if (value === undefined) return
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Config error: ${name} must be a positive integer`)
+  }
+}
+
+function validateLoopTrdConvergence(
+  trdConvergence: LoopConfig['trd_convergence'] | undefined,
+  reviewers: Record<string, ReviewerConfig>,
+  discussReviewers: string[] | undefined,
+): void {
+  if (!trdConvergence || trdConvergence.enabled === false) {
+    return
+  }
+
+  validatePositiveInteger('capabilities.loop.trd_convergence.max_cycles', trdConvergence.max_cycles)
+  validatePositiveInteger('capabilities.loop.trd_convergence.discuss_rounds', trdConvergence.discuss_rounds)
+  validateReviewerIdArray(
+    'capabilities.loop.trd_convergence.reviewer_ids',
+    trdConvergence.reviewer_ids,
+    reviewers
+  )
+
+  const reviewerIds = trdConvergence.reviewer_ids ?? discussReviewers
+  const distinctReviewerIds = Array.isArray(reviewerIds)
+    ? Array.from(new Set(reviewerIds))
+    : []
+  if (distinctReviewerIds.length < 2) {
+    throw new Error('Config error: capabilities.loop.trd_convergence requires at least 2 distinct reviewers when enabled')
   }
 }
 
@@ -535,6 +605,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   }
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
+  validateSafetyConfig(config.capabilities.safety)
   validateLoopConfig(config.capabilities.loop, config.reviewers, config.capabilities.discuss?.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
   validateLoopExecutionTimeout(config.capabilities.loop?.execution_timeout)

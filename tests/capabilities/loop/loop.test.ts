@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCapability } from '../../../src/core/capability/runner.js'
+import * as capabilityRunner from '../../../src/core/capability/runner.js'
 import { createCapabilityContext } from '../../../src/core/capability/context.js'
 import { StateManager, type LoopSession } from '../../../src/core/state/index.js'
 import { loopCapability } from '../../../src/capabilities/loop/index.js'
@@ -106,6 +107,243 @@ vi.mock('../../../src/platform/providers/index.js', async (importOriginal) => {
     }),
   }
 })
+
+type MockConvergenceDecision = {
+  decision: 'approved' | 'revise_trd' | 'back_to_prd'
+  rationale: string
+  requiredActions?: string[]
+}
+
+function buildTrdConvergenceLoopConfig(input: { maxCycles: number }): string {
+  return `providers:
+  claude-code:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  reviewer-a:
+    model: mock
+    prompt: review a
+  reviewer-b:
+    model: mock
+    prompt: review b
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  discuss:
+    enabled: true
+    reviewers: [reviewer-a, reviewer-b]
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+    stages: [prd_review, trd_generation]
+    confidence_threshold: 0.3
+    retries_per_stage: 1
+    max_iterations: 20
+    auto_commit: false
+    trd_convergence:
+      enabled: true
+      max_cycles: ${input.maxCycles}
+      discuss_rounds: 1
+      reviewer_ids: [reviewer-a, reviewer-b]
+      auto_back_to_prd: true
+    human_confirmation:
+      file: "human_confirmation.md"
+      gate_policy: "manual_only"
+      poll_interval_sec: 1
+integrations:
+  notifications:
+    enabled: false
+`
+}
+
+function installLoopStageProviderMocks(): void {
+  providerMocks.factory = (input, config, actual) => {
+    if (input.logicalName === 'capabilities.loop.planner') {
+      return {
+        name: 'mock-planner',
+        chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage completed."}'),
+        chatStream: vi.fn(async function * () {}),
+      }
+    }
+    if (input.logicalName === 'capabilities.loop.executor') {
+      return {
+        name: 'mock-executor',
+        chat: vi.fn().mockResolvedValue('# Stage Report\n\nCompleted.\n\n## Artifacts\n- /tmp/generated.md'),
+        chatStream: vi.fn(async function * () {}),
+      }
+    }
+    return actual.createConfiguredProvider(input, config as never)
+  }
+}
+
+function setupTrdConvergenceCapabilityMock(input: {
+  decisions: MockConvergenceDecision[]
+  persistDiscussSession?: boolean
+}) {
+  const originalRunCapability = capabilityRunner.runCapability
+  let trdSessionId: string | undefined
+  let discussSessionId: string | undefined
+  let trdCalls = 0
+  let discussCalls = 0
+  const trdResumeIds: string[] = []
+  const discussResumeIds: string[] = []
+  const discussOutputPaths: string[] = []
+  const discussOutputCycleNumbers: number[] = []
+
+  const spy = vi.spyOn(capabilityRunner, 'runCapability').mockImplementation(async (module, capabilityInput, ctx) => {
+    if (module.name === 'trd') {
+      trdCalls += 1
+      const options = (capabilityInput as { options?: { resume?: string } }).options || {}
+      if (options.resume) {
+        trdResumeIds.push(options.resume)
+      }
+
+      if (!trdSessionId) {
+        trdSessionId = options.resume || `trd-convergence-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+      }
+
+      const stateManager = new StateManager(ctx.cwd)
+      await stateManager.initTrdSessions()
+
+      const trdPath = join(ctx.cwd, 'docs', 'sample-prd.trd.md')
+      const openQuestionsPath = join(ctx.cwd, 'docs', 'sample-prd.open-questions.md')
+      mkdirSync(dirname(trdPath), { recursive: true })
+      writeFileSync(trdPath, `# TRD\n\ncycle=${trdCalls}\n`, 'utf-8')
+      writeFileSync(openQuestionsPath, `# Open Questions\n\ncycle=${trdCalls}\n`, 'utf-8')
+
+      await stateManager.saveTrdSession({
+        id: trdSessionId,
+        title: 'mock trd convergence',
+        prdPath: join(ctx.cwd, 'docs', 'sample-prd.md'),
+        createdAt: new Date('2026-04-20T00:00:00.000Z'),
+        updatedAt: new Date(),
+        stage: 'completed',
+        reviewerIds: ['reviewer-a', 'reviewer-b'],
+        domains: [],
+        artifacts: {
+          domainOverviewPath: join(ctx.cwd, 'docs', 'sample-prd.domain-overview.md'),
+          draftDomainsPath: join(ctx.cwd, 'docs', 'sample-prd.domains.draft.yaml'),
+          confirmedDomainsPath: join(ctx.cwd, 'docs', 'sample-prd.domains.confirmed.yaml'),
+          trdPath,
+          openQuestionsPath,
+          partialDir: join(ctx.cwd, '.magpie', 'sessions', 'trd', trdSessionId, 'artifacts'),
+        },
+        rounds: [],
+      })
+
+      return {
+        prepared: capabilityInput as never,
+        result: {
+          status: 'completed',
+          payload: {
+            exitCode: 0,
+            summary: 'Mock TRD completed.',
+          },
+        } as never,
+        output: {
+          summary: 'Mock TRD output.',
+        } as never,
+      }
+    }
+
+    if (module.name === 'discuss') {
+      discussCalls += 1
+      const options = (capabilityInput as { options?: { output?: string; resume?: string } }).options || {}
+      if (options.resume) {
+        discussResumeIds.push(options.resume)
+      }
+
+      if (!discussSessionId) {
+        discussSessionId = options.resume || `discuss-convergence-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+      }
+
+      const selectedDecision = input.decisions[Math.min(discussCalls - 1, input.decisions.length - 1)]
+      const finalConclusion = [
+        'Convergence decision:',
+        '```json',
+        JSON.stringify({
+          decision: selectedDecision.decision,
+          rationale: selectedDecision.rationale,
+          required_actions: selectedDecision.requiredActions || [],
+        }),
+        '```',
+      ].join('\n')
+
+      const outputPath = options.output || join(ctx.cwd, `discuss-output-${discussCalls}.json`)
+      mkdirSync(dirname(outputPath), { recursive: true })
+      writeFileSync(outputPath, JSON.stringify({
+        finalConclusion,
+      }, null, 2), 'utf-8')
+      discussOutputPaths.push(outputPath)
+
+      const cycleMatch = outputPath.match(/cycle-(\d+)/)
+      if (cycleMatch) {
+        discussOutputCycleNumbers.push(Number(cycleMatch[1]))
+      }
+
+      if (input.persistDiscussSession !== false) {
+        const stateManager = new StateManager(ctx.cwd)
+        await stateManager.initDiscussions()
+        await stateManager.saveDiscussSession({
+          id: discussSessionId,
+          title: 'mock discuss convergence',
+          createdAt: new Date('2026-04-20T00:00:00.000Z'),
+          updatedAt: new Date(),
+          status: 'completed',
+          reviewerIds: ['reviewer-a', 'reviewer-b'],
+          rounds: [{
+            roundNumber: discussCalls,
+            topic: 'mock topic',
+            analysis: 'mock analysis',
+            messages: [],
+            summaries: [],
+            conclusion: finalConclusion,
+            tokenUsage: [],
+            timestamp: new Date(),
+          }],
+        })
+      }
+
+      return {
+        prepared: capabilityInput as never,
+        result: {
+          status: 'completed',
+          payload: {
+            exitCode: 0,
+            summary: `Discussion completed for ${discussSessionId}.`,
+          },
+        } as never,
+        output: {
+          summary: 'Mock discuss output.',
+        } as never,
+      }
+    }
+
+    return originalRunCapability(module as never, capabilityInput as never, ctx as never) as never
+  })
+
+  return {
+    spy,
+    getStats: () => ({
+      trdCalls,
+      discussCalls,
+      trdResumeIds,
+      discussResumeIds,
+      discussOutputPaths,
+      discussOutputCycleNumbers,
+      trdSessionId,
+      discussSessionId,
+    }),
+  }
+}
 
 describe('loop capability', () => {
   afterEach(() => {
@@ -678,7 +916,7 @@ describe('loop capability', () => {
     writeFileSync(prdPath, '# PRD\n\nGenerate a TRD.', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: codex\n    stages: [trd_generation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: codex\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(loopCapability, {
@@ -736,7 +974,7 @@ describe('loop capability', () => {
     writeFileSync(prdPath, '# PRD\n\nGenerate a TRD.', 'utf-8')
 
     const configPath = join(dir, 'config.yaml')
-    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: codex\n    executor_model: mock\n    stages: [trd_generation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+    writeFileSync(configPath, `providers:\n  codex:\n    enabled: true\n  kiro:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: codex\n    executor_model: mock\n    stages: [prd_review]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
 
     const ctx = createCapabilityContext({ cwd: dir, configPath })
     const result = await runCapability(loopCapability, {
@@ -3745,6 +3983,442 @@ process.exit(result.status ?? 1)
     expect(result.result.status).toBe('completed')
     expect(executedStages).toEqual(['unit_mock_test', 'prd_review'])
     expect(result.result.session?.stageResults.map((stageResult) => stageResult.stage)).toEqual(['unit_mock_test', 'prd_review'])
+  })
+
+  it('exits trd_generation when the first convergence cycle is approved', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [{ decision: 'approved', rationale: 'TRD is complete.' }],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-approved-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nTRD convergence quick pass.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 3 }), 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'TRD quick convergence',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stats = convergenceMock.getStats()
+    expect(result.result.status).toBe('completed')
+    expect(stats.trdCalls).toBe(1)
+    expect(stats.discussCalls).toBe(1)
+    expect(result.result.session?.stageResults.some((item) =>
+      item.stage === 'trd_generation' && item.summary.includes('approved after 1 cycle')
+    )).toBe(true)
+  })
+
+  it('keeps the same trd/discuss session ids while revising until approval', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [
+        { decision: 'revise_trd', rationale: 'Need more rollback details.', requiredActions: ['Add rollback strategy.'] },
+        { decision: 'approved', rationale: 'Rollback strategy is now clear.' },
+      ],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-revise-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nTRD convergence revise path.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 3 }), 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'TRD revise then approve',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stats = convergenceMock.getStats()
+    const snapshot = JSON.parse(readFileSync(result.result.session!.artifacts.trdConvergenceStatePath!, 'utf-8'))
+
+    expect(result.result.status).toBe('completed')
+    expect(stats.trdCalls).toBe(2)
+    expect(stats.discussCalls).toBe(2)
+    expect(stats.trdResumeIds.length).toBeGreaterThanOrEqual(1)
+    expect(stats.discussResumeIds.length).toBeGreaterThanOrEqual(1)
+    expect(result.result.session?.artifacts.trdConvergenceTrdSessionId).toBe(stats.trdSessionId)
+    expect(result.result.session?.artifacts.trdConvergenceDiscussSessionId).toBe(stats.discussSessionId)
+    expect(snapshot.cycles).toHaveLength(2)
+    expect(snapshot.cycles[0].decision).toBe('revise_trd')
+    expect(snapshot.cycles[1].decision).toBe('approved')
+  })
+
+  it('recovers discuss session id from capability summary when session list diff is unavailable', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [
+        { decision: 'revise_trd', rationale: 'Need to clarify rollback scope.' },
+        { decision: 'approved', rationale: 'Rollback scope is now clear.' },
+      ],
+      persistDiscussSession: false,
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-discuss-summary-id-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nDiscuss session id recovery path.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 3 }), 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Recover discuss session id',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stats = convergenceMock.getStats()
+
+    expect(result.result.status).toBe('completed')
+    expect(stats.discussCalls).toBe(2)
+    expect(stats.discussResumeIds).toHaveLength(1)
+    expect(stats.discussResumeIds[0]).toBe(stats.discussSessionId)
+  })
+
+  it('fails trd_generation with a clear error when convergence reviewers are insufficient', async () => {
+    installLoopStageProviderMocks()
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-reviewers-required-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nReviewer requirement check.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:
+  claude-code:
+    enabled: true
+defaults:
+  max_rounds: 3
+  output_format: markdown
+  check_convergence: true
+reviewers:
+  reviewer-a:
+    model: mock
+    prompt: review a
+summarizer:
+  model: mock
+  prompt: summarize
+analyzer:
+  model: mock
+  prompt: analyze
+capabilities:
+  loop:
+    enabled: true
+    planner_model: mock
+    executor_model: mock
+    stages: [trd_generation]
+    confidence_threshold: 0.3
+    retries_per_stage: 1
+    max_iterations: 5
+    auto_commit: false
+integrations:
+  notifications:
+    enabled: false
+`, 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Require enough convergence reviewers',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('failed')
+    expect(result.result.summary).toContain('requires at least 2 reviewers')
+  })
+
+  it('routes back to prd_review when arbitration decides back_to_prd and then converges after re-entry', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [
+        { decision: 'back_to_prd', rationale: 'PRD is ambiguous on boundary ownership.' },
+        { decision: 'approved', rationale: 'PRD update resolved ownership ambiguity.' },
+      ],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-back-to-prd-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nTRD convergence PRD fallback path.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 3 }), 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'TRD fallback and converge',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stageOrder = result.result.session?.stageResults.map((item) => item.stage) || []
+    const trdRuns = result.result.session?.stageResults.filter((item) => item.stage === 'trd_generation') || []
+
+    expect(result.result.status).toBe('completed')
+    expect(stageOrder).toEqual(['prd_review', 'trd_generation', 'prd_review', 'trd_generation'])
+    expect(trdRuns[0]?.resultType).toBe('rework')
+    expect(trdRuns[0]?.summary).toContain('routed back to prd_review')
+    expect(trdRuns[1]?.resultType).toBe('passed')
+    expect(convergenceMock.getStats().discussCalls).toBe(2)
+  })
+
+  it('routes back to prd_review after max_cycles and can converge on a restarted pass', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [
+        { decision: 'revise_trd', rationale: 'Need stronger exception matrix.' },
+        { decision: 'revise_trd', rationale: 'Need explicit rollout checks.' },
+        { decision: 'approved', rationale: 'Convergence reached on restarted pass.' },
+      ],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-max-cycles-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nTRD convergence max cycles path.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 2 }), 'utf-8')
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'TRD max cycles fallback',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stageOrder = result.result.session?.stageResults.map((item) => item.stage) || []
+    const trdRuns = result.result.session?.stageResults.filter((item) => item.stage === 'trd_generation') || []
+    const events = readFileSync(result.result.session!.artifacts.eventsPath, 'utf-8')
+
+    expect(result.result.status).toBe('completed')
+    expect(stageOrder).toEqual(['prd_review', 'trd_generation', 'prd_review', 'trd_generation'])
+    expect(trdRuns[0]?.summary).toContain('exceeded max cycles')
+    expect(trdRuns[0]?.resultType).toBe('rework')
+    expect(events).toContain('"event":"trd_convergence_pass_restarted"')
+    expect(convergenceMock.getStats().discussCalls).toBe(3)
+  })
+
+  it('stops with an explicit failure when trd reroutes exceed the safety limit', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [
+        { decision: 'back_to_prd', rationale: 'PRD is still ambiguous.' },
+        { decision: 'back_to_prd', rationale: 'PRD is still ambiguous.' },
+        { decision: 'back_to_prd', rationale: 'PRD is still ambiguous.' },
+        { decision: 'back_to_prd', rationale: 'PRD is still ambiguous.' },
+        { decision: 'back_to_prd', rationale: 'PRD is still ambiguous.' },
+      ],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-reroute-safety-limit-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nReroute safety limit check.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(
+      configPath,
+      buildTrdConvergenceLoopConfig({ maxCycles: 1 }).replace('max_iterations: 20', 'max_iterations: 2'),
+      'utf-8'
+    )
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Protect against endless reroutes',
+      prdPath,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('failed')
+    expect(result.result.summary).toContain('rerouted to prd_review too many times')
+    expect(convergenceMock.getStats().discussCalls).toBeGreaterThanOrEqual(4)
+  })
+
+  it('resumes trd convergence from the interrupted cycle without re-running completed cycles', async () => {
+    installLoopStageProviderMocks()
+    const convergenceMock = setupTrdConvergenceCapabilityMock({
+      decisions: [{ decision: 'approved', rationale: 'Remaining cycle passed after resume.' }],
+    })
+
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-trd-convergence-resume-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nResume trd convergence path.', 'utf-8')
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, buildTrdConvergenceLoopConfig({ maxCycles: 3 }), 'utf-8')
+
+    const sessionId = `resume-trd-convergence-${Date.now()}`
+    const sessionDir = join(dir, '.magpie', 'sessions', 'loop', sessionId)
+    const trdSessionId = `trd-resume-${Date.now()}`
+    const discussSessionId = `discuss-resume-${Date.now()}`
+    const trdCyclesDir = join(sessionDir, 'trd-convergence')
+    const snapshotPath = join(trdCyclesDir, 'state.json')
+    const cycleOneDir = join(trdCyclesDir, 'cycle-1')
+    mkdirSync(cycleOneDir, { recursive: true })
+
+    const trdPath = join(dir, 'docs', 'sample-prd.trd.md')
+    const questionsPath = join(dir, 'docs', 'sample-prd.open-questions.md')
+    writeFileSync(trdPath, '# TRD\n\ncycle=1\n', 'utf-8')
+    writeFileSync(questionsPath, '# Open Questions\n\ncycle=1\n', 'utf-8')
+
+    const reviewPath = join(cycleOneDir, 'review.json')
+    const arbitrationPath = join(cycleOneDir, 'arbitration.json')
+    writeFileSync(reviewPath, JSON.stringify({
+      finalConclusion: '```json\n{"decision":"revise_trd","rationale":"Need one more pass.","required_actions":["补充回滚验证。"]}\n```',
+    }, null, 2), 'utf-8')
+    writeFileSync(arbitrationPath, JSON.stringify({
+      decision: 'revise_trd',
+      rationale: 'Need one more pass.',
+      requiredActions: ['补充回滚验证。'],
+    }, null, 2), 'utf-8')
+    writeFileSync(snapshotPath, JSON.stringify({
+      schemaVersion: 1,
+      status: 'running',
+      maxCycles: 3,
+      discussRounds: 1,
+      reviewerIds: ['reviewer-a', 'reviewer-b'],
+      trdSessionId,
+      discussSessionId,
+      cycles: [{
+        cycle: 1,
+        trdSessionId,
+        discussSessionId,
+        trdPath,
+        openQuestionsPath: questionsPath,
+        reviewOutputPath: reviewPath,
+        arbitrationOutputPath: arbitrationPath,
+        decision: 'revise_trd',
+        rationale: 'Need one more pass.',
+        requiredActions: ['补充回滚验证。'],
+        nextFollowUp: '请补充回滚验证。',
+        timestamp: '2026-04-20T00:00:00.000Z',
+      }],
+      updatedAt: '2026-04-20T00:00:00.000Z',
+    }, null, 2), 'utf-8')
+
+    const stateManager = new StateManager(dir)
+    await stateManager.initLoopSessions()
+    await stateManager.initTrdSessions()
+    await stateManager.initDiscussions()
+    await stateManager.saveTrdSession({
+      id: trdSessionId,
+      title: 'resume trd session',
+      prdPath,
+      createdAt: new Date('2026-04-20T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-20T00:00:00.000Z'),
+      stage: 'completed',
+      reviewerIds: ['reviewer-a', 'reviewer-b'],
+      domains: [],
+      artifacts: {
+        domainOverviewPath: join(dir, 'docs', 'sample-prd.domain-overview.md'),
+        draftDomainsPath: join(dir, 'docs', 'sample-prd.domains.draft.yaml'),
+        confirmedDomainsPath: join(dir, 'docs', 'sample-prd.domains.confirmed.yaml'),
+        trdPath,
+        openQuestionsPath: questionsPath,
+        partialDir: join(dir, '.magpie', 'sessions', 'trd', trdSessionId, 'artifacts'),
+      },
+      rounds: [],
+    })
+    await stateManager.saveDiscussSession({
+      id: discussSessionId,
+      title: 'resume discuss session',
+      createdAt: new Date('2026-04-20T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-20T00:00:00.000Z'),
+      status: 'completed',
+      reviewerIds: ['reviewer-a', 'reviewer-b'],
+      rounds: [],
+    })
+    await stateManager.saveLoopSession({
+      id: sessionId,
+      title: 'resume trd convergence',
+      goal: 'Resume trd convergence',
+      prdPath,
+      createdAt: new Date('2026-04-20T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-20T00:00:00.000Z'),
+      status: 'running',
+      currentStageIndex: 1,
+      stages: ['prd_review', 'trd_generation'],
+      plan: [
+        {
+          id: 'task-1',
+          stage: 'prd_review',
+          title: 'prd_review',
+          description: 'Execute prd review',
+          dependencies: [],
+          successCriteria: ['prd ok'],
+        },
+        {
+          id: 'task-2',
+          stage: 'trd_generation',
+          title: 'trd_generation',
+          description: 'Execute trd convergence',
+          dependencies: ['task-1'],
+          successCriteria: ['trd converged'],
+        },
+      ],
+      stageResults: [{
+        stage: 'prd_review',
+        success: true,
+        confidence: 1,
+        summary: 'PRD review completed.',
+        risks: [],
+        retryCount: 0,
+        artifacts: [join(sessionDir, 'handoff-prd_review.json')],
+        timestamp: new Date('2026-04-20T00:00:00.000Z'),
+      }],
+      humanConfirmations: [],
+      artifacts: {
+        sessionDir,
+        eventsPath: join(sessionDir, 'events.jsonl'),
+        planPath: join(sessionDir, 'plan.json'),
+        humanConfirmationPath: join(sessionDir, 'human_confirmation.md'),
+        workspaceMode: 'current',
+        workspacePath: dir,
+        trdConvergenceStatePath: snapshotPath,
+        trdConvergenceCyclesDir: trdCyclesDir,
+        trdConvergenceTrdSessionId: trdSessionId,
+        trdConvergenceDiscussSessionId: discussSessionId,
+      },
+    })
+
+    const ctx = createCapabilityContext({ cwd: dir, configPath })
+    const result = await capabilityRunner.runCapability(loopCapability, {
+      mode: 'resume',
+      sessionId,
+      waitHuman: false,
+      dryRun: false,
+    }, ctx)
+
+    const stats = convergenceMock.getStats()
+    const snapshotAfter = JSON.parse(readFileSync(snapshotPath, 'utf-8'))
+
+    expect(result.result.status).toBe('completed')
+    expect(stats.trdCalls).toBe(1)
+    expect(stats.discussCalls).toBe(1)
+    expect(stats.discussOutputCycleNumbers).toEqual([2])
+    expect(snapshotAfter.cycles).toHaveLength(2)
+    expect(snapshotAfter.cycles[0].cycle).toBe(1)
+    expect(snapshotAfter.cycles[1].cycle).toBe(2)
   })
 
   it('lists saved loop sessions', async () => {

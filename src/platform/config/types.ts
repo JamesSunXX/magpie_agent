@@ -168,6 +168,14 @@ export interface LoopHumanConfirmationConfig {
   max_model_revisions?: number
 }
 
+export interface LoopTrdConvergenceConfig {
+  enabled?: boolean
+  max_cycles?: number
+  discuss_rounds?: number
+  reviewer_ids?: string[]
+  auto_back_to_prd?: boolean
+}
+
 export interface LoopMrConfig {
   enabled?: boolean
 }
@@ -203,6 +211,7 @@ export interface LoopConfig {
   branch_naming?: LoopBranchNamingConfig
   mr?: LoopMrConfig
   human_confirmation?: LoopHumanConfirmationConfig
+  trd_convergence?: LoopTrdConvergenceConfig
   commands?: LoopCommandsConfig
   execution_timeout?: LoopExecutionTimeoutConfig
 }
@@ -426,6 +435,7 @@ export interface PostMergeRegressionConfig {
 }
 
 export interface SafetyConfig {
+  allow_dangerous_commands?: boolean
   dangerous_patterns?: string[]
   require_confirmation_for_dangerous?: boolean
 }

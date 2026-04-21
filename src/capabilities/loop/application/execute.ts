@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import type { CapabilityContext } from '../../../core/capability/context.js'
+import { createCapabilityContext } from '../../../core/capability/context.js'
+import { runCapability } from '../../../core/capability/runner.js'
 import { createRoutingDecision, isRoutingEnabled } from '../../routing/index.js'
 import type {
   HumanConfirmationItem,
@@ -206,6 +208,14 @@ interface LoopRuntimeConfig {
     complexityMultiplier: Record<ComplexityTier, number>
     stageOverridesMs: Partial<Record<LoopStageName, number>>
   }
+  trdConvergence: {
+    enabled: boolean
+    maxCycles: number
+    discussRounds: number
+    reviewerIds: string[]
+    autoBackToPrd: boolean
+  }
+  configPath?: string
 }
 
 interface StageEvaluation {
@@ -221,6 +231,8 @@ interface StageRunResult {
   paused: boolean
   failed: boolean
   pauseKind?: 'human_confirmation' | 'provider_retry'
+  rerouteToStage?: LoopStageName
+  rerouteReason?: string
   stageReport: string
   testOutput: string
 }
@@ -505,7 +517,11 @@ function resolveUnitMockTestSteps(
   }))
 }
 
-function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: string[] | undefined): LoopRuntimeConfig {
+function resolveLoopConfig(
+  config: LoopConfig | undefined,
+  discussReviewerIds: string[] | undefined,
+  configPath?: string,
+): LoopRuntimeConfig {
   return {
     plannerTool: config?.planner_tool,
     plannerModel: config?.planner_model || 'claude-code',
@@ -549,6 +565,14 @@ function resolveLoopConfig(config: LoopConfig | undefined, discussReviewerIds: s
       },
       stageOverridesMs: config?.execution_timeout?.stage_overrides_ms || {},
     },
+    trdConvergence: {
+      enabled: config?.trd_convergence?.enabled !== false,
+      maxCycles: config?.trd_convergence?.max_cycles ?? 5,
+      discussRounds: config?.trd_convergence?.discuss_rounds ?? 2,
+      reviewerIds: config?.trd_convergence?.reviewer_ids || discussReviewerIds || [],
+      autoBackToPrd: config?.trd_convergence?.auto_back_to_prd !== false,
+    },
+    configPath,
   }
 }
 
@@ -1247,7 +1271,8 @@ function buildStageHandoffPath(
     : join(sessionDir, `handoff-${stage}-${occurrence}.json`)
 }
 
-function resolveStageResultType(input: Pick<StageRunResult, 'paused' | 'failed' | 'pauseKind'>): LoopStageResultType {
+function resolveStageResultType(input: Pick<StageRunResult, 'paused' | 'failed' | 'pauseKind' | 'rerouteToStage'>): LoopStageResultType {
+  if (input.rerouteToStage) return 'rework'
   if (input.pauseKind === 'provider_retry') return 'rework'
   if (input.pauseKind === 'human_confirmation' || input.failed) return 'blocked'
   return 'passed'
@@ -1283,10 +1308,11 @@ async function writeStageHandoffCard(input: {
   stageReport: string
   testOutput: string
   resultType: LoopStageResultType
+  nextStageOverride?: LoopStageName
 }): Promise<string> {
   const occurrence = input.session.stageResults.filter((result) => result.stage === input.stageResult.stage).length + 1
   const handoffPath = buildStageHandoffPath(input.session.artifacts.sessionDir, input.stageResult.stage, occurrence)
-  const nextStage = resolveNextStageForHandoff(
+  const nextStage = input.nextStageOverride || resolveNextStageForHandoff(
     input.session,
     input.stageResult.stage,
     input.resultType,
@@ -1322,6 +1348,8 @@ async function finalizeStageRunResult(input: {
   paused: boolean
   failed: boolean
   pauseKind?: 'human_confirmation' | 'provider_retry'
+  rerouteToStage?: LoopStageName
+  rerouteReason?: string
   stageReport: string
   testOutput: string
 }): Promise<StageRunResult> {
@@ -1332,6 +1360,7 @@ async function finalizeStageRunResult(input: {
     stageReport: input.stageReport,
     testOutput: input.testOutput,
     resultType,
+    nextStageOverride: input.rerouteToStage,
   })
 
   return {
@@ -1339,9 +1368,263 @@ async function finalizeStageRunResult(input: {
     paused: input.paused,
     failed: input.failed,
     ...(input.pauseKind ? { pauseKind: input.pauseKind } : {}),
+    ...(input.rerouteToStage ? { rerouteToStage: input.rerouteToStage } : {}),
+    ...(input.rerouteReason ? { rerouteReason: input.rerouteReason } : {}),
     stageReport: input.stageReport,
     testOutput: input.testOutput,
   }
+}
+
+type TrdConvergenceDecision = 'approved' | 'revise_trd' | 'back_to_prd'
+
+interface TrdConvergenceArbitration {
+  decision: TrdConvergenceDecision
+  rationale: string
+  requiredActions: string[]
+}
+
+interface TrdConvergenceCycleRecord {
+  cycle: number
+  trdSessionId: string
+  discussSessionId: string
+  trdPath: string
+  openQuestionsPath: string
+  reviewOutputPath: string
+  arbitrationOutputPath: string
+  decision: TrdConvergenceDecision
+  rationale: string
+  requiredActions: string[]
+  nextFollowUp?: string
+  timestamp: string
+}
+
+interface TrdConvergenceSnapshot {
+  schemaVersion: 1
+  status: 'running' | 'approved' | 'back_to_prd' | 'failed'
+  maxCycles: number
+  discussRounds: number
+  reviewerIds: string[]
+  trdSessionId?: string
+  discussSessionId?: string
+  cycles: TrdConvergenceCycleRecord[]
+  updatedAt: string
+}
+
+interface TrdConvergenceRuntimePayload {
+  snapshotPath: string
+  cyclesDir: string
+  trdSessionId?: string
+  discussSessionId?: string
+  snapshot: TrdConvergenceSnapshot
+}
+
+function resolveTrdConvergencePaths(session: LoopSession): TrdConvergenceRuntimePayload {
+  const cyclesDir = session.artifacts.trdConvergenceCyclesDir || join(session.artifacts.sessionDir, 'trd-convergence')
+  const snapshotPath = session.artifacts.trdConvergenceStatePath || join(cyclesDir, 'state.json')
+  session.artifacts.trdConvergenceCyclesDir = cyclesDir
+  session.artifacts.trdConvergenceStatePath = snapshotPath
+
+  const snapshot: TrdConvergenceSnapshot = {
+    schemaVersion: 1,
+    status: 'running',
+    maxCycles: 0,
+    discussRounds: 0,
+    reviewerIds: [],
+    trdSessionId: session.artifacts.trdConvergenceTrdSessionId,
+    discussSessionId: session.artifacts.trdConvergenceDiscussSessionId,
+    cycles: [],
+    updatedAt: new Date().toISOString(),
+  }
+
+  return {
+    snapshotPath,
+    cyclesDir,
+    trdSessionId: session.artifacts.trdConvergenceTrdSessionId,
+    discussSessionId: session.artifacts.trdConvergenceDiscussSessionId,
+    snapshot,
+  }
+}
+
+function normalizeTrdConvergenceDecision(value: unknown): TrdConvergenceDecision | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'approved' || normalized === 'revise_trd' || normalized === 'back_to_prd') {
+    return normalized
+  }
+  return null
+}
+
+function buildTrdConvergenceFollowUp(decision: TrdConvergenceArbitration): string {
+  const actionLines = decision.requiredActions.length > 0
+    ? decision.requiredActions.map((action, index) => `${index + 1}. ${action}`).join('\n')
+    : `1. ${decision.rationale}`
+  return [
+    '请按以下审查结论补充 TRD，并保持原有结构：',
+    actionLines,
+    '',
+    `补充原因：${decision.rationale}`,
+  ].join('\n')
+}
+
+function buildTrdConvergenceStageReport(input: {
+  stage: LoopStageName
+  decision: TrdConvergenceArbitration
+  cycles: TrdConvergenceCycleRecord[]
+  reviewPath: string
+  arbitrationPath: string
+  trdPath: string
+  nextAction?: string
+}): string {
+  const cycleSummaries = input.cycles.map((cycle) =>
+    `- Cycle ${cycle.cycle}: ${cycle.decision} (${cycle.rationale})`
+  )
+  return [
+    `# Stage ${input.stage}`,
+    '',
+    `TRD convergence decision: ${input.decision.decision}`,
+    '',
+    'Cycle summary:',
+    ...(cycleSummaries.length > 0 ? cycleSummaries : ['- None']),
+    '',
+    'Artifacts:',
+    `- TRD: ${input.trdPath}`,
+    `- Review: ${input.reviewPath}`,
+    `- Arbitration: ${input.arbitrationPath}`,
+    '',
+    `Next action: ${input.nextAction || 'Continue with the loop stage flow.'}`,
+  ].join('\n')
+}
+
+async function readTrdConvergenceSnapshot(path: string): Promise<TrdConvergenceSnapshot | null> {
+  if (!existsSync(path)) return null
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf-8')) as Partial<TrdConvergenceSnapshot>
+    if (raw.schemaVersion !== 1 || !Array.isArray(raw.cycles)) {
+      return null
+    }
+    return {
+      schemaVersion: 1,
+      status: raw.status === 'approved' || raw.status === 'back_to_prd' || raw.status === 'failed' ? raw.status : 'running',
+      maxCycles: Number.isInteger(raw.maxCycles) ? (raw.maxCycles as number) : 0,
+      discussRounds: Number.isInteger(raw.discussRounds) ? (raw.discussRounds as number) : 0,
+      reviewerIds: Array.isArray(raw.reviewerIds)
+        ? raw.reviewerIds.filter((item): item is string => typeof item === 'string')
+        : [],
+      trdSessionId: typeof raw.trdSessionId === 'string' ? raw.trdSessionId : undefined,
+      discussSessionId: typeof raw.discussSessionId === 'string' ? raw.discussSessionId : undefined,
+      cycles: raw.cycles.filter((item): item is TrdConvergenceCycleRecord => {
+        return Boolean(item && typeof item === 'object' && typeof item.cycle === 'number')
+      }),
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+async function writeTrdConvergenceSnapshot(path: string, snapshot: TrdConvergenceSnapshot): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf-8')
+}
+
+async function loadTrdCapabilityModule() {
+  const mod = await import('../../trd/index.js')
+  return mod.trdCapability
+}
+
+async function loadDiscussCapabilityModule() {
+  const mod = await import('../../discuss/index.js')
+  return mod.discussCapability
+}
+
+function findNewSessionId<T extends { id: string }>(beforeIds: Set<string>, sessions: T[]): string | undefined {
+  const created = sessions.find((session) => !beforeIds.has(session.id))
+  return created?.id
+}
+
+function extractDiscussSessionIdFromSummary(summary: string | undefined): string | undefined {
+  if (!summary) return undefined
+  const match = summary.match(/Discussion completed for ([a-z0-9-]+)\./i)
+  return match?.[1]
+}
+
+function buildTrdConvergenceReviewTopic(input: {
+  session: LoopSession
+  cycle: number
+  trdPath: string
+  openQuestionsPath: string
+}): string {
+  return [
+    `TRD convergence review for loop session ${input.session.id}, cycle ${input.cycle}.`,
+    `Goal: ${input.session.goal}`,
+    '',
+    `Please review PRD @file:${input.session.prdPath}`,
+    `Please review TRD @file:${input.trdPath}`,
+    `Please review open questions @file:${input.openQuestionsPath}`,
+    '',
+    'You must focus on missing constraints, hidden risks, rollout safety, and verification completeness.',
+    'In your final conclusion include a JSON block with:',
+    '{"decision":"approved|revise_trd|back_to_prd","rationale":"...","required_actions":["..."]}',
+  ].join('\n')
+}
+
+async function runTrdConvergenceArbitration(input: {
+  config: MagpieConfig
+  cwd: string
+  stage: LoopStageName
+  reviewPayload: Record<string, unknown>
+  trdPath: string
+  openQuestionsPath: string
+  cycle: number
+}): Promise<TrdConvergenceArbitration> {
+  const finalConclusion = typeof input.reviewPayload.finalConclusion === 'string'
+    ? input.reviewPayload.finalConclusion
+    : ''
+  const direct = extractJsonBlock<Record<string, unknown>>(finalConclusion)
+  const directDecision = normalizeTrdConvergenceDecision(direct?.decision)
+  if (directDecision) {
+    const actions = Array.isArray(direct?.required_actions)
+      ? direct.required_actions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : []
+    const rationale = typeof direct?.rationale === 'string' && direct.rationale.trim().length > 0
+      ? direct.rationale.trim()
+      : 'Decision parsed from discuss final conclusion.'
+    return { decision: directDecision, rationale, requiredActions: actions }
+  }
+
+  const provider = createConfiguredProvider({
+    logicalName: 'summarizer',
+    tool: input.config.summarizer.tool,
+    model: input.config.summarizer.model,
+    agent: input.config.summarizer.agent,
+  }, input.config)
+  provider.setCwd?.(input.cwd)
+
+  const reviewExcerpt = JSON.stringify(input.reviewPayload, null, 2).slice(0, 16000)
+  const response = await provider.chat([{
+    role: 'user',
+    content: [
+      `You are arbitrating loop stage ${input.stage} cycle ${input.cycle}.`,
+      'Return ONLY JSON:',
+      '{"decision":"approved|revise_trd|back_to_prd","rationale":"...","required_actions":["..."]}',
+      '',
+      `TRD path: ${input.trdPath}`,
+      `Open questions path: ${input.openQuestionsPath}`,
+      '',
+      'Discussion output excerpt:',
+      reviewExcerpt,
+    ].join('\n'),
+  }], 'Use conservative judgment. Choose back_to_prd only when PRD ambiguity blocks a robust TRD.')
+
+  const parsed = extractJsonBlock<Record<string, unknown>>(response)
+  const decision = normalizeTrdConvergenceDecision(parsed?.decision) || 'revise_trd'
+  const requiredActions = Array.isArray(parsed?.required_actions)
+    ? parsed.required_actions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+  const rationale = typeof parsed?.rationale === 'string' && parsed.rationale.trim().length > 0
+    ? parsed.rationale.trim()
+    : 'Arbitration fallback: response had no parsable rationale.'
+  return { decision, rationale, requiredActions }
 }
 
 function buildModelRevisionGuidance(result: LoopModelConfirmationResult): string {
@@ -2385,6 +2668,561 @@ async function requestHumanConfirmation(input: {
   })
 }
 
+async function runTrdConvergenceStage(input: {
+  stage: LoopStageName
+  session: LoopSession
+  config: MagpieConfig
+  runtime: LoopRuntimeConfig
+  runCwd: string
+  dryRun: boolean
+  progressObserver?: LoopProgressObserver
+}): Promise<StageRunResult> {
+  const stageArtifactPath = join(input.session.artifacts.sessionDir, `${input.stage}.md`)
+  if (input.dryRun) {
+    const stageResult: LoopStageResult = {
+      stage: input.stage,
+      success: true,
+      confidence: 1,
+      summary: 'TRD convergence skipped due to --dry-run.',
+      risks: [],
+      retryCount: 0,
+      artifacts: [],
+      timestamp: new Date(),
+    }
+    return finalizeStageRunResult({
+      session: input.session,
+      stageResult,
+      paused: false,
+      failed: false,
+      stageReport: '# Dry Run\n\nTRD convergence skipped due to --dry-run.',
+      testOutput: '',
+    })
+  }
+
+  const reviewers = Array.from(new Set(input.runtime.trdConvergence.reviewerIds))
+  if (reviewers.length < 2) {
+    const message = 'TRD convergence requires at least 2 reviewers. Configure capabilities.loop.trd_convergence.reviewer_ids or capabilities.discuss.reviewers.'
+    const stageResult: LoopStageResult = {
+      stage: input.stage,
+      success: false,
+      confidence: 0,
+      summary: message,
+      risks: [message],
+      retryCount: 0,
+      artifacts: [],
+      timestamp: new Date(),
+    }
+    return finalizeStageRunResult({
+      session: input.session,
+      stageResult,
+      paused: false,
+      failed: true,
+      stageReport: `# Stage ${input.stage}\n\n${message}`,
+      testOutput: '',
+    })
+  }
+
+  const payload = resolveTrdConvergencePaths(input.session)
+  const stateManager = new StateManager(input.runCwd)
+  await stateManager.initTrdSessions()
+  await stateManager.initDiscussions()
+  await mkdir(payload.cyclesDir, { recursive: true })
+
+  const persistedSnapshot = await readTrdConvergenceSnapshot(payload.snapshotPath)
+  let snapshot: TrdConvergenceSnapshot = persistedSnapshot || {
+    ...payload.snapshot,
+    maxCycles: input.runtime.trdConvergence.maxCycles,
+    discussRounds: input.runtime.trdConvergence.discussRounds,
+    reviewerIds: reviewers,
+  }
+  let activeCyclesDir = payload.cyclesDir
+  if (persistedSnapshot && persistedSnapshot.status !== 'running') {
+    const restartTimestamp = Date.now()
+    const archivePath = join(payload.cyclesDir, `state-archive-${restartTimestamp}.json`)
+    activeCyclesDir = join(payload.cyclesDir, `pass-${restartTimestamp}`)
+    await mkdir(activeCyclesDir, { recursive: true })
+    await writeFile(archivePath, `${JSON.stringify(persistedSnapshot, null, 2)}\n`, 'utf-8')
+    snapshot = {
+      schemaVersion: 1,
+      status: 'running',
+      maxCycles: input.runtime.trdConvergence.maxCycles,
+      discussRounds: input.runtime.trdConvergence.discussRounds,
+      reviewerIds: reviewers,
+      trdSessionId: persistedSnapshot.trdSessionId,
+      discussSessionId: persistedSnapshot.discussSessionId,
+      cycles: [],
+      updatedAt: new Date().toISOString(),
+    }
+    await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+      event: 'trd_convergence_pass_restarted',
+      stage: input.stage,
+      previousStatus: persistedSnapshot.status,
+      archivePath,
+      activeCyclesDir,
+    }, input.progressObserver)
+    await writeTrdConvergenceSnapshot(payload.snapshotPath, snapshot)
+  }
+  snapshot.maxCycles = input.runtime.trdConvergence.maxCycles
+  snapshot.discussRounds = input.runtime.trdConvergence.discussRounds
+  snapshot.reviewerIds = reviewers
+  snapshot.status = 'running'
+
+  let trdSessionId = snapshot.trdSessionId || payload.trdSessionId
+  let discussSessionId = snapshot.discussSessionId || payload.discussSessionId
+  let followUpPrompt = snapshot.cycles.at(-1)?.nextFollowUp
+  const trdCapability = await loadTrdCapabilityModule()
+  const discussCapability = await loadDiscussCapabilityModule()
+  const rerouteStage = input.session.stages.includes('prd_review')
+    ? 'prd_review'
+    : undefined
+
+  for (let cycle = snapshot.cycles.length + 1; cycle <= input.runtime.trdConvergence.maxCycles; cycle += 1) {
+    const cycleDir = join(activeCyclesDir, `cycle-${cycle}`)
+    await mkdir(cycleDir, { recursive: true })
+    const reviewOutputPath = join(cycleDir, 'review.json')
+    const arbitrationOutputPath = join(cycleDir, 'arbitration.json')
+    const trdContext = createCapabilityContext({
+      cwd: input.runCwd,
+      configPath: input.runtime.configPath,
+      sessionId: `loop-${input.session.id}-trd-${cycle}`,
+      metadata: { format: 'json' },
+    })
+    const discussContext = createCapabilityContext({
+      cwd: input.runCwd,
+      configPath: input.runtime.configPath,
+      sessionId: `loop-${input.session.id}-discuss-${cycle}`,
+      metadata: { format: 'json' },
+    })
+
+    await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+      event: 'trd_convergence_cycle_started',
+      stage: input.stage,
+      cycle,
+      trdSessionId,
+      discussSessionId,
+    }, input.progressObserver)
+
+    const trdBefore = await stateManager.listTrdSessions()
+    const trdBeforeIds = new Set(trdBefore.map((session) => session.id))
+    const trdInput = trdSessionId
+      ? {
+        prdPath: followUpPrompt || `Cycle ${cycle} revision requested by discuss arbitration.`,
+        options: {
+          config: input.runtime.configPath,
+          resume: trdSessionId,
+          autoAcceptDomains: true,
+        },
+      }
+      : {
+        prdPath: input.session.prdPath,
+        options: {
+          config: input.runtime.configPath,
+          autoAcceptDomains: true,
+        },
+      }
+    const trdRun = await runCapability(trdCapability, trdInput as never, trdContext)
+    if (trdRun.result.status !== 'completed') {
+      const failureSummary = trdRun.result.payload?.summary || 'TRD capability failed during convergence.'
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: false,
+        confidence: 0,
+        summary: failureSummary,
+        risks: [failureSummary],
+        retryCount: 0,
+        artifacts: [payload.snapshotPath],
+        timestamp: new Date(),
+      }
+      await writeTrdConvergenceSnapshot(payload.snapshotPath, {
+        ...snapshot,
+        trdSessionId,
+        discussSessionId,
+        status: 'failed',
+        updatedAt: new Date().toISOString(),
+      })
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport: `# Stage ${input.stage}\n\n${failureSummary}`,
+        testOutput: '',
+      })
+    }
+
+    const trdAfter = await stateManager.listTrdSessions()
+    trdSessionId = trdSessionId || findNewSessionId(trdBeforeIds, trdAfter)
+    const trdSession = trdSessionId ? await stateManager.loadTrdSession(trdSessionId) : null
+    if (!trdSessionId || !trdSession) {
+      const message = 'TRD convergence could not resolve the TRD session ID.'
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: false,
+        confidence: 0,
+        summary: message,
+        risks: [message],
+        retryCount: 0,
+        artifacts: [payload.snapshotPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport: `# Stage ${input.stage}\n\n${message}`,
+        testOutput: '',
+      })
+    }
+
+    const discussTopic = buildTrdConvergenceReviewTopic({
+      session: input.session,
+      cycle,
+      trdPath: trdSession.artifacts.trdPath,
+      openQuestionsPath: trdSession.artifacts.openQuestionsPath,
+    })
+    const discussBefore = await stateManager.listDiscussSessions()
+    const discussBeforeIds = new Set(discussBefore.map((session) => session.id))
+    const discussInput = discussSessionId
+      ? {
+        topic: discussTopic,
+        options: {
+          config: input.runtime.configPath,
+          resume: discussSessionId,
+          rounds: String(input.runtime.trdConvergence.discussRounds),
+          format: 'json',
+          converge: true,
+          interactive: false,
+          reviewers: reviewers.join(','),
+          all: false,
+          output: reviewOutputPath,
+        },
+      }
+      : {
+        topic: discussTopic,
+        options: {
+          config: input.runtime.configPath,
+          rounds: String(input.runtime.trdConvergence.discussRounds),
+          format: 'json',
+          converge: true,
+          interactive: false,
+          reviewers: reviewers.join(','),
+          all: false,
+          output: reviewOutputPath,
+        },
+      }
+    const discussRun = await runCapability(discussCapability, discussInput as never, discussContext)
+    if (discussRun.result.status !== 'completed') {
+      const failureSummary = discussRun.result.payload?.summary || 'Discuss capability failed during TRD convergence review.'
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: false,
+        confidence: 0,
+        summary: failureSummary,
+        risks: [failureSummary],
+        retryCount: 0,
+        artifacts: [payload.snapshotPath, reviewOutputPath].filter((path): path is string => Boolean(path)),
+        timestamp: new Date(),
+      }
+      await writeTrdConvergenceSnapshot(payload.snapshotPath, {
+        ...snapshot,
+        trdSessionId,
+        discussSessionId,
+        status: 'failed',
+        updatedAt: new Date().toISOString(),
+      })
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport: `# Stage ${input.stage}\n\n${failureSummary}`,
+        testOutput: '',
+      })
+    }
+
+    const discussAfter = await stateManager.listDiscussSessions()
+    const discoveredDiscussSessionId = findNewSessionId(discussBeforeIds, discussAfter)
+      || extractDiscussSessionIdFromSummary(discussRun.result.payload?.summary)
+    discussSessionId = discussSessionId || discoveredDiscussSessionId
+    if (!discussSessionId) {
+      const message = 'TRD convergence could not resolve the discuss session ID.'
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: false,
+        confidence: 0,
+        summary: message,
+        risks: [message],
+        retryCount: 0,
+        artifacts: [payload.snapshotPath, reviewOutputPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport: `# Stage ${input.stage}\n\n${message}`,
+        testOutput: '',
+      })
+    }
+    if (!existsSync(reviewOutputPath)) {
+      const message = `Discuss output missing at ${reviewOutputPath}`
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: false,
+        confidence: 0,
+        summary: message,
+        risks: [message],
+        retryCount: 0,
+        artifacts: [payload.snapshotPath, reviewOutputPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: true,
+        stageReport: `# Stage ${input.stage}\n\n${message}`,
+        testOutput: '',
+      })
+    }
+
+    const reviewPayload = JSON.parse(await readFile(reviewOutputPath, 'utf-8')) as Record<string, unknown>
+    const arbitration = await runTrdConvergenceArbitration({
+      config: input.config,
+      cwd: input.runCwd,
+      stage: input.stage,
+      reviewPayload,
+      trdPath: trdSession.artifacts.trdPath,
+      openQuestionsPath: trdSession.artifacts.openQuestionsPath,
+      cycle,
+    })
+    const nextFollowUp = arbitration.decision === 'revise_trd'
+      ? buildTrdConvergenceFollowUp(arbitration)
+      : undefined
+
+    await writeFile(arbitrationOutputPath, `${JSON.stringify(arbitration, null, 2)}\n`, 'utf-8')
+    snapshot.cycles.push({
+      cycle,
+      trdSessionId,
+      discussSessionId: discussSessionId || 'unknown',
+      trdPath: trdSession.artifacts.trdPath,
+      openQuestionsPath: trdSession.artifacts.openQuestionsPath,
+      reviewOutputPath,
+      arbitrationOutputPath,
+      decision: arbitration.decision,
+      rationale: arbitration.rationale,
+      requiredActions: arbitration.requiredActions,
+      nextFollowUp,
+      timestamp: new Date().toISOString(),
+    })
+    snapshot.trdSessionId = trdSessionId
+    snapshot.discussSessionId = discussSessionId
+    snapshot.updatedAt = new Date().toISOString()
+    await writeTrdConvergenceSnapshot(payload.snapshotPath, snapshot)
+
+    input.session.artifacts.trdConvergenceTrdSessionId = trdSessionId
+    input.session.artifacts.trdConvergenceDiscussSessionId = discussSessionId
+
+    await appendObservedEvent(input.session.artifacts.eventsPath, input.session.id, {
+      event: 'trd_convergence_cycle_completed',
+      stage: input.stage,
+      cycle,
+      decision: arbitration.decision,
+      rationale: arbitration.rationale,
+      trdSessionId,
+      discussSessionId,
+      reviewOutputPath,
+      arbitrationOutputPath,
+    }, input.progressObserver)
+
+    if (arbitration.decision === 'approved') {
+      snapshot.status = 'approved'
+      snapshot.updatedAt = new Date().toISOString()
+      await writeTrdConvergenceSnapshot(payload.snapshotPath, snapshot)
+      const stageReport = buildTrdConvergenceStageReport({
+        stage: input.stage,
+        decision: arbitration,
+        cycles: snapshot.cycles,
+        reviewPath: reviewOutputPath,
+        arbitrationPath: arbitrationOutputPath,
+        trdPath: trdSession.artifacts.trdPath,
+        nextAction: 'Proceed to the next loop stage.',
+      })
+      await writeFile(stageArtifactPath, stageReport, 'utf-8')
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: true,
+        confidence: 1,
+        summary: `TRD convergence approved after ${snapshot.cycles.length} cycle(s).`,
+        risks: [],
+        retryCount: 0,
+        artifacts: [stageArtifactPath, payload.snapshotPath, reviewOutputPath, arbitrationOutputPath, trdSession.artifacts.trdPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: false,
+        stageReport,
+        testOutput: '',
+      })
+    }
+
+    if (arbitration.decision === 'back_to_prd') {
+      if (!input.runtime.trdConvergence.autoBackToPrd || !rerouteStage) {
+        const message = `TRD convergence requested PRD fallback but reroute is unavailable. ${arbitration.rationale}`
+        const stageReport = buildTrdConvergenceStageReport({
+          stage: input.stage,
+          decision: arbitration,
+          cycles: snapshot.cycles,
+          reviewPath: reviewOutputPath,
+          arbitrationPath: arbitrationOutputPath,
+          trdPath: trdSession.artifacts.trdPath,
+          nextAction: 'Manual intervention required: automatic reroute to prd_review is disabled or unavailable.',
+        })
+        await writeFile(stageArtifactPath, stageReport, 'utf-8')
+        const stageResult: LoopStageResult = {
+          stage: input.stage,
+          success: false,
+          confidence: 0,
+          summary: message,
+          risks: [message],
+          retryCount: 0,
+          artifacts: [stageArtifactPath, payload.snapshotPath, reviewOutputPath, arbitrationOutputPath, trdSession.artifacts.trdPath],
+          timestamp: new Date(),
+        }
+        return finalizeStageRunResult({
+          session: input.session,
+          stageResult,
+          paused: false,
+          failed: true,
+          stageReport,
+          testOutput: '',
+        })
+      }
+
+      snapshot.status = 'back_to_prd'
+      snapshot.updatedAt = new Date().toISOString()
+      await writeTrdConvergenceSnapshot(payload.snapshotPath, snapshot)
+      const stageReport = buildTrdConvergenceStageReport({
+        stage: input.stage,
+        decision: arbitration,
+        cycles: snapshot.cycles,
+        reviewPath: reviewOutputPath,
+        arbitrationPath: arbitrationOutputPath,
+        trdPath: trdSession.artifacts.trdPath,
+        nextAction: `Route back to ${rerouteStage} and revise PRD before re-entering TRD convergence.`,
+      })
+      await writeFile(stageArtifactPath, stageReport, 'utf-8')
+      const rerouteReason = `TRD convergence routed back to prd_review: ${arbitration.rationale}`
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: true,
+        confidence: 0.6,
+        summary: rerouteReason,
+        risks: [arbitration.rationale],
+        retryCount: 0,
+        artifacts: [stageArtifactPath, payload.snapshotPath, reviewOutputPath, arbitrationOutputPath, trdSession.artifacts.trdPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: false,
+        rerouteToStage: rerouteStage,
+        rerouteReason,
+        stageReport,
+        testOutput: '',
+      })
+    }
+
+    followUpPrompt = nextFollowUp
+    if (cycle >= input.runtime.trdConvergence.maxCycles) {
+      const rerouteReason = `TRD convergence exceeded max cycles (${input.runtime.trdConvergence.maxCycles}); route back to prd_review.`
+      const stageReport = buildTrdConvergenceStageReport({
+        stage: input.stage,
+        decision: arbitration,
+        cycles: snapshot.cycles,
+        reviewPath: reviewOutputPath,
+        arbitrationPath: arbitrationOutputPath,
+        trdPath: trdSession.artifacts.trdPath,
+        nextAction: input.runtime.trdConvergence.autoBackToPrd && rerouteStage
+          ? `Route back to ${rerouteStage} and continue with updated PRD.`
+          : 'Manual intervention required: convergence exhausted and reroute unavailable.',
+      })
+      await writeFile(stageArtifactPath, stageReport, 'utf-8')
+      if (!input.runtime.trdConvergence.autoBackToPrd || !rerouteStage) {
+        const stageResult: LoopStageResult = {
+          stage: input.stage,
+          success: false,
+          confidence: 0,
+          summary: rerouteReason,
+          risks: [rerouteReason],
+          retryCount: 0,
+          artifacts: [stageArtifactPath, payload.snapshotPath, reviewOutputPath, arbitrationOutputPath, trdSession.artifacts.trdPath],
+          timestamp: new Date(),
+        }
+        return finalizeStageRunResult({
+          session: input.session,
+          stageResult,
+          paused: false,
+          failed: true,
+          stageReport,
+          testOutput: '',
+        })
+      }
+
+      snapshot.status = 'back_to_prd'
+      snapshot.updatedAt = new Date().toISOString()
+      await writeTrdConvergenceSnapshot(payload.snapshotPath, snapshot)
+      const stageResult: LoopStageResult = {
+        stage: input.stage,
+        success: true,
+        confidence: 0.6,
+        summary: rerouteReason,
+        risks: [arbitration.rationale || rerouteReason],
+        retryCount: 0,
+        artifacts: [stageArtifactPath, payload.snapshotPath, reviewOutputPath, arbitrationOutputPath, trdSession.artifacts.trdPath],
+        timestamp: new Date(),
+      }
+      return finalizeStageRunResult({
+        session: input.session,
+        stageResult,
+        paused: false,
+        failed: false,
+        rerouteToStage: rerouteStage,
+        rerouteReason,
+        stageReport,
+        testOutput: '',
+      })
+    }
+  }
+
+  const fallbackSummary = 'TRD convergence ended unexpectedly without a terminal decision.'
+  const stageResult: LoopStageResult = {
+    stage: input.stage,
+    success: false,
+    confidence: 0,
+    summary: fallbackSummary,
+    risks: [fallbackSummary],
+    retryCount: 0,
+    artifacts: [payload.snapshotPath],
+    timestamp: new Date(),
+  }
+  return finalizeStageRunResult({
+    session: input.session,
+    stageResult,
+    paused: false,
+    failed: true,
+    stageReport: `# Stage ${input.stage}\n\n${fallbackSummary}`,
+    testOutput: '',
+  })
+}
+
 async function runSingleStage(
   stage: LoopStageName,
   session: LoopSession,
@@ -2404,6 +3242,18 @@ async function runSingleStage(
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
   progressObserver?: LoopProgressObserver,
 ): Promise<StageRunResult> {
+  if (stage === 'trd_generation' && runtime.trdConvergence.enabled) {
+    return runTrdConvergenceStage({
+      stage,
+      session,
+      config,
+      runtime,
+      runCwd,
+      dryRun,
+      progressObserver,
+    })
+  }
+
   const stageArtifactPath = join(session.artifacts.sessionDir, `${stage}.md`)
   const knowledgeContext = session.artifacts.knowledgeSummaryDir && session.artifacts.knowledgeSchemaPath
     ? await renderKnowledgeContext({
@@ -2730,6 +3580,11 @@ async function continueSession(
   commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
   progressObserver?: LoopProgressObserver,
 ): Promise<LoopExecutionResult> {
+  let trdRerouteCount = session.stageResults.filter((result) =>
+    result.stage === 'trd_generation' && result.resultType === 'rework'
+  ).length
+  const trdRerouteSafetyLimit = Math.max(3, runtime.maxIterations)
+
   for (let i = session.currentStageIndex; i < session.stages.length; i++) {
     const stage = session.stages[i]
     const timeoutMs = applyLoopProviderTimeouts(planner, executor, runtime, stage, timeoutTier)
@@ -3308,6 +4163,12 @@ async function continueSession(
       }
     }
 
+    const rerouteToStage = stageRun?.rerouteToStage
+    const rerouteTargetIndex = rerouteToStage ? session.stages.indexOf(rerouteToStage) : -1
+    const nextAction = rerouteTargetIndex >= 0
+      ? `回退到 ${rerouteToStage} 阶段继续收敛。`
+      : nextLoopAction(session, i)
+
     const completedNotification = await dispatchStageNotification({
       config,
       cwd: runCwd,
@@ -3321,7 +4182,7 @@ async function continueSession(
         stage,
         summary: completionStageResult?.summary || `阶段 ${stage} 已完成。`,
         blocker: completionStageResult?.risks[0],
-        nextAction: nextLoopAction(session, i),
+        nextAction,
         aiRoster: buildLoopAiRoster(runtime, stage),
       },
       severity: 'info',
@@ -3341,7 +4202,39 @@ async function continueSession(
       attempted: completedNotification.dispatch?.attempted ?? 0,
       success: completionStageResult?.success ?? true,
       confidence: completionStageResult?.confidence ?? 1,
+      ...(rerouteToStage ? { rerouteToStage } : {}),
     }, progressObserver)
+
+    if (rerouteTargetIndex >= 0) {
+      if (stage === 'trd_generation') {
+        trdRerouteCount += 1
+        if (trdRerouteCount > trdRerouteSafetyLimit) {
+          return markSessionFailed(
+            session,
+            stage,
+            `TRD convergence rerouted to prd_review too many times (${trdRerouteCount}/${trdRerouteSafetyLimit}).`,
+            stateManager,
+            notificationRouter,
+            config,
+            runtime,
+            runCwd,
+            progressObserver
+          )
+        }
+      }
+      await appendObservedEvent(session.artifacts.eventsPath, session.id, {
+        event: 'stage_rerouted',
+        stage,
+        rerouteToStage,
+        reason: stageRun?.rerouteReason || completionStageResult?.summary || 'Stage requested reroute.',
+      }, progressObserver)
+      session.currentStageIndex = rerouteTargetIndex
+      clearLoopReworkState(session)
+      session.updatedAt = new Date()
+      await saveLoopSessionWithObserver(stateManager, session, progressObserver)
+      i = rerouteTargetIndex - 1
+      continue
+    }
 
     session.currentStageIndex = i + 1
     clearLoopReworkState(session)
@@ -3430,7 +4323,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   }
 
   const config = loadConfig(ctx.configPath)
-  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers)
+  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers, ctx.configPath)
   const executionHost = resolveExecutionHost(prepared)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
@@ -3795,7 +4688,7 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   }
 
   const config = loadConfig(ctx.configPath)
-  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers)
+  const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers, ctx.configPath)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const resumeComplexity = resolveSessionComplexityTier(session, prepared.complexity)
   const routingDecision = isRoutingEnabled(config)

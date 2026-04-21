@@ -13,6 +13,7 @@ export type {
   LoopCommandsConfig,
   LoopConfig,
   LoopHumanConfirmationConfig,
+  LoopTrdConvergenceConfig,
   LoopStageName,
   LoopVerificationStepConfig,
   MacosNotificationProviderConfig,

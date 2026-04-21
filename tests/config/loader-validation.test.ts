@@ -250,4 +250,43 @@ describe('loadConfig - validation', () => {
       'Config error: capabilities.loop.stage_bindings.implementation has unknown binding key "fallback"'
     )
   })
+
+  it('throws when trd convergence is enabled without enough reviewers', () => {
+    const bad = structuredClone(validConfig)
+    bad.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude'],
+    }
+    bad.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(bad)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.trd_convergence requires at least 2 distinct reviewers when enabled'
+    )
+  })
+
+  it('throws when trd convergence discuss rounds is not a positive integer', () => {
+    const bad = structuredClone(validConfig)
+    bad.capabilities.discuss = {
+      enabled: true,
+      reviewers: ['claude', 'route-codex'],
+    }
+    bad.capabilities.loop = {
+      enabled: true,
+      trd_convergence: {
+        enabled: true,
+        discuss_rounds: -1,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(bad)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.loop.trd_convergence.discuss_rounds must be a positive integer'
+    )
+  })
 })

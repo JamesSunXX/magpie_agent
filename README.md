@@ -16,14 +16,14 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `discuss`：多模型讨论
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
 - `quality unit-test-eval`：检查单测质量，可选顺手跑测试
-- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进，每段都会留下交接卡和可恢复现场
+- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进；其中 `trd_generation` 默认会自动收敛循环，每段都会留下交接卡和可恢复现场
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆
 - `tui`：任务工作台
-- `init`、`stats`
+- `init`、`doctor`、`stats`
 
 更细的命令入口和代码位置见 [`docs/references/capabilities.md`](./docs/references/capabilities.md)。
 
@@ -58,34 +58,37 @@ npm link
 # 1) 生成或升级配置
 magpie init
 
-# 2) 打开任务入口
+# 2) 体检当前环境和配置
+magpie doctor
+
+# 3) 打开任务入口
 magpie tui
 
-# 3) 看当前配置里的评审人
+# 4) 看当前配置里的评审人
 magpie reviewers list
 
-# 4) 评审本地改动
+# 5) 评审本地改动
 magpie review --local
 
-# 5) 多模型讨论
+# 6) 多模型讨论
 magpie discuss "Should this repo fully migrate review to capability runtime?"
 
-# 6) 生成 TRD
+# 7) 生成 TRD
 magpie trd ./docs/prd.md
 
-# 7) 评估当前仓库的单测质量
+# 8) 评估当前仓库的单测质量
 magpie quality unit-test-eval . --run-tests
 
-# 8) 目标闭环执行
+# 9) 目标闭环执行
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md
 
-# 9) 启动后台 harness 队列（需要长期跑任务时）
+# 10) 启动后台 harness 队列（需要长期跑任务时）
 magpie harness-server start
 
-# 10) harness 闭环
+# 11) harness 闭环
 magpie harness submit "Deliver checkout v2" --prd ./docs/prd.md
 
-# 11) 查看后台状态或接回输出
+# 12) 查看后台状态或接回输出
 magpie harness-server status
 magpie harness attach <session-id>
 magpie harness resume <session-id>
@@ -96,19 +99,19 @@ magpie harness status <session-id> --node build-ui
 magpie harness approve <session-id> --node release-approval --by operator
 magpie harness reject <session-id> --by operator --note "Need safer split"
 
-# 12) 前台 harness 被打断后可直接恢复
+# 13) 前台 harness 被打断后可直接恢复
 前台运行的 `magpie harness submit` 如果被 `Ctrl+C`、终端挂断或系统终止打断，会先把当前会话改成可恢复状态，再退出；之后直接用 `magpie harness resume <session-id>` 接着跑。如果前台进程已经没了但会话还挂着“进行中”，`status`、`list`、`resume`、`attach` 和 `inspect` 也会先自动把它收成可恢复状态。
 
-# 13) 启动飞书 IM 回调服务
+# 14) 启动飞书 IM 回调服务
 magpie im-server start --foreground
 
-# 14) 需要后台托管时显式交给 tmux
+# 15) 需要后台托管时显式交给 tmux
 magpie loop run "Deliver checkout v2" --prd ./docs/prd.md --host tmux
 
-# 15) 跑工程 workflow
+# 16) 跑工程 workflow
 magpie workflow docs-sync
 
-# 16) 查看长期记忆
+# 17) 查看长期记忆
 magpie memory show --project
 ```
 
@@ -117,6 +120,8 @@ magpie memory show --project
 如果想把 `unit_mock_test` 复用到 Java、Go 或别的项目，不一定非要沿用默认的 `unit_test` / `mock_test` 命令名。现在可以直接在 `capabilities.loop.commands.unit_mock_test_steps` 里按顺序写项目自己的检查步骤，每一步自己起名字、自己填命令；只有没配这组步骤时，才会回退到原来的旧配置。
 
 `loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`；生效的评审人列表必须至少有 2 个不同评审人，否则配置会直接报错。`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
+
+`loop` 的 `trd_generation` 阶段现在默认带自动收敛循环：会先生成 TRD，再用 `discuss` 做多模型审查，由统一仲裁给出 `approved / revise_trd / back_to_prd`。遇到 `revise_trd` 会自动接着同一条 TRD 会话补充，再进下一轮审查；遇到 `back_to_prd` 或超过 `max_cycles` 仍未收敛，会自动回退到 `prd_review`。这一段默认配置在 `capabilities.loop.trd_convergence`：`enabled=true`、`max_cycles=5`、`discuss_rounds=2`、`auto_back_to_prd=true`，`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。每轮审查和仲裁都会落盘到 loop 会话目录，`loop resume` 会从已完成轮次之后继续。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。默认的联调阶段会跑 `tests/e2e`，如果仓库有自己的联调命令，可以在 `capabilities.loop.commands.integration_test` 里改掉。
 
