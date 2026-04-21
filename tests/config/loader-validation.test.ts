@@ -251,6 +251,30 @@ describe('loadConfig - validation', () => {
     )
   })
 
+  it('throws when capabilities.safety.allow_dangerous_commands is not boolean', () => {
+    const bad = structuredClone(validConfig) as Record<string, any>
+    bad.capabilities.safety = {
+      allow_dangerous_commands: 'true',
+    }
+    vi.mocked(parse).mockReturnValue(bad as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.safety.allow_dangerous_commands must be a boolean'
+    )
+  })
+
+  it('throws when capabilities.safety.dangerous_patterns is not an array', () => {
+    const bad = structuredClone(validConfig) as Record<string, any>
+    bad.capabilities.safety = {
+      dangerous_patterns: 'rm -rf',
+    }
+    vi.mocked(parse).mockReturnValue(bad as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.safety.dangerous_patterns must be an array'
+    )
+  })
+
   it('throws when trd convergence is enabled without enough reviewers', () => {
     const bad = structuredClone(validConfig)
     bad.capabilities.discuss = {

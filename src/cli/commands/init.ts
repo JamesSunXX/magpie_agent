@@ -214,6 +214,17 @@ export interface CollectInitInputsResult {
   operationsOptions?: InitOperationsOptions
 }
 
+interface InitNextStepsOptions {
+  log?: LogFn
+}
+
+export function printInitNextSteps(configPath: string, options: InitNextStepsOptions = {}): void {
+  const log = options.log || console.log
+  log(chalk.cyan('\nNext steps:'))
+  log(`  1. ${chalk.white(`magpie doctor --config ${configPath}`)}`)
+  log('  2. Run your first task (for example: `magpie review --local`)')
+}
+
 export async function collectInitInputs(
   options: InitCommandOptions,
   deps: CollectInitInputsDependencies = {}
@@ -299,6 +310,9 @@ export const initCommand = new Command('init')
         if (!wroteConfig && result.content) {
           console.log(`\n${result.content}`)
         }
+        if (wroteConfig) {
+          printInitNextSteps(result.configPath)
+        }
         return
       }
 
@@ -326,6 +340,7 @@ export const initCommand = new Command('init')
       console.log(chalk.green(`\n✓ ${wroteConfig ? 'Config created at' : 'Dry run for'}: ${result.configPath}`))
       if (wroteConfig) {
         console.log(chalk.dim('Edit this file to customize your reviewers and prompts.'))
+        printInitNextSteps(result.configPath)
       } else if (result.content) {
         console.log(`\n${result.content}`)
       }

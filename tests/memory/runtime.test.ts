@@ -8,6 +8,7 @@ import {
   getProjectMemoryPath,
   projectMemoryKey,
   getUserMemoryPath,
+  isStablePromotedKnowledge,
   loadPersistentMemoryContext,
   syncProjectMemoryFromPromotedKnowledge,
 } from '../../src/memory/runtime.js'
@@ -80,6 +81,40 @@ describe('memory runtime', () => {
     expect(content).toContain('## Promoted Knowledge')
     expect(content).toContain('Prefer staged rollout')
     expect(content.match(/Prefer staged rollout/g)).toHaveLength(1)
+  })
+
+  it('filters uncertain promoted knowledge before writing project memory', async () => {
+    magpieHome = tempDir('magpie-memory-stability-')
+    process.env.MAGPIE_HOME = magpieHome
+
+    const repoRoot = tempDir('magpie-memory-repo-')
+    await ensureMemoryFiles(repoRoot)
+
+    await syncProjectMemoryFromPromotedKnowledge(repoRoot, [
+      {
+        type: 'decision',
+        title: 'Maybe use feature flag',
+        summary: '可能要先灰度，待确认后再定。',
+        sourceSessionId: 'loop-1',
+        status: 'promoted',
+      },
+      {
+        type: 'workflow-rule',
+        title: 'Always keep rollback command',
+        summary: 'Every release flow must keep a verified rollback command.',
+        sourceSessionId: 'loop-2',
+        status: 'promoted',
+      },
+    ] as KnowledgeCandidate[])
+
+    const content = readFileSync(getProjectMemoryPath(repoRoot), 'utf-8')
+    expect(content).toContain('Always keep rollback command')
+    expect(content).not.toContain('Maybe use feature flag')
+    expect(isStablePromotedKnowledge({
+      title: 'Maybe use feature flag',
+      summary: 'possible rollback path, TBD.',
+      status: 'promoted',
+    })).toBe(false)
   })
 
   it('uses the same project key for a main repo and its worktree when no remote exists', () => {

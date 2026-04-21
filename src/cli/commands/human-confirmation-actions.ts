@@ -91,7 +91,7 @@ async function runAutoDiscuss(cwd: string, configPath: string | undefined, topic
   const before = await stateManager.listDiscussSessions()
   const beforeIds = new Set(before.map((session) => session.id))
 
-  const registry = createDefaultCapabilityRegistry()
+  const registry = createDefaultCapabilityRegistry({ configPath })
   const capability = getTypedCapability<
     DiscussCapabilityInput,
     DiscussPreparedInput,

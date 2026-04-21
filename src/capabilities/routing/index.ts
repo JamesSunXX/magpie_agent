@@ -10,6 +10,18 @@ import type {
   RoutingSignalBreakdown,
 } from '../../platform/config/types.js'
 
+export type RuntimeCapabilityId =
+  | 'review'
+  | 'discuss'
+  | 'trd'
+  | 'loop'
+  | 'harness'
+  | 'issue-fix'
+  | 'docs-sync'
+  | 'post-merge-regression'
+  | 'quality/unit-test-eval'
+  | 'stats'
+
 const DEFAULT_THRESHOLDS = {
   simple_max: 2,
   standard_max: 5,
@@ -64,6 +76,66 @@ const DEFAULT_REVIEWER_FALLBACK_ORDER: Record<ComplexityTier, string[]> = {
   simple: ['route-gemini', 'route-codex', 'route-architect'],
   standard: ['route-codex', 'route-architect', 'route-gemini'],
   complex: ['route-gemini', 'route-codex', 'route-architect'],
+}
+
+function resolveRuntimeCapabilityToggle(
+  config: MagpieConfigV2,
+  capabilityId: RuntimeCapabilityId
+): boolean | undefined {
+  switch (capabilityId) {
+    case 'review':
+      return config.capabilities.review?.enabled
+    case 'discuss':
+      return config.capabilities.discuss?.enabled
+    case 'trd':
+      return config.capabilities.trd?.enabled
+    case 'loop':
+      return config.capabilities.loop?.enabled
+    case 'harness':
+      return config.capabilities.harness?.enabled
+    case 'issue-fix':
+      return config.capabilities.issue_fix?.enabled
+    case 'docs-sync':
+      return config.capabilities.docs_sync?.enabled
+    case 'post-merge-regression':
+      return config.capabilities.post_merge_regression?.enabled
+    case 'quality/unit-test-eval':
+      return config.capabilities.quality?.unitTestEval?.enabled
+    case 'stats':
+      return true
+    default:
+      return true
+  }
+}
+
+/**
+ * Capability toggles default to enabled to preserve backwards compatibility with
+ * existing configs. Only an explicit `enabled: false` disables a capability.
+ */
+export function isRuntimeCapabilityEnabled(
+  config: MagpieConfigV2,
+  capabilityId: RuntimeCapabilityId
+): boolean {
+  return resolveRuntimeCapabilityToggle(config, capabilityId) !== false
+}
+
+export function listEnabledRuntimeCapabilities(
+  config: MagpieConfigV2
+): RuntimeCapabilityId[] {
+  const all: RuntimeCapabilityId[] = [
+    'review',
+    'discuss',
+    'trd',
+    'loop',
+    'harness',
+    'issue-fix',
+    'docs-sync',
+    'post-merge-regression',
+    'quality/unit-test-eval',
+    'stats',
+  ]
+
+  return all.filter((capabilityId) => isRuntimeCapabilityEnabled(config, capabilityId))
 }
 
 function cloneBinding(binding: ModelRouteBinding): ModelRouteBinding {

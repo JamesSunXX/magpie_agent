@@ -16,12 +16,12 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `discuss`：多模型讨论
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
 - `quality unit-test-eval`：检查单测质量，可选顺手跑测试
-- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进；其中 `trd_generation` 默认会自动收敛循环，每段都会留下交接卡和可恢复现场
+- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进；其中 `trd_generation` 默认会自动收敛循环，每段都会留下交接卡和可恢复现场，长流程会自动压缩上下文并优先复用压缩摘要
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
-- `memory`：查看、编辑、提炼用户记忆和项目记忆
+- `memory`：查看、编辑、提炼用户记忆和项目记忆；只会沉淀稳定结论
 - `tui`：任务工作台
 - `init`、`doctor`、`stats`
 
@@ -121,6 +121,10 @@ magpie memory show --project
 
 `loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`；生效的评审人列表必须至少有 2 个不同评审人，否则配置会直接报错。`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
 
+危险命令现在默认会被拦截。只有显式把 `capabilities.safety.allow_dangerous_commands` 设为 `true` 后，才允许继续走确认执行。
+
+大部分主干能力都支持独立启停（`capabilities.<name>.enabled`）。关闭后，对应命令会在入口直接提示“当前关闭、怎么开启、可替代命令”，不会继续执行。
+
 `loop` 的 `trd_generation` 阶段现在默认带自动收敛循环：会先生成 TRD，再用 `discuss` 做多模型审查，由统一仲裁给出 `approved / revise_trd / back_to_prd`。遇到 `revise_trd` 会自动接着同一条 TRD 会话补充，再进下一轮审查；遇到 `back_to_prd` 或超过 `max_cycles` 仍未收敛，会自动回退到 `prd_review`。这一段默认配置在 `capabilities.loop.trd_convergence`：`enabled=true`、`max_cycles=5`、`discuss_rounds=2`、`auto_back_to_prd=true`，`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。每轮审查和仲裁都会落盘到 loop 会话目录，`loop resume` 会从已完成轮次之后继续。
 
 `loop` 在自动提交时会用 AI 生成中文提交信息；默认跟随执行模型，也可通过 `capabilities.loop.auto_commit_model` 单独覆盖。默认的联调阶段会跑 `tests/e2e`，如果仓库有自己的联调命令，可以在 `capabilities.loop.commands.integration_test` 里改掉。
@@ -129,11 +133,24 @@ magpie memory show --project
 
 `loop` 也可以通过 `capabilities.loop.mr.enabled` 控制是否在整条开发和验证成功结束后自动创建 1 个 GitLab MR。MR 创建失败不会把开发结果改成失败，但会把“需要人工补做 MR”的结果单独落盘并发通知。
 
+`loop` 每次阶段执行都会按 6000 字符预算生成任务知识上下文；超过预算时会自动压缩并保留关键段落（目标、当前状态、保留结论、待办、证据、长期记忆）。压缩结果会写到会话目录 `knowledge/summaries/context-compacted.md`。会话已经有阶段历史，或处于人工确认暂停时，后续执行会优先使用这份压缩摘要，减少长流程续跑时的上下文膨胀。
+
+`memory` 同步项目记忆时会过滤不稳定条目。带有明显不确定表达（例如 `maybe`、`possible`、`TBD`、`待确认`、`可能`）或标记为低稳定性的内容，不会写入项目记忆；只有稳定且可复用的结论才会被沉淀。
+
 `harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。评审、仲裁和附加检查如果命中已知的 Gemini 模型不存在错误，会自动切到 Kiro 重试当前步骤，避免整轮直接挂掉。`harness` 进入内层 `loop` 前仍会把内层确认策略压成 `manual_only`，避免外层多模型评审和内层阶段确认叠两次。现在如果内层 `loop` 失败但已经留下可继续的工作区和下一步线索，外层 `harness` 会停在 `blocked`，后续直接 `harness resume` 就会沿用同一个开发现场继续；重新执行同样的 `harness submit` 也会优先接回最近一条同目标、同 PRD 的可恢复会话，而不是再开一条重复会话。人工确认不再要求手改 `human_confirmation.md`：可以直接用 `magpie harness confirm <session-id> --approve` 或 `--reject --reason "..."` 处理关联的内层 loop 决策，批准后会自动恢复 harness，驳回后会自动发起 discuss 并生成新的短决策卡。真正的确认状态保存在关联 loop 会话里，`human_confirmation.md` 只保留成摘要和旧会话兼容层。每一轮会把参与者、评审结论、仲裁结果和下一步单独落盘，所以 `status`、`inspect`、`attach` 和 TUI 都能直接看最近一轮，`status/inspect` 也可以用 `--cycle` 指定回看某一轮。图谱会话已经能在 `status`、`inspect` 和 `list` 里看到图谱总览；需要钻到单个节点时，可以用 `status --node <id>` 或 `inspect --node <id>`。现在在 `magpie tui` 里选中带图谱的 harness 会话后按 `Enter`，会进入独立图谱工作台：可以切换节点、看节点详情、区分“当前要注意什么”和“最近发生了什么”，还可以直接批准/拒绝等待中的 gate，或者跳到关联 loop/harness 会话的现有入口。如果图谱卡在“等批准”，也可以继续用 `harness approve` 或 `harness reject` 对整张图或指定节点写入决定，结果会落盘并立刻影响后续可运行节点。
 
 如果开启阶段通知里的 `stage_ai` 摘要，可以用 `integrations.notifications.stage_ai.timeout_ms` 控制它最长等多久；超时后会直接回退到内置摘要，不会卡住主流程。
 
 `trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`，`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
+
+## 灰度发布与回退
+
+建议把发布拆成“先灰度、再全量”两步：
+
+1. 灰度阶段只对小范围仓库开启 `loop` / `harness` / `workflow`，先观察至少一个完整闭环（提交、恢复、验证、人工确认）。
+2. 灰度期间保持 `capabilities.safety.allow_dangerous_commands=false`，避免高风险命令误放开。
+3. 如果灰度期间出现异常，立刻把相关能力开关改回 `false`（例如 `capabilities.loop.enabled=false`、`capabilities.harness.enabled=false`），并保留当前 `.magpie/sessions/` 现场用于排查。
+4. 回退后优先使用 `magpie loop inspect`、`magpie harness inspect` 和会话 `failures/` 目录确认失败原因，再决定是否重新灰度。
 
 ## Feishu IM 控制
 

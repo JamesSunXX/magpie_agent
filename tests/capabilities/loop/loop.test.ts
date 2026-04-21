@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { execSync } from 'child_process'
@@ -429,6 +429,14 @@ describe('loop capability', () => {
     expect(existsSync(result.result.session!.artifacts.documentPlanPath!)).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'goal.md'))).toBe(true)
     expect(existsSync(join(result.result.session!.artifacts.knowledgeSummaryDir, 'plan.md'))).toBe(true)
+    expect(result.result.session?.artifacts.sessionWorkspaceDir).toBeTruthy()
+    expect(result.result.session?.artifacts.sessionUploadsDir).toBeTruthy()
+    expect(result.result.session?.artifacts.sessionOutputsDir).toBeTruthy()
+    expect(result.result.session?.artifacts.sessionTempDir).toBeTruthy()
+    expect(existsSync(result.result.session!.artifacts.sessionWorkspaceDir!)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.sessionUploadsDir!)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.sessionOutputsDir!)).toBe(true)
+    expect(existsSync(result.result.session!.artifacts.sessionTempDir!)).toBe(true)
     expect(readFileSync(result.result.session!.artifacts.knowledgeStatePath!, 'utf-8')).toContain('"currentStage": "completed"')
   })
 
@@ -632,6 +640,15 @@ describe('loop capability', () => {
       title: 'Implementation',
     })
     expect(result.result.session?.stageResults[0]?.stage).toBe('code_development')
+    const normalizedSessionDir = realpathSync(sessionDir)
+    expect(result.result.session?.artifacts.sessionWorkspaceDir).toBe(join(normalizedSessionDir, 'workspace'))
+    expect(result.result.session?.artifacts.sessionUploadsDir).toBe(join(normalizedSessionDir, 'uploads'))
+    expect(result.result.session?.artifacts.sessionOutputsDir).toBe(join(normalizedSessionDir, 'outputs'))
+    expect(result.result.session?.artifacts.sessionTempDir).toBe(join(normalizedSessionDir, 'temp'))
+    expect(existsSync(join(sessionDir, 'workspace'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'uploads'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'outputs'))).toBe(true)
+    expect(existsSync(join(sessionDir, 'temp'))).toBe(true)
   })
 
   it('publishes a Feishu task status update when a loop task completes', async () => {

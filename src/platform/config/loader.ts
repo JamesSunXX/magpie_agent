@@ -22,7 +22,7 @@ import type {
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 23
+export const CURRENT_CONFIG_VERSION = 24
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 const LOOP_STAGE_NAMES: LoopStageName[] = [
@@ -272,7 +272,15 @@ function validateOptionalAgent(name: string, agent: string | undefined): void {
   }
 }
 
+function validateOptionalBoolean(name: string, value: unknown): void {
+  if (value === undefined) return
+  if (typeof value !== 'boolean') {
+    throw new Error(`Config error: ${name} must be a boolean`)
+  }
+}
+
 function validateTrdConfig(trd: TrdConfig, reviewers: Record<string, ReviewerConfig>): void {
+  validateOptionalBoolean('trd.enabled', trd.enabled)
   validateReviewerIdArray('trd.default_reviewers', trd.default_reviewers, reviewers)
 
   if (trd.max_rounds !== undefined && trd.max_rounds <= 0) {
@@ -283,6 +291,7 @@ function validateTrdConfig(trd: TrdConfig, reviewers: Record<string, ReviewerCon
 function validateHarnessConfig(harness: HarnessConfig | undefined, reviewers: Record<string, ReviewerConfig>): void {
   if (!harness) return
 
+  validateOptionalBoolean('capabilities.harness.enabled', harness.enabled)
   validateReviewerIdArray('capabilities.harness.default_reviewers', harness.default_reviewers, reviewers)
 
   if (harness.validator_checks === undefined) {
@@ -599,6 +608,16 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
       logger.warn(`providers.${name}.api_key is empty (ok if using CLI provider)`)
     }
   }
+
+  validateOptionalBoolean('capabilities.review.enabled', config.capabilities.review?.enabled)
+  validateOptionalBoolean('capabilities.discuss.enabled', config.capabilities.discuss?.enabled)
+  validateOptionalBoolean('capabilities.trd.enabled', config.capabilities.trd?.enabled)
+  validateOptionalBoolean('capabilities.routing.enabled', config.capabilities.routing?.enabled)
+  validateOptionalBoolean('capabilities.issue_fix.enabled', config.capabilities.issue_fix?.enabled)
+  validateOptionalBoolean('capabilities.docs_sync.enabled', config.capabilities.docs_sync?.enabled)
+  validateOptionalBoolean('capabilities.post_merge_regression.enabled', config.capabilities.post_merge_regression?.enabled)
+  validateOptionalBoolean('capabilities.loop.enabled', config.capabilities.loop?.enabled)
+  validateOptionalBoolean('capabilities.quality.unitTestEval.enabled', config.capabilities.quality?.unitTestEval?.enabled)
 
   if (config.trd) {
     validateTrdConfig(config.trd, config.reviewers)

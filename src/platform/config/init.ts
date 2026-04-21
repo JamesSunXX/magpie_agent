@@ -827,6 +827,7 @@ capabilities:
     check_convergence: true
     reviewers: [${defaultReviewers.join(', ')}]
   trd:
+    enabled: true
     default_reviewers: [${defaultReviewers.join(', ')}]
     max_rounds: 3
     language: zh
@@ -850,6 +851,7 @@ capabilities:
       min_coverage: 0.8
       output_format: markdown
   harness:
+    enabled: true
     default_reviewers: [${harnessDefaults.default_reviewers.join(', ')}]
     validator_checks:
       - tool: ${harnessDefaults.validator_checks[0].tool}

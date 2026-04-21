@@ -3,6 +3,8 @@ import { existsSync, realpathSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
 
+export type SessionScopedDirKind = 'workspace' | 'uploads' | 'outputs' | 'temp'
+
 /**
  * Resolve the Magpie data directory, allowing tests and sandboxes to override it.
  */
@@ -61,6 +63,15 @@ export function getRepoCapabilitySessionsDir(cwd: string, capability: string): s
 
 export function getRepoSessionDir(cwd: string, capability: string, sessionId: string): string {
   return join(getRepoCapabilitySessionsDir(cwd, capability), sessionId)
+}
+
+export function getRepoSessionScopedDir(
+  cwd: string,
+  capability: string,
+  sessionId: string,
+  kind: SessionScopedDirKind
+): string {
+  return join(getRepoSessionDir(cwd, capability, sessionId), kind)
 }
 
 export function getRepoSessionFile(cwd: string, capability: string, sessionId: string): string {

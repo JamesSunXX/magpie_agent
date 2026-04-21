@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -1923,6 +1923,16 @@ integrations:
       expect(result.session?.artifacts.workspaceMode).toBe('worktree')
       expect(result.session?.artifacts.workspacePath).toBe('/tmp/worktrees/sch/run-1')
       expect(result.session?.artifacts.worktreeBranch).toBe('sch/run-1')
+      const harnessSessionDir = realpathSync(join(dir, '.magpie', 'sessions', 'harness', result.session!.id))
+      expect(result.session?.artifacts.sessionDir).toBe(harnessSessionDir)
+      expect(result.session?.artifacts.sessionWorkspaceDir).toBe(join(harnessSessionDir, 'workspace'))
+      expect(result.session?.artifacts.sessionUploadsDir).toBe(join(harnessSessionDir, 'uploads'))
+      expect(result.session?.artifacts.sessionOutputsDir).toBe(join(harnessSessionDir, 'outputs'))
+      expect(result.session?.artifacts.sessionTempDir).toBe(join(harnessSessionDir, 'temp'))
+      expect(existsSync(join(harnessSessionDir, 'workspace'))).toBe(true)
+      expect(existsSync(join(harnessSessionDir, 'uploads'))).toBe(true)
+      expect(existsSync(join(harnessSessionDir, 'outputs'))).toBe(true)
+      expect(existsSync(join(harnessSessionDir, 'temp'))).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

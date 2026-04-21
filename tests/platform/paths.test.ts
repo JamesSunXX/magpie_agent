@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { getRepoCapabilitySessionsDir, getRepoMagpieDir, getRepoSessionDir } from '../../src/platform/paths.js'
+import {
+  getRepoCapabilitySessionsDir,
+  getRepoMagpieDir,
+  getRepoSessionDir,
+  getRepoSessionScopedDir,
+} from '../../src/platform/paths.js'
 
 describe('repo-local path helpers', () => {
   const tempDirs: string[] = []
@@ -25,5 +30,8 @@ describe('repo-local path helpers', () => {
     expect(getRepoMagpieDir(nestedDir)).toBe(join(normalizedRepoRoot, '.magpie'))
     expect(getRepoCapabilitySessionsDir(nestedDir, 'loop')).toBe(join(normalizedRepoRoot, '.magpie', 'sessions', 'loop'))
     expect(getRepoSessionDir(nestedDir, 'harness', 'harness-1')).toBe(join(normalizedRepoRoot, '.magpie', 'sessions', 'harness', 'harness-1'))
+    expect(getRepoSessionScopedDir(nestedDir, 'harness', 'harness-1', 'uploads')).toBe(
+      join(normalizedRepoRoot, '.magpie', 'sessions', 'harness', 'harness-1', 'uploads')
+    )
   })
 })

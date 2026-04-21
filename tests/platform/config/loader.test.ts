@@ -183,6 +183,66 @@ describe('platform config loader', () => {
     )
   })
 
+  it('rejects non-boolean capabilities.trd.enabled values', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.trd = {
+      enabled: 'true',
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.trd.enabled must be a boolean'
+    )
+  })
+
+  it('rejects non-boolean capabilities.harness.enabled values', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.harness = {
+      enabled: 'yes',
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.harness.enabled must be a boolean'
+    )
+  })
+
+  it('accepts explicit safety config with dangerous commands disabled by default', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.safety = {
+      allow_dangerous_commands: false,
+      require_confirmation_for_dangerous: true,
+      dangerous_patterns: ['terraform destroy'],
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
+
+  it('rejects non-boolean allow_dangerous_commands values', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.safety = {
+      allow_dangerous_commands: 'yes',
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.safety.allow_dangerous_commands must be a boolean'
+    )
+  })
+
+  it('rejects invalid dangerous_patterns entries', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.safety = {
+      dangerous_patterns: ['git reset --hard', '   '],
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.safety.dangerous_patterns[1] must be a non-empty string'
+    )
+  })
+
   it('accepts the new loop stage timeout overrides and stage bindings', () => {
     const config = structuredClone(validConfig) as Record<string, any>
     config.capabilities.loop = {

@@ -41,7 +41,7 @@ export const reviewCommand = new Command('review')
   .option('--skip-context', 'Skip context gathering phase')
   .option('--no-post', 'Skip post-processing (GitHub comment flow)')
   .action(async (pr: string | undefined, options: ReviewCommandOptions) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<
       ReviewCapabilityInput,
       ReviewPreparedInput,

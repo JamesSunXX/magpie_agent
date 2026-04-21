@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getConfigVersionStatus } = vi.hoisted(() => ({
+const { getConfigVersionStatus, loadConfig } = vi.hoisted(() => ({
   getConfigVersionStatus: vi.fn(),
+  loadConfig: vi.fn(),
 }))
 
 vi.mock('../../src/platform/config/loader.js', async () => {
@@ -9,6 +10,7 @@ vi.mock('../../src/platform/config/loader.js', async () => {
   return {
     ...actual,
     getConfigVersionStatus,
+    loadConfig,
   }
 })
 import { createProgram } from '../../src/cli/program.js'
@@ -16,6 +18,15 @@ import { createProgram } from '../../src/cli/program.js'
 describe('CLI program', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    process.exitCode = 0
+    getConfigVersionStatus.mockReturnValue({
+      path: '/tmp/config.yaml',
+      expectedVersion: 1,
+      state: 'current',
+    })
+    loadConfig.mockReturnValue({
+      capabilities: {},
+    })
   })
 
   it('registers the tui command', () => {
@@ -116,6 +127,13 @@ describe('CLI program', () => {
     expect(stats).toBeTruthy()
   })
 
+  it('registers doctor as a top-level command', () => {
+    const program = createProgram()
+    const doctor = program.commands.find((command) => command.name() === 'doctor')
+
+    expect(doctor).toBeTruthy()
+  })
+
   it('documents repo review as a valid mode without a PR argument', () => {
     const program = createProgram()
     const review = program.commands.find((command) => command.name() === 'review')
@@ -175,5 +193,50 @@ describe('CLI program', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Config version is outdated'))
     expect(action).toHaveBeenCalled()
     warnSpy.mockRestore()
+  })
+
+  it('does not print pre-action config warning for doctor', async () => {
+    getConfigVersionStatus.mockReturnValue({
+      path: '/tmp/config.yaml',
+      configVersion: 0,
+      expectedVersion: 1,
+      state: 'outdated',
+      message: 'Config version is outdated. Run `magpie init --upgrade --config /tmp/config.yaml`.',
+    })
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const program = createProgram()
+
+    await program.parseAsync(['node', 'magpie', 'doctor', '--config', '/tmp/config.yaml'], { from: 'node' })
+
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(loadConfig).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('blocks command execution when the mapped capability is disabled', async () => {
+    loadConfig.mockReturnValue({
+      capabilities: {
+        docs_sync: { enabled: false },
+      },
+    })
+
+    const program = createProgram()
+    program.exitOverride()
+    let error: unknown
+
+    try {
+      await program.parseAsync(['node', 'magpie', 'workflow', 'docs-sync', '--config', '/tmp/config.yaml'], { from: 'node' })
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toMatchObject({
+      code: 'magpie.capabilityDisabled',
+      exitCode: 1,
+    })
+    expect(String((error as Error).message)).toContain('Capability "docs-sync" is currently disabled.')
+    expect(String((error as Error).message)).toContain('capabilities.docs_sync.enabled: true')
+    expect(String((error as Error).message)).toContain('magpie review --repo')
   })
 })

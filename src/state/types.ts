@@ -231,6 +231,10 @@ export interface LoopSession {
     humanConfirmationPath: string
     routingDecisionPath?: string
     repoRootPath?: string
+    sessionWorkspaceDir?: string
+    sessionUploadsDir?: string
+    sessionOutputsDir?: string
+    sessionTempDir?: string
     workspaceMode?: 'current' | 'worktree'
     workspacePath?: string
     worktreeBranch?: string
@@ -258,6 +262,7 @@ export interface LoopSession {
     knowledgeStatePath?: string
     knowledgeSummaryDir?: string
     knowledgeCandidatesPath?: string
+    knowledgeCompactionPath?: string
     trdConvergenceStatePath?: string
     trdConvergenceCyclesDir?: string
     trdConvergenceTrdSessionId?: string

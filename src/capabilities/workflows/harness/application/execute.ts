@@ -16,6 +16,7 @@ import { issueFixCapability } from '../../issue-fix/index.js'
 import {
   appendWorkflowFailure,
   appendWorkflowEvent,
+  ensureSessionScopedDirectories,
   generateWorkflowId,
   isRecoverableLoopSession,
   loadWorkflowSession,
@@ -1848,6 +1849,9 @@ async function executeHarnessInternal(
     await loadPersistedHarnessCycles(roundsPath),
     ctx.cwd
   )
+  const sessionScopedDirs = await ensureSessionScopedDirectories(ctx.cwd, 'harness', sessionId, {
+    clearTemp: true,
+  })
 
   await mkdir(sessionDir, { recursive: true })
   let documentPlanSeed = ctx.metadata?.documentPlan as DocumentPlan | undefined
@@ -1897,6 +1901,11 @@ async function executeHarnessInternal(
     summary: existingSession?.summary || 'Harness workflow queued.',
     artifacts: {
       ...(existingSession?.artifacts || {}),
+      sessionDir,
+      sessionWorkspaceDir: existingSession?.artifacts?.sessionWorkspaceDir || sessionScopedDirs.workspaceDir,
+      sessionUploadsDir: existingSession?.artifacts?.sessionUploadsDir || sessionScopedDirs.uploadsDir,
+      sessionOutputsDir: existingSession?.artifacts?.sessionOutputsDir || sessionScopedDirs.outputsDir,
+      sessionTempDir: existingSession?.artifacts?.sessionTempDir || sessionScopedDirs.tempDir,
       repoRootPath: ctx.cwd,
       harnessConfigPath,
       roundsPath,

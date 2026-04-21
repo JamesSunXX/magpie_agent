@@ -29,7 +29,7 @@ export const trdCommand = new Command('trd')
   .option('--list', 'List TRD sessions')
   .option('--resume <id>', 'Resume TRD session with follow-up revision')
   .action(async (prdPath: string | undefined, options: TrdOptions) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<
       TrdCapabilityInput,
       TrdPreparedInput,

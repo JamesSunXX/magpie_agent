@@ -77,6 +77,11 @@ export interface HarnessResult {
       providerSelectionPath: string
       routingDecisionPath: string
       eventsPath: string
+      sessionDir?: string
+      sessionWorkspaceDir?: string
+      sessionUploadsDir?: string
+      sessionOutputsDir?: string
+      sessionTempDir?: string
       roleRosterPath?: string
       roleMessagesPath?: string
       roleRoundsDir?: string

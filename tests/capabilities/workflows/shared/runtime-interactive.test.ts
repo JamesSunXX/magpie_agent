@@ -16,7 +16,7 @@ vi.mock('fs', async (importOriginal) => {
   }
 })
 
-import { enforceCommandSafety } from '../../../../src/capabilities/workflows/shared/runtime.js'
+import { buildCommandSafetyConfig, enforceCommandSafety } from '../../../../src/capabilities/workflows/shared/runtime.js'
 
 describe('workflow shared runtime interactive safety', () => {
   beforeEach(() => {
@@ -32,7 +32,12 @@ describe('workflow shared runtime interactive safety', () => {
       return 4
     })
 
-    const result = enforceCommandSafety('rm -rf dist', { interactive: true })
+    const result = enforceCommandSafety('rm -rf dist', {
+      interactive: true,
+      safety: buildCommandSafetyConfig({
+        allow_dangerous_commands: true,
+      }),
+    })
 
     expect(result).toBeNull()
     expect(writeSyncMock).toHaveBeenCalled()
@@ -44,7 +49,12 @@ describe('workflow shared runtime interactive safety', () => {
       throw new Error('tty unavailable')
     })
 
-    const result = enforceCommandSafety('rm -rf dist', { interactive: true })
+    const result = enforceCommandSafety('rm -rf dist', {
+      interactive: true,
+      safety: buildCommandSafetyConfig({
+        allow_dangerous_commands: true,
+      }),
+    })
 
     expect(result?.passed).toBe(false)
     expect(result?.blocked).toBe(true)

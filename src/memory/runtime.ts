@@ -11,6 +11,19 @@ export interface MemoryPaths {
 
 const USER_MEMORY_TEMPLATE = '# User Memory\n\n- Record stable personal preferences here.\n'
 const PROJECT_MEMORY_TEMPLATE = '# Project Memory\n\n- Record stable repository rules and learned practices here.\n'
+const MEMORY_UNCERTAINTY_MARKERS = [
+  /\bmaybe\b/i,
+  /\bmight\b/i,
+  /\bpossibly\b/i,
+  /\bpossible\b/i,
+  /\bunknown\b/i,
+  /\btbd\b/i,
+  /\btodo\b/i,
+  /待确认/,
+  /可能/,
+  /暂定/,
+  /猜测/,
+]
 
 export function projectMemoryKey(repoRoot: string): string {
   return getProjectStorageKey(repoRoot)
@@ -131,18 +144,51 @@ function upsertPromotedSection(content: string, linesToAppend: string[]): string
 
 export async function syncProjectMemoryFromPromotedKnowledge(
   repoRoot: string,
-  promoted: Array<{ title: string; type: string; summary: string }>
+  promoted: Array<{
+    title: string
+    type: string
+    summary: string
+    status?: string
+    lifecycle?: string
+    stability?: string
+  }>
 ): Promise<string> {
   const { projectPath } = await ensureMemoryFiles(repoRoot)
-  if (promoted.length === 0) {
+  const stablePromoted = promoted.filter((item) => isStablePromotedKnowledge(item))
+  if (stablePromoted.length === 0) {
     return projectPath
   }
 
   const current = await readOptional(projectPath)
   const next = upsertPromotedSection(
     current || PROJECT_MEMORY_TEMPLATE.trim(),
-    promoted.map((item) => `- [${item.type}] ${item.title}: ${item.summary}`)
+    stablePromoted.map((item) => `- [${item.type}] ${item.title}: ${item.summary}`)
   )
   await writeFile(projectPath, `${next.trimEnd()}\n`, 'utf-8')
   return projectPath
+}
+
+export function isStablePromotedKnowledge(item: {
+  title: string
+  summary: string
+  status?: string
+  lifecycle?: string
+  stability?: string
+}): boolean {
+  const lifecycle = item.lifecycle?.toLowerCase()
+  if (lifecycle === 'deferred' || lifecycle === 'retired' || lifecycle === 'superseded') {
+    return false
+  }
+
+  const stability = item.stability?.toLowerCase()
+  if (stability === 'low' || stability === 'tentative' || stability === 'unknown') {
+    return false
+  }
+
+  if (item.status && item.status !== 'promoted' && item.status !== 'candidate') {
+    return false
+  }
+
+  const text = `${item.title}\n${item.summary}`
+  return !MEMORY_UNCERTAINTY_MARKERS.some((pattern) => pattern.test(text))
 }

@@ -31,7 +31,7 @@ workflowCommand
   .option('--complexity <tier>', 'Override routing complexity (simple|standard|complex)')
   .action(async (issue: string, options) => {
     try {
-      const registry = createDefaultCapabilityRegistry()
+      const registry = createDefaultCapabilityRegistry({ configPath: options.config })
       const capability = getTypedCapability<IssueFixInput, IssueFixPreparedInput, IssueFixResult, IssueFixSummary>(
         registry,
         'issue-fix'
@@ -67,7 +67,7 @@ workflowCommand
   .option('-c, --config <path>', 'Path to config file')
   .option('--apply', 'Allow executor agent to update docs', false)
   .action(async (options) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<DocsSyncInput, DocsSyncPreparedInput, DocsSyncResult, DocsSyncSummary>(
       registry,
       'docs-sync'
@@ -124,7 +124,7 @@ workflowCommand
         return
       }
 
-      const registry = createDefaultCapabilityRegistry()
+      const registry = createDefaultCapabilityRegistry({ configPath: options.config })
       const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
         registry,
         'harness'
@@ -201,7 +201,7 @@ workflowCommand
   .option('-c, --config <path>', 'Path to config file')
   .option('--command <command...>', 'Override regression commands')
   .action(async (options) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<
       PostMergeRegressionInput,
       PostMergeRegressionPreparedInput,

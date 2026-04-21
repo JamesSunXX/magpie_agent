@@ -63,7 +63,7 @@ export const discussCommand = new Command('discuss')
       }
     }
 
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<
       DiscussCapabilityInput,
       DiscussPreparedInput,

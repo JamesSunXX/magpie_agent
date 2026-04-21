@@ -101,6 +101,7 @@ export interface ContextGathererConfigOptions {
 }
 
 export interface TrdConfig {
+  enabled?: boolean
   default_reviewers?: string[]
   max_rounds?: number
   language?: string
@@ -217,6 +218,7 @@ export interface LoopConfig {
 }
 
 export interface HarnessConfig {
+  enabled?: boolean
   default_reviewers?: string[]
   validator_checks?: ModelRouteBinding[]
   role_bindings?: {

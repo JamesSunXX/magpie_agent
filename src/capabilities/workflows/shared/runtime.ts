@@ -1,9 +1,14 @@
-import { appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'fs/promises'
 import { closeSync, openSync, readSync, writeSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
-import { getRepoCapabilitySessionsDir, getRepoMagpieDir, getRepoSessionDir } from '../../../platform/paths.js'
+import {
+  getRepoCapabilitySessionsDir,
+  getRepoMagpieDir,
+  getRepoSessionDir,
+  getRepoSessionScopedDir,
+} from '../../../platform/paths.js'
 import type { SafetyConfig } from '../../../platform/config/types.js'
 import type { LoopReliablePoint } from '../../../state/types.js'
 import { appendFailureRecord, getFailureOccurrenceCount } from '../../../core/failures/ledger.js'
@@ -37,6 +42,11 @@ export interface WorkflowSession {
   currentStage?: string
   summary: string
   artifacts: Record<string, string> & {
+    sessionDir?: string
+    sessionWorkspaceDir?: string
+    sessionUploadsDir?: string
+    sessionOutputsDir?: string
+    sessionTempDir?: string
     failureLogDir?: string
     failureIndexPath?: string
     lastFailurePath?: string
@@ -68,12 +78,20 @@ export interface CommandRunResult {
 
 export interface ResolvedCommandSafetyConfig {
   dangerousPatterns: string[]
+  allowDangerousCommands: boolean
   requireConfirmationForDangerous: boolean
 }
 
 export interface CommandExecutionOptions {
   safety?: ResolvedCommandSafetyConfig
   interactive?: boolean
+}
+
+export interface SessionScopedDirectories {
+  workspaceDir: string
+  uploadsDir: string
+  outputsDir: string
+  tempDir: string
 }
 
 type RecoverableLoopSessionLike = {
@@ -234,6 +252,43 @@ export function generateWorkflowId(prefix: string): string {
 
 export function sessionDirFor(cwd: string, capability: WorkflowCapability, id: string): string {
   return getRepoSessionDir(cwd, capability, id)
+}
+
+export function resolveSessionScopedDirectories(
+  cwd: string,
+  capability: WorkflowCapability,
+  sessionId: string
+): SessionScopedDirectories {
+  return {
+    workspaceDir: getRepoSessionScopedDir(cwd, capability, sessionId, 'workspace'),
+    uploadsDir: getRepoSessionScopedDir(cwd, capability, sessionId, 'uploads'),
+    outputsDir: getRepoSessionScopedDir(cwd, capability, sessionId, 'outputs'),
+    tempDir: getRepoSessionScopedDir(cwd, capability, sessionId, 'temp'),
+  }
+}
+
+/**
+ * Session-scoped workspace paths isolate transient inputs and outputs by session.
+ * Cleanup intentionally touches only tempDir so evidence and generated artifacts
+ * stay intact across resumes.
+ */
+export async function ensureSessionScopedDirectories(
+  cwd: string,
+  capability: WorkflowCapability,
+  sessionId: string,
+  options: { clearTemp?: boolean } = {}
+): Promise<SessionScopedDirectories> {
+  const dirs = resolveSessionScopedDirectories(cwd, capability, sessionId)
+  await Promise.all([
+    mkdir(dirs.workspaceDir, { recursive: true }),
+    mkdir(dirs.uploadsDir, { recursive: true }),
+    mkdir(dirs.outputsDir, { recursive: true }),
+  ])
+  if (options.clearTemp) {
+    await rm(dirs.tempDir, { recursive: true, force: true })
+  }
+  await mkdir(dirs.tempDir, { recursive: true })
+  return dirs
 }
 
 export function resolveWorkflowFailureArtifacts(
@@ -467,6 +522,7 @@ export function buildCommandSafetyConfig(config?: SafetyConfig): ResolvedCommand
       ...DEFAULT_DANGEROUS_COMMAND_PATTERNS,
       ...(config?.dangerous_patterns || []),
     ],
+    allowDangerousCommands: config?.allow_dangerous_commands === true,
     requireConfirmationForDangerous: config?.require_confirmation_for_dangerous !== false,
   }
 }
@@ -475,12 +531,17 @@ export function classifyDangerousCommand(
   command: string,
   config: ResolvedCommandSafetyConfig = buildCommandSafetyConfig()
 ): string | null {
-  if (config.requireConfirmationForDangerous === false) {
+  const normalized = command.toLowerCase()
+  const matchedPattern = config.dangerousPatterns.find((pattern) => normalized.includes(pattern.toLowerCase())) || null
+  if (!matchedPattern) {
     return null
   }
 
-  const normalized = command.toLowerCase()
-  return config.dangerousPatterns.find((pattern) => normalized.includes(pattern.toLowerCase())) || null
+  if (config.allowDangerousCommands && config.requireConfirmationForDangerous === false) {
+    return null
+  }
+
+  return matchedPattern
 }
 
 function promptDangerousCommandConfirmation(command: string, matchedPattern: string): boolean {
@@ -518,6 +579,14 @@ export function enforceCommandSafety(
 
   if (!matchedPattern) {
     return null
+  }
+
+  if (!safety.allowDangerousCommands) {
+    return {
+      passed: false,
+      blocked: true,
+      output: `Dangerous command blocked: ${command}\nMatched rule: ${matchedPattern}\nHow to enable: set capabilities.safety.allow_dangerous_commands: true\nRisk: this may permanently change files, branches, or git history.`,
+    }
   }
 
   const interactive = options.interactive === true

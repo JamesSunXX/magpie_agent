@@ -394,4 +394,14 @@ describe('init CLI command helpers', () => {
     errorSpy.mockRestore()
     exitSpy.mockRestore()
   })
+
+  it('prints next steps with doctor command after init', async () => {
+    const log = vi.fn()
+    const { printInitNextSteps } = await import('../../src/cli/commands/init.js')
+
+    printInitNextSteps('/tmp/custom-config.yaml', { log })
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Next steps'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('magpie doctor --config /tmp/custom-config.yaml'))
+  })
 })

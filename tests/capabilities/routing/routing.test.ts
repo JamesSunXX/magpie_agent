@@ -3,6 +3,8 @@ import {
   createRoutingDecision,
   escalateRoutingDecision,
   getRouteBindings,
+  isRuntimeCapabilityEnabled,
+  listEnabledRuntimeCapabilities,
 } from '../../../src/capabilities/routing/index.js'
 import type { MagpieConfigV2 } from '../../../src/platform/config/types.js'
 
@@ -209,5 +211,32 @@ describe('routing', () => {
 
     expect(second.tier).toBe(first.tier)
     expect(second.escalationTrail).toEqual([])
+  })
+
+  it('treats runtime capabilities as enabled unless explicitly disabled', () => {
+    const config = createConfig()
+
+    expect(isRuntimeCapabilityEnabled(config, 'review')).toBe(true)
+
+    config.capabilities.review = { enabled: false }
+    expect(isRuntimeCapabilityEnabled(config, 'review')).toBe(false)
+  })
+
+  it('omits explicitly disabled capabilities from enabled runtime capability list', () => {
+    const config = createConfig()
+    config.capabilities.discuss = { enabled: false }
+    config.capabilities.docs_sync = { enabled: false }
+    config.capabilities.quality = {
+      unitTestEval: { enabled: false },
+    }
+
+    const enabled = listEnabledRuntimeCapabilities(config)
+
+    expect(enabled).toContain('review')
+    expect(enabled).toContain('loop')
+    expect(enabled).toContain('stats')
+    expect(enabled).not.toContain('discuss')
+    expect(enabled).not.toContain('docs-sync')
+    expect(enabled).not.toContain('quality/unit-test-eval')
   })
 })

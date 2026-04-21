@@ -41,6 +41,7 @@ import { publishFeishuTaskStatusFromConfig } from '../../../platform/integration
 import {
   appendWorkflowFailure,
   buildCommandSafetyConfig,
+  ensureSessionScopedDirectories,
   isRecoverableLoopSession,
   runSafeCommand,
   resolveWorkflowFailureArtifacts,
@@ -165,6 +166,13 @@ function shouldRunGreenFixup(stage: LoopStageName, stages: LoopStageName[]): boo
 
 const LEGACY_DEFAULT_MOCK_TEST_COMMAND = 'npm run test:run -- tests/mock'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
+const LOOP_KNOWLEDGE_CONTEXT_MAX_CHARS = 6000
+
+export function shouldPreferCompactedKnowledgeContext(
+  session: Pick<LoopSession, 'status' | 'stageResults'>
+): boolean {
+  return session.status === 'paused_for_human' || session.stageResults.length > 0
+}
 
 interface LoopRuntimeConfig {
   plannerTool?: string
@@ -2203,6 +2211,7 @@ function resolveLoopKnowledgeArtifacts(session: LoopSession): KnowledgeArtifacts
     knowledgeStatePath: session.artifacts.knowledgeStatePath || join(session.artifacts.sessionDir, 'knowledge', 'state.json'),
     knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
     knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(session.artifacts.sessionDir, 'knowledge', 'candidates.json'),
+    knowledgeCompactionPath: session.artifacts.knowledgeCompactionPath || join(session.artifacts.sessionDir, 'knowledge', 'summaries', 'context-compacted.md'),
   }
 }
 
@@ -3255,6 +3264,7 @@ async function runSingleStage(
   }
 
   const stageArtifactPath = join(session.artifacts.sessionDir, `${stage}.md`)
+  const preferCompactedSummary = shouldPreferCompactedKnowledgeContext(session)
   const knowledgeContext = session.artifacts.knowledgeSummaryDir && session.artifacts.knowledgeSchemaPath
     ? await renderKnowledgeContext({
       knowledgeSchemaPath: session.artifacts.knowledgeSchemaPath,
@@ -3263,7 +3273,11 @@ async function runSingleStage(
       knowledgeStatePath: session.artifacts.knowledgeStatePath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'state.json'),
       knowledgeSummaryDir: session.artifacts.knowledgeSummaryDir,
       knowledgeCandidatesPath: session.artifacts.knowledgeCandidatesPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'candidates.json'),
-    }, runCwd)
+      knowledgeCompactionPath: session.artifacts.knowledgeCompactionPath || join(resolve(session.artifacts.knowledgeSummaryDir, '..'), 'summaries', 'context-compacted.md'),
+    }, runCwd, {
+      maxChars: LOOP_KNOWLEDGE_CONTEXT_MAX_CHARS,
+      preferCompactedSummary,
+    })
     : ''
   let stageReport = ''
   let stageSucceeded = true
@@ -4409,7 +4423,9 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
   const roleArtifacts = getRoleArtifactPaths(sessionDir)
   const roleRoster = buildLoopRoleRoster(loopRuntime)
-
+  const sessionScopedDirs = await ensureSessionScopedDirectories(ctx.cwd, 'loop', sessionId, {
+    clearTemp: true,
+  })
   await mkdir(sessionDir, { recursive: true })
   let branchName: string | undefined
   let branchNameResult: AutoBranchNameResult | undefined
@@ -4554,6 +4570,10 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       repoRootPath: ctx.cwd,
       workspaceMode,
       workspacePath,
+      sessionWorkspaceDir: sessionScopedDirs.workspaceDir,
+      sessionUploadsDir: sessionScopedDirs.uploadsDir,
+      sessionOutputsDir: sessionScopedDirs.outputsDir,
+      sessionTempDir: sessionScopedDirs.tempDir,
       ...(branchName ? { worktreeBranch: branchName } : {}),
       executionHost,
       ...resolveTmuxArtifacts(),
@@ -4668,6 +4688,13 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   }
 
   const session = matches[0]
+  const sessionScopedDirs = await ensureSessionScopedDirectories(ctx.cwd, 'loop', session.id, {
+    clearTemp: true,
+  })
+  session.artifacts.sessionWorkspaceDir = session.artifacts.sessionWorkspaceDir || sessionScopedDirs.workspaceDir
+  session.artifacts.sessionUploadsDir = session.artifacts.sessionUploadsDir || sessionScopedDirs.uploadsDir
+  session.artifacts.sessionOutputsDir = session.artifacts.sessionOutputsDir || sessionScopedDirs.outputsDir
+  session.artifacts.sessionTempDir = session.artifacts.sessionTempDir || sessionScopedDirs.tempDir
 
   if (session.status === 'completed') {
     return {

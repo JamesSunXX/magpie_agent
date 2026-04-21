@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import {
   appendWorkflowEvent,
   buildCommandSafetyConfig,
   classifyDangerousCommand,
+  ensureSessionScopedDirectories,
   generateWorkflowId,
   isRecoverableHarnessSession,
   isRecoverableLoopSession,
@@ -125,6 +126,26 @@ describe('workflow shared runtime helpers', () => {
     expect(loaded?.artifacts.tmuxSession).toBe('magpie-harness-a')
     expect(loaded?.artifacts.tmuxWindow).toBe('@1')
     expect(loaded?.artifacts.tmuxPane).toBe('%1')
+  })
+
+  it('creates session-scoped workspace directories and only clears temp on reset', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-runtime-scoped-'))
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-scoped-cwd-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const first = await ensureSessionScopedDirectories(cwd, 'harness', 'harness-a')
+    expect(existsSync(first.workspaceDir)).toBe(true)
+    expect(existsSync(first.uploadsDir)).toBe(true)
+    expect(existsSync(first.outputsDir)).toBe(true)
+    expect(existsSync(first.tempDir)).toBe(true)
+
+    writeFileSync(join(first.workspaceDir, 'workspace.keep'), 'keep', 'utf-8')
+    writeFileSync(join(first.tempDir, 'temp.delete'), 'delete', 'utf-8')
+
+    const second = await ensureSessionScopedDirectories(cwd, 'harness', 'harness-a', { clearTemp: true })
+    expect(second).toEqual(first)
+    expect(existsSync(join(second.workspaceDir, 'workspace.keep'))).toBe(true)
+    expect(existsSync(join(second.tempDir, 'temp.delete'))).toBe(false)
   })
 
   it('appends workflow events to the persisted jsonl stream', async () => {
@@ -253,10 +274,18 @@ describe('workflow shared runtime helpers', () => {
 
     expect(blocked.passed).toBe(false)
     expect(blocked.output).toContain('Dangerous command blocked')
+    expect(blocked.output).toContain('allow_dangerous_commands: true')
   })
 
-  it('allows dangerous pattern matching to be disabled', () => {
+  it('still blocks dangerous commands unless explicit allow is enabled', () => {
     expect(classifyDangerousCommand('rm -rf dist', buildCommandSafetyConfig({
+      require_confirmation_for_dangerous: false,
+    }))).toContain('rm -rf')
+  })
+
+  it('allows dangerous pattern matching to be disabled after explicit allow', () => {
+    expect(classifyDangerousCommand('rm -rf dist', buildCommandSafetyConfig({
+      allow_dangerous_commands: true,
       require_confirmation_for_dangerous: false,
     }))).toBeNull()
   })

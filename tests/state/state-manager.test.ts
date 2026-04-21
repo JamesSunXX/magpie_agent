@@ -226,6 +226,7 @@ describe('StateManager', () => {
         eventsPath: '/tmp/events.jsonl',
         planPath: '/tmp/plan.json',
         humanConfirmationPath: '/tmp/human_confirmation.md',
+        knowledgeCompactionPath: '/tmp/loop-123/knowledge/summaries/context-compacted.md',
         failureLogDir: '/tmp/loop-123/failures',
         failureIndexPath: '/tmp/repo/.magpie/failure-index.json',
         tmuxSession: 'magpie-loop-123',
@@ -254,6 +255,7 @@ describe('StateManager', () => {
     expect(persisted.artifacts.tmuxSession).toBe('magpie-loop-123')
     expect(persisted.artifacts.tmuxWindow).toBe('@1')
     expect(persisted.artifacts.tmuxPane).toBe('%1')
+    expect(persisted.artifacts.knowledgeCompactionPath).toBe('/tmp/loop-123/knowledge/summaries/context-compacted.md')
     expect(persisted.artifacts.failureLogDir).toBe('/tmp/loop-123/failures')
     expect(persisted.artifacts.failureIndexPath).toBe('/tmp/repo/.magpie/failure-index.json')
   })

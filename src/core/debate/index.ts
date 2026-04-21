@@ -1,4 +1,5 @@
 export * from './runner.js'
+export * from './context-compaction.js'
 export * from './orchestrator.js'
 export * from './repo-orchestrator.js'
 export * from './issue-parser.js'

@@ -12,7 +12,7 @@ export const statsCommand = new Command('stats')
   .option('--since <days>', 'Show stats for last N days', (value) => Number.parseInt(value, 10), 30)
   .option('-f, --format <format>', 'Output format (markdown|json)', 'markdown')
   .action(async (options: { config?: string; since?: number; format?: 'markdown' | 'json' }) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<StatsInput, StatsPrepared, StatsResult, StatsSummary>(registry, 'stats')
     const ctx = createCapabilityContext({
       cwd: process.cwd(),

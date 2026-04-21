@@ -23,7 +23,7 @@ const unitTestEvalCommand = new Command('unit-test-eval')
   .option('--run-tests', 'Run test command as part of evaluation')
   .option('--test-command <command>', 'Test command to execute when --run-tests is set', 'npm run test:run')
   .action(async (path: string | undefined, options) => {
-    const registry = createDefaultCapabilityRegistry()
+    const registry = createDefaultCapabilityRegistry({ configPath: options.config })
     const capability = getTypedCapability<UnitTestEvalInput, UnitTestEvalPrepared, UnitTestEvalResult, UnitTestEvalSummary>(
       registry,
       'quality/unit-test-eval'

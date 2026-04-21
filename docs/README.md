@@ -17,6 +17,7 @@
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | 总体结构、边界和改动落点 |
 | [`./references/capabilities.md`](./references/capabilities.md) | 核心能力与代码位置对照 |
 | [`./plans/`](./plans/) | 设计和计划历史 |
+| [`./plans/2026-04-21-deer-flow-benchmark-milestone-plan.md`](./plans/2026-04-21-deer-flow-benchmark-milestone-plan.md) | DeerFlow 对标里程碑计划与验收清单（含灰度发布与回退演练） |
 | [`./plans/2026-04-13-multi-model-engine-progress-audit.md`](./plans/2026-04-13-multi-model-engine-progress-audit.md) | 当前“多模型工程协作流引擎”进展盘点 |
 | [`./plans/2026-04-14-harness-loop-failure-recovery.md`](./plans/2026-04-14-harness-loop-failure-recovery.md) | 失败后继续开发与 provider 会话续跑方案，明确恢复规则、自动接回和遗留现场处理 |
 | [`./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md`](./plans/2026-04-14-harness-loop-failure-recovery-document-first-plan.md) | 这次失败恢复需求的总实施计划，当前已完成，可从这里看整体进度和阶段结果 |
