@@ -20,6 +20,12 @@ describe('resolveLoopStageBinding', () => {
       reviewer: { tool: 'gemini-cli', model: 'gemini-cli' },
       rescue: { tool: 'kiro', model: 'kiro', agent: 'architect' },
     })
+
+    expect(resolveLoopStageBinding('milestone_planning', runtime)).toEqual({
+      primary: { tool: 'claude', model: 'claude-code', agent: 'architect' },
+      reviewer: { tool: 'gemini-cli', model: 'gemini-cli' },
+      rescue: { tool: 'kiro', model: 'kiro', agent: 'architect' },
+    })
   })
 
   it('applies stage overrides on top of defaults', () => {

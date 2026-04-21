@@ -16,7 +16,7 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `discuss`：多模型讨论
 - `trd`：PRD 转 TRD，并产出可机读的约束文件
 - `quality unit-test-eval`：检查单测质量，可选顺手跑测试
-- `loop`：目标驱动的阶段化执行，按 9 段正式阶段推进；其中 `trd_generation` 默认会自动收敛循环，每段都会留下交接卡和可恢复现场，长流程会自动压缩上下文并优先复用压缩摘要
+- `loop`：目标驱动的阶段化执行，按 10 段正式阶段推进；其中 `trd_generation` 默认会自动收敛循环，`milestone_planning` 会在实现前生成里程碑计划，每段都会留下交接卡和可恢复现场，长流程会自动压缩上下文并优先复用压缩摘要
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
@@ -115,7 +115,7 @@ magpie workflow docs-sync
 magpie memory show --project
 ```
 
-`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 现在把开发主线拆成 9 个正式阶段。前三段分别产出需求决策卡、拆分卡和执行卡；开发中段拆成准备开发、确认失败基线、实施改动、实现后补修；后两段保留为正式验证阶段，失败时会明确标记成验证返工或联调返工。正式阶段可以按 `primary/reviewer/rescue` 配置工具，异常轮次会继承当前阶段的 `rescue`。每个阶段结束后都会留下结构化交接卡，`loop inspect` 也能直接看到最新交接卡路径，方便接着跑。
+`trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 现在把开发主线拆成 10 个正式阶段。前三段分别产出需求决策卡、拆分卡和执行卡；随后 `milestone_planning` 会在动代码前写出里程碑计划；开发中段拆成准备开发、确认失败基线、实施改动、实现后补修；后两段保留为正式验证阶段，失败时会明确标记成验证返工或联调返工。正式阶段可以按 `primary/reviewer/rescue` 配置工具，异常轮次会继承当前阶段的 `rescue`。每个阶段结束后都会留下结构化交接卡，`loop inspect` 也能直接看到最新交接卡路径，方便接着跑。
 
 如果想把 `unit_mock_test` 复用到 Java、Go 或别的项目，不一定非要沿用默认的 `unit_test` / `mock_test` 命令名。现在可以直接在 `capabilities.loop.commands.unit_mock_test_steps` 里按顺序写项目自己的检查步骤，每一步自己起名字、自己填命令；只有没配这组步骤时，才会回退到原来的旧配置。
 

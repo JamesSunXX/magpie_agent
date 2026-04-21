@@ -24,6 +24,7 @@ const PLANNER_STAGE_NAMES = new Set<LoopStageName>([
   'prd_review',
   'domain_partition',
   'trd_generation',
+  'milestone_planning',
 ])
 const MIDDLE_STAGE_NAMES = new Set<LoopStageName>([
   'dev_preparation',

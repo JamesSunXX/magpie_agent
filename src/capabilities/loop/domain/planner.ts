@@ -37,6 +37,11 @@ const STAGE_DEFAULT_COPY: Record<LoopStageName, {
     description: (goal) => `Produce or refine the technical delivery notes needed to implement: ${goal}`,
     successCriteria: ['Technical approach and key implementation decisions are documented'],
   },
+  milestone_planning: {
+    title: 'Milestone planning',
+    description: (goal) => `Split the accepted TRD into ordered implementation milestones for: ${goal}`,
+    successCriteria: ['Implementation milestones are ordered, scoped, and independently checkable'],
+  },
   dev_preparation: {
     title: 'Development preparation',
     description: (goal) => `Confirm constraints, guardrails, and execution scope before changing code for: ${goal}`,

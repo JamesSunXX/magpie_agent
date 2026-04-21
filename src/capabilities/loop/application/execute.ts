@@ -82,6 +82,11 @@ import {
   runStructuredTestCommand,
 } from '../domain/test-execution.js'
 import {
+  buildFallbackMilestonePlan,
+  renderMilestonePlanContext,
+  renderMilestonePlanInstructions,
+} from '../domain/milestones.js'
+import {
   advanceRepairState,
   resolveLoopReworkOrigin,
   writeRepairArtifacts,
@@ -117,6 +122,7 @@ const DEFAULT_STAGES: LoopStageName[] = [
   'prd_review',
   'domain_partition',
   'trd_generation',
+  'milestone_planning',
   'dev_preparation',
   'red_test_confirmation',
   'implementation',
@@ -1081,10 +1087,18 @@ function buildStagePrompt(stage: LoopStageName, session: LoopSession, tasks: Loo
         return '5. Confirm scope, constraints, and execution boundaries before writing or changing code.'
       case 'red_test_confirmation':
         return '5. Create or refine the failing baseline only. Do not implement production code in this stage.'
+      case 'milestone_planning':
+        return [
+          '5. Create the implementation milestone plan before code changes start.',
+          renderMilestonePlanInstructions(resolveMilestonePlanPath(session)),
+        ].join('\n')
       case 'implementation':
-        return session.tddEligible && session.redTestConfirmed
-          ? '5. The failing baseline is already confirmed. Focus on the minimal code changes needed to satisfy it.'
-          : '5. Make the primary code changes for the planned work.'
+        return [
+          session.tddEligible && session.redTestConfirmed
+            ? '5. The failing baseline is already confirmed. Focus on the minimal code changes needed to satisfy it.'
+            : '5. Make the primary code changes for the planned work.',
+          renderImplementationMilestoneContext(session),
+        ].filter(Boolean).join('\n\n')
       case 'green_fixup':
         return '5. Clean up the implementation, close obvious gaps, and prepare it for formal verification.'
       default:
@@ -1113,6 +1127,44 @@ Execution requirements:
 ${stageGuidance}
 
 Return markdown only.`
+}
+
+function resolveMilestonePlanPath(session: LoopSession): string {
+  return session.artifacts.milestonePlanPath || join(session.artifacts.sessionDir, 'milestone-plan.json')
+}
+
+function renderImplementationMilestoneContext(session: LoopSession): string {
+  const milestonePlanPath = session.artifacts.milestonePlanPath
+  if (!milestonePlanPath || !existsSync(milestonePlanPath)) {
+    return ''
+  }
+
+  try {
+    return renderMilestonePlanContext(milestonePlanPath, readFileSync(milestonePlanPath, 'utf-8'))
+  } catch {
+    return ''
+  }
+}
+
+async function ensureMilestonePlanArtifact(session: LoopSession, tasks: LoopTask[]): Promise<string> {
+  const milestonePlanPath = resolveMilestonePlanPath(session)
+  session.artifacts.milestonePlanPath = milestonePlanPath
+
+  if (!existsSync(milestonePlanPath)) {
+    const trdArtifact = [...session.stageResults]
+      .reverse()
+      .flatMap((result) => result.artifacts)
+      .find((artifact) => /\.trd\.md$/i.test(artifact) || /\/trd\.md$/i.test(artifact))
+    const plan = buildFallbackMilestonePlan({
+      goal: session.goal,
+      tasks,
+      ...(trdArtifact ? { sourceTrdPath: trdArtifact } : {}),
+    })
+    await mkdir(dirname(milestonePlanPath), { recursive: true })
+    await writeFile(milestonePlanPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8')
+  }
+
+  return milestonePlanPath
 }
 
 function buildStagePromptWithDocuments(
@@ -3905,6 +3957,12 @@ async function continueSession(
 
       completionStageResult = stageRun.stageResult
       session.stageResults.push(stageRun.stageResult)
+      if (stage === 'milestone_planning' && stageRun.stageResult.success) {
+        const milestonePlanPath = await ensureMilestonePlanArtifact(session, session.plan)
+        if (!stageRun.stageResult.artifacts.includes(milestonePlanPath)) {
+          stageRun.stageResult.artifacts.push(milestonePlanPath)
+        }
+      }
       session.updatedAt = new Date()
       if (isImplementationStage(stage) && session.tddEligible && session.redTestConfirmed) {
         session.lastReliablePoint = 'implementation_generated'
@@ -4582,6 +4640,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       humanConfirmationPath,
       ...resolveWorkflowFailureArtifacts(ctx.cwd, 'loop', sessionId),
       mrResultPath,
+      milestonePlanPath: join(sessionDir, 'milestone-plan.json'),
       documentPlanPath,
       providerSessionsPath,
       roleRosterPath: roleArtifacts.rolesPath,
@@ -4765,6 +4824,8 @@ async function executeResume(prepared: LoopPreparedInput, ctx: CapabilityContext
   const providerSessionsPath = session.artifacts.providerSessionsPath
     || join(session.artifacts.sessionDir, 'provider-sessions.json')
   session.artifacts.providerSessionsPath = providerSessionsPath
+  session.artifacts.milestonePlanPath = session.artifacts.milestonePlanPath
+    || join(session.artifacts.sessionDir, 'milestone-plan.json')
 
   const { planner, executor, autoCommitProvider } = await withProviderSessionScope({
     sessionsPath: providerSessionsPath,

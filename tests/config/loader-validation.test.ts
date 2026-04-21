@@ -47,6 +47,7 @@ const newLoopStages = [
   'prd_review',
   'domain_partition',
   'trd_generation',
+  'milestone_planning',
   'dev_preparation',
   'red_test_confirmation',
   'implementation',
@@ -227,7 +228,7 @@ describe('loadConfig - validation', () => {
     vi.mocked(parse).mockReturnValue(bad as MagpieConfigV2)
 
     expect(() => loadConfig('/path/to/config.yaml')).toThrow(
-      'Config error: capabilities.loop.stages[9] must be one of prd_review, domain_partition, trd_generation, dev_preparation, red_test_confirmation, implementation, green_fixup, unit_mock_test, integration_test'
+      'Config error: capabilities.loop.stages[10] must be one of prd_review, domain_partition, trd_generation, milestone_planning, dev_preparation, red_test_confirmation, implementation, green_fixup, unit_mock_test, integration_test'
     )
   })
 

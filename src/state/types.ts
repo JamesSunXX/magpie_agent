@@ -267,6 +267,7 @@ export interface LoopSession {
     trdConvergenceCyclesDir?: string
     trdConvergenceTrdSessionId?: string
     trdConvergenceDiscussSessionId?: string
+    milestonePlanPath?: string
     documentPlanPath?: string
     providerSessionsPath?: string
   }

@@ -486,7 +486,7 @@ describe('loop capability', () => {
     )
   })
 
-  it('uses the 9-stage default runtime sequence when loop stages are not configured', async () => {
+  it('uses the milestone-aware default runtime sequence when loop stages are not configured', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-default-stages-'))
     mkdirSync(join(dir, 'docs'), { recursive: true })
 
@@ -514,6 +514,7 @@ describe('loop capability', () => {
       'prd_review',
       'domain_partition',
       'trd_generation',
+      'milestone_planning',
       'dev_preparation',
       'red_test_confirmation',
       'implementation',
@@ -522,6 +523,84 @@ describe('loop capability', () => {
       'integration_test',
     ])
     expect(result.result.session?.stages).not.toContain('code_development')
+  })
+
+  it('creates a milestone plan before implementation and passes it into the implementation prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-loop-milestone-plan-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+
+    const prdPath = join(dir, 'docs', 'sample-prd.md')
+    writeFileSync(prdPath, '# PRD\n\nA sample requirement.', 'utf-8')
+
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, `providers:\n  claude-code:\n    enabled: true\ndefaults:\n  max_rounds: 3\n  output_format: markdown\n  check_convergence: true\nreviewers:\n  mock-reviewer:\n    model: mock\n    prompt: review\nsummarizer:\n  model: mock\n  prompt: summarize\nanalyzer:\n  model: mock\n  prompt: analyze\ncapabilities:\n  loop:\n    enabled: true\n    planner_model: mock\n    executor_model: mock\n    stages: [milestone_planning, implementation]\n    confidence_threshold: 0.3\n    retries_per_stage: 1\n    max_iterations: 2\n    auto_commit: false\n    human_confirmation:\n      file: "human_confirmation.md"\n      gate_policy: "manual_only"\n      poll_interval_sec: 1\nintegrations:\n  notifications:\n    enabled: false\n`, 'utf-8')
+
+    plannerMocks.generateLoopPlan.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        stage: 'milestone_planning',
+        title: '列出实施里程碑',
+        description: 'Create the milestone plan.',
+        dependencies: [],
+        successCriteria: ['Milestones are ordered and testable.'],
+      },
+      {
+        id: 'task-2',
+        stage: 'implementation',
+        title: '按里程碑实施',
+        description: 'Implement the milestone plan.',
+        dependencies: ['task-1'],
+        successCriteria: ['Implementation follows the milestone order.'],
+      },
+    ])
+
+    const executorPrompts: string[] = []
+    providerMocks.factory = (input, config, actual) => {
+      if (input.logicalName === 'capabilities.loop.planner') {
+        return {
+          name: 'mock-planner',
+          chat: vi.fn().mockResolvedValue('{"confidence":0.95,"risks":[],"requireHumanConfirmation":false,"summary":"Stage completed."}'),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      if (input.logicalName === 'capabilities.loop.executor') {
+        return {
+          name: 'mock-executor',
+          chat: vi.fn(async (messages) => {
+            executorPrompts.push(messages[0]?.content || '')
+            return '# Stage Report\n\nCompleted.\n\n## Artifacts\n- milestone-plan.json'
+          }),
+          chatStream: vi.fn(async function * () {}),
+        }
+      }
+      return actual.createConfiguredProvider(input, config as never)
+    }
+
+    const ctx = createCapabilityContext({
+      cwd: dir,
+      configPath,
+    })
+
+    const result = await runCapability(loopCapability, {
+      mode: 'run',
+      goal: 'Complete delivery flow',
+      prdPath,
+      waitHuman: false,
+    }, ctx)
+
+    expect(result.result.status).toBe('completed')
+    expect(result.result.session?.artifacts.milestonePlanPath).toBeTruthy()
+    expect(existsSync(result.result.session!.artifacts.milestonePlanPath!)).toBe(true)
+    const milestonePlan = JSON.parse(readFileSync(result.result.session!.artifacts.milestonePlanPath!, 'utf-8')) as {
+      milestones: Array<{ id: string; title: string; status: string }>
+    }
+    expect(milestonePlan.milestones[0]).toMatchObject({
+      id: 'M1',
+      title: 'Complete delivery flow',
+      status: 'pending',
+    })
+    expect(executorPrompts[1]).toContain('Milestone implementation plan')
+    expect(executorPrompts[1]).toContain(result.result.session!.artifacts.milestonePlanPath)
   })
 
   it('keeps distinct handoff cards when the same stage appears more than once', async () => {

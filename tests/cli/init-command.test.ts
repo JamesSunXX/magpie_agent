@@ -331,7 +331,7 @@ describe('init CLI command helpers', () => {
 
     const content = generateConfig(['codex', 'gemini-cli', 'kiro'])
 
-    expect(content).toContain('stages: [prd_review, domain_partition, trd_generation, dev_preparation, red_test_confirmation, implementation, green_fixup, unit_mock_test, integration_test]')
+    expect(content).toContain('stages: [prd_review, domain_partition, trd_generation, milestone_planning, dev_preparation, red_test_confirmation, implementation, green_fixup, unit_mock_test, integration_test]')
     expect(content).toContain('stage_bindings:')
     expect(content).toContain('implementation:')
     expect(content).toContain('primary:')

@@ -11,6 +11,7 @@ const FORMAL_DOC_TYPES = ['prd', 'story', 'trd', 'api_design', 'task', 'feature_
 const PROCESS_ARTIFACT_STAGES = new Set([
   'prd_review',
   'domain_partition',
+  'milestone_planning',
   'domain_overview',
   'synthesis',
   'constraint_check',

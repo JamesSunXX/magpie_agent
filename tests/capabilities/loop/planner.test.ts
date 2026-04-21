@@ -97,4 +97,81 @@ describe('generateLoopPlan', () => {
       },
     ])
   })
+
+  it('creates default milestone planning copy for the milestone stage', async () => {
+    const planner: AIProvider = {
+      name: 'mock',
+      chat: vi.fn(async () => {
+        throw new Error('planner unavailable')
+      }),
+      async *chatStream() {},
+    }
+
+    const tasks = await generateLoopPlan(
+      planner,
+      'Ship checkout flow',
+      '/tmp/prd.md',
+      ['milestone_planning']
+    )
+
+    expect(tasks).toEqual([
+      {
+        id: 'task-1',
+        stage: 'milestone_planning',
+        title: 'Milestone planning',
+        description: 'Split the accepted TRD into ordered implementation milestones for: Ship checkout flow',
+        dependencies: [],
+        successCriteria: ['Implementation milestones are ordered, scoped, and independently checkable'],
+      },
+    ])
+  })
+
+  it('fills missing planner fields from stage defaults', async () => {
+    const planner: AIProvider = {
+      name: 'mock',
+      chat: vi.fn(async () => '```json\n{"tasks":[{"stage":"implementation"}]}\n```'),
+      async *chatStream() {},
+    }
+
+    const tasks = await generateLoopPlan(
+      planner,
+      'Ship checkout flow',
+      '/tmp/prd.md',
+      ['implementation']
+    )
+
+    expect(tasks).toEqual([
+      {
+        id: 'task-1',
+        stage: 'implementation',
+        title: 'Implementation',
+        description: 'Make the primary code changes required to deliver: Ship checkout flow',
+        dependencies: [],
+        successCriteria: ['The planned code changes are in place and aligned with the accepted scope'],
+      },
+    ])
+  })
+
+  it('keeps default copy for verification stages', async () => {
+    const planner: AIProvider = {
+      name: 'mock',
+      chat: vi.fn(async () => {
+        throw new Error('planner unavailable')
+      }),
+      async *chatStream() {},
+    }
+
+    const tasks = await generateLoopPlan(
+      planner,
+      'Ship checkout flow',
+      '/tmp/prd.md',
+      ['green_fixup', 'unit_mock_test', 'integration_test']
+    )
+
+    expect(tasks.map((task) => task.title)).toEqual([
+      'Green fixup',
+      'Unit and mock test',
+      'Integration test',
+    ])
+  })
 })

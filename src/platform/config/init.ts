@@ -276,6 +276,7 @@ function buildDefaultLoopStages() {
     'prd_review',
     'domain_partition',
     'trd_generation',
+    'milestone_planning',
     'dev_preparation',
     'red_test_confirmation',
     'implementation',
