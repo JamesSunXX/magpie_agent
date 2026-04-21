@@ -88,6 +88,38 @@ describe('harness-server CLI command', () => {
         waitingNextCycle: 1,
         blocked: 0,
       },
+      observability: {
+        currentSession: {
+          sessionId: 'harness-running',
+          status: 'in_progress',
+          stage: 'developing',
+          tools: ['kiro', 'codex'],
+          executionIsolationMode: 'worktree',
+        },
+        nextRetry: {
+          sessionId: 'harness-retry',
+          nextRetryAt: '2026-04-12T00:05:00.000Z',
+          retryCount: 2,
+          lastError: 'Codex timed out',
+        },
+        recentFailures: [
+          {
+            sessionId: 'harness-retry',
+            stage: 'reviewing',
+            reason: 'Codex timed out',
+            recordPath: '/tmp/failure.json',
+          },
+        ],
+        recentEvents: [
+          {
+            sessionId: 'harness-running',
+            timestamp: '2026-04-12T00:01:00.000Z',
+            type: 'stage_changed',
+            stage: 'developing',
+            summary: 'Started development.',
+          },
+        ],
+      },
     })
 
     const { harnessServerCommand } = await import('../../src/cli/commands/harness-server.js')
@@ -101,6 +133,10 @@ describe('harness-server CLI command', () => {
     expect(logSpy).toHaveBeenCalledWith('Tmux: magpie-harness-server')
     expect(logSpy).toHaveBeenCalledWith(`Updated: ${formatExpectedLocalDateTime('2026-04-12T00:00:00.000Z')}`)
     expect(logSpy).toHaveBeenCalledWith('Queue: queued=2 running=1 waiting_retry=1 waiting_next_cycle=1 blocked=0')
+    expect(logSpy).toHaveBeenCalledWith('Current: harness-running stage=developing status=in_progress isolation=worktree tools=kiro,codex')
+    expect(logSpy).toHaveBeenCalledWith(`Next retry: harness-retry at ${formatExpectedLocalDateTime('2026-04-12T00:05:00.000Z')} retry_count=2 last_error=Codex timed out`)
+    expect(logSpy).toHaveBeenCalledWith('Recent failure: harness-retry stage=reviewing reason=Codex timed out')
+    expect(logSpy).toHaveBeenCalledWith(`Recent event: ${formatExpectedLocalDateTime('2026-04-12T00:01:00.000Z')} harness-running stage_changed developing Started development.`)
     logSpy.mockRestore()
   })
 

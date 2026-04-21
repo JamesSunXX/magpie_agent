@@ -87,6 +87,10 @@ export interface HarnessResult {
       roleRoundsDir?: string
       workspaceMode?: 'current' | 'worktree'
       workspacePath?: string
+      executionIsolationMode?: 'disabled' | 'worktree' | 'container'
+      executionRecoveryPath?: string
+      executionContainerImage?: string
+      toolManifestPath?: string
       worktreeBranch?: string
       executionHost?: ExecutionHost
       tmuxSession?: string

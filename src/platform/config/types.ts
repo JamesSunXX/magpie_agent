@@ -380,11 +380,29 @@ export interface ImIntegrationConfig {
   providers?: Record<string, ImProviderConfig>
 }
 
+export interface FeishuWikiProviderConfig {
+  type: 'feishu-wiki'
+  enabled?: boolean
+  app_id: string
+  app_secret: string
+  /** Default wiki space_id for creating new docs. */
+  default_space_id?: string
+}
+
+export type WikiProviderConfig = FeishuWikiProviderConfig
+
+export interface WikiIntegrationConfig {
+  enabled?: boolean
+  default_provider?: string
+  providers?: Record<string, WikiProviderConfig>
+}
+
 export interface IntegrationsConfig {
   notifications?: NotificationsIntegrationConfig
   planning?: PlanningIntegrationConfig
   operations?: OperationsIntegrationConfig
   im?: ImIntegrationConfig
+  wiki?: WikiIntegrationConfig
 }
 
 export interface ReviewConfig {
@@ -441,6 +459,54 @@ export interface SafetyConfig {
   allow_dangerous_commands?: boolean
   dangerous_patterns?: string[]
   require_confirmation_for_dangerous?: boolean
+  permission_policy?: PermissionPolicyConfig
+}
+
+export type PermissionPolicyAction = 'allow' | 'deny' | 'confirm'
+export type CommandPermissionCategory = 'dangerous' | 'write' | 'read' | 'network' | 'git'
+export type ToolPermissionCategory = 'cli' | 'api' | 'im' | 'operations'
+
+export interface PermissionPolicyConfig {
+  command_categories?: Partial<Record<CommandPermissionCategory, PermissionPolicyAction>>
+  denied_path_patterns?: string[]
+  tool_categories?: Partial<Record<ToolPermissionCategory, PermissionPolicyAction>>
+}
+
+export type ExecutionIsolationMode = 'disabled' | 'worktree' | 'container'
+
+export interface ExecutionIsolationConfig {
+  enabled?: boolean
+  mode?: ExecutionIsolationMode
+  worktree_root?: string
+  container_image?: string
+}
+
+export interface CapabilityToolPolicy {
+  required?: string[]
+  optional?: string[]
+  disabled?: string[]
+  allowed?: string[]
+}
+
+export interface ToolLoadingConfig {
+  enabled?: boolean
+  globally_disabled?: string[]
+  capabilities?: Record<string, CapabilityToolPolicy>
+}
+
+export interface FailureBudgetConfig {
+  max_stage_retries?: number
+  max_task_failures?: number
+  max_same_signature_failures?: number
+}
+
+export interface ResourceGuardConfig {
+  enabled?: boolean
+  max_queue_size?: number
+  max_concurrent_harness?: number
+  max_task_runtime_ms?: number
+  max_stage_runtime_ms?: number
+  failure_budget?: FailureBudgetConfig
 }
 
 export interface QualityConfig {
@@ -453,6 +519,9 @@ export interface CapabilitiesConfig {
   trd?: TrdConfig
   routing?: RoutingConfig
   safety?: SafetyConfig
+  execution_isolation?: ExecutionIsolationConfig
+  tool_loading?: ToolLoadingConfig
+  resource_guard?: ResourceGuardConfig
   issue_fix?: IssueFixConfig
   docs_sync?: DocsSyncConfig
   post_merge_regression?: PostMergeRegressionConfig

@@ -7,6 +7,8 @@ import {
   appendWorkflowEvent,
   buildCommandSafetyConfig,
   classifyDangerousCommand,
+  evaluateToolPermission,
+  evaluateCommandPermission,
   ensureSessionScopedDirectories,
   generateWorkflowId,
   isRecoverableHarnessSession,
@@ -15,6 +17,7 @@ import {
   loadWorkflowSession,
   parseCommandArgs,
   persistWorkflowSession,
+  resolveExecutionIsolationContext,
   runSafeCommand,
   sessionDirFor,
 } from '../../../../src/capabilities/workflows/shared/runtime.js'
@@ -146,6 +149,44 @@ describe('workflow shared runtime helpers', () => {
     expect(second).toEqual(first)
     expect(existsSync(join(second.workspaceDir, 'workspace.keep'))).toBe(true)
     expect(existsSync(join(second.tempDir, 'temp.delete'))).toBe(false)
+  })
+
+  it('resolves a disabled execution isolation context to the current workspace', () => {
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-isolation-disabled-'))
+
+    const context = resolveExecutionIsolationContext({
+      cwd,
+      capability: 'loop',
+      sessionId: 'loop-a',
+      config: { enabled: false, mode: 'worktree' },
+    })
+
+    expect(context).toMatchObject({
+      enabled: false,
+      mode: 'disabled',
+      workspaceMode: 'current',
+      workspacePath: cwd,
+      recoveryPath: cwd,
+    })
+  })
+
+  it('resolves a worktree execution isolation context under the session workspace', () => {
+    cwd = mkdtempSync(join(tmpdir(), 'magpie-runtime-isolation-worktree-'))
+
+    const context = resolveExecutionIsolationContext({
+      cwd,
+      capability: 'harness',
+      sessionId: 'harness-a',
+      config: { enabled: true, mode: 'worktree' },
+    })
+
+    expect(context).toMatchObject({
+      enabled: true,
+      mode: 'worktree',
+      workspaceMode: 'worktree',
+      recoveryPath: context.workspacePath,
+    })
+    expect(context.workspacePath).toContain(join('.magpie', 'sessions', 'harness', 'harness-a', 'workspace'))
   })
 
   it('appends workflow events to the persisted jsonl stream', async () => {
@@ -288,6 +329,73 @@ describe('workflow shared runtime helpers', () => {
       allow_dangerous_commands: true,
       require_confirmation_for_dangerous: false,
     }))).toBeNull()
+  })
+
+  it('applies explicit command permission policy before running commands', () => {
+    const safety = buildCommandSafetyConfig({
+      permission_policy: {
+        command_categories: {
+          write: 'confirm',
+        },
+        denied_path_patterns: ['~/.ssh'],
+      },
+    })
+
+    expect(evaluateCommandPermission('cp key ~/.ssh/id_rsa', safety)).toMatchObject({
+      action: 'deny',
+      category: 'path',
+      matchedRule: '~/.ssh',
+    })
+    expect(evaluateCommandPermission('touch output.txt', safety)).toMatchObject({
+      action: 'confirm',
+      category: 'write',
+    })
+
+    const blocked = runSafeCommand(process.cwd(), 'cp key ~/.ssh/id_rsa', {
+      safety,
+      interactive: false,
+    })
+
+    expect(blocked.passed).toBe(false)
+    expect(blocked.output).toContain('Command blocked by permission policy')
+    expect(blocked.output).toContain('~/.ssh')
+  })
+
+  it('applies tool category permission policy', () => {
+    const safety = buildCommandSafetyConfig({
+      permission_policy: {
+        tool_categories: {
+          im: 'deny',
+          operations: 'confirm',
+        },
+      },
+    })
+
+    expect(evaluateToolPermission('im', safety)).toMatchObject({
+      action: 'deny',
+      category: 'im',
+      matchedRule: 'im',
+    })
+    expect(evaluateToolPermission('operations', safety)).toMatchObject({
+      action: 'confirm',
+      category: 'operations',
+      matchedRule: 'operations',
+    })
+    expect(evaluateToolPermission('api', safety)).toMatchObject({
+      action: 'allow',
+      category: 'api',
+    })
+  })
+
+  it('terminates a command that exceeds the configured runtime timeout', () => {
+    const result = runSafeCommand(
+      process.cwd(),
+      'node -e "setInterval(function(){}, 1000)"',
+      { timeoutMs: 50 }
+    )
+
+    expect(result.passed).toBe(false)
+    expect(result.output.toLowerCase()).toContain('timed out')
   })
 
   it('generates workflow ids and session directories under MAGPIE_HOME', () => {

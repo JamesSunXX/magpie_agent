@@ -6,7 +6,12 @@ import { dirname, join, resolve } from 'path'
 import type { CapabilityContext } from '../../../core/capability/context.js'
 import { createCapabilityContext } from '../../../core/capability/context.js'
 import { runCapability } from '../../../core/capability/runner.js'
-import { createRoutingDecision, isRoutingEnabled } from '../../routing/index.js'
+import {
+  assertCapabilityToolManifestReady,
+  createRoutingDecision,
+  isRoutingEnabled,
+  resolveCapabilityToolManifest,
+} from '../../routing/index.js'
 import type {
   HumanConfirmationItem,
   LoopReliablePoint,
@@ -27,7 +32,7 @@ import type {
   LoopVerificationStepConfig,
   MagpieConfig,
 } from '../../../config/types.js'
-import type { LoopStageBindingsConfig } from '../../../platform/config/types.js'
+import type { LoopStageBindingsConfig, ResourceGuardConfig } from '../../../platform/config/types.js'
 import type { NotificationEvent } from '../../../platform/integrations/notifications/types.js'
 import { createNotificationRouter } from '../../../platform/integrations/notifications/factory.js'
 import { dispatchStageNotification } from '../../../platform/integrations/notifications/stage-dispatch.js'
@@ -43,6 +48,7 @@ import {
   buildCommandSafetyConfig,
   ensureSessionScopedDirectories,
   isRecoverableLoopSession,
+  resolveExecutionIsolationContext,
   runSafeCommand,
   resolveWorkflowFailureArtifacts,
 } from '../../workflows/shared/runtime.js'
@@ -590,6 +596,27 @@ function resolveLoopConfig(
   }
 }
 
+function applyResourceGuardStageRuntime(
+  runtime: LoopRuntimeConfig,
+  guard: ResourceGuardConfig | undefined
+): void {
+  if (guard?.enabled !== true || !guard.max_stage_runtime_ms) {
+    return
+  }
+
+  const maxStageRuntimeMs = guard.max_stage_runtime_ms
+  runtime.executionTimeout = {
+    ...runtime.executionTimeout,
+    defaultMs: Math.min(runtime.executionTimeout.defaultMs, maxStageRuntimeMs),
+    minMs: Math.min(runtime.executionTimeout.minMs, maxStageRuntimeMs),
+    maxMs: Math.min(runtime.executionTimeout.maxMs, maxStageRuntimeMs),
+    stageOverridesMs: Object.fromEntries(
+      Object.entries(runtime.executionTimeout.stageOverridesMs)
+        .map(([stage, timeoutMs]) => [stage, Math.min(timeoutMs, maxStageRuntimeMs)])
+    ),
+  }
+}
+
 async function createStageRescueProvider(input: {
   stage: LoopStageName
   session: LoopSession
@@ -685,7 +712,8 @@ function runOptionalCommand(
   cwd: string,
   command: string | undefined,
   skippedMessage: string,
-  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  timeoutMs?: number
 ): { passed: boolean; output: string; commandLabel: string } {
   if (!command) {
     return {
@@ -698,6 +726,7 @@ function runOptionalCommand(
   const result = runSafeCommand(cwd, command, {
     safety: commandSafety,
     interactive: process.stdin.isTTY && process.stdout.isTTY,
+    timeoutMs,
   })
   return {
     ...result,
@@ -708,12 +737,14 @@ function runOptionalCommand(
 function runVerificationSteps(
   cwd: string,
   steps: Array<{ label: string; command: string }>,
-  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  timeoutMs?: number
 ): { passed: boolean; output: string } {
   const results = steps.map((step) => {
     const result = runSafeCommand(cwd, step.command, {
       safety: commandSafety,
       interactive: process.stdin.isTTY && process.stdout.isTTY,
+      timeoutMs,
     })
 
     return {
@@ -731,13 +762,15 @@ function runVerificationSteps(
 function runOptionalMockCommand(
   cwd: string,
   command: string | undefined,
-  commandSafety: ReturnType<typeof buildCommandSafetyConfig>
+  commandSafety: ReturnType<typeof buildCommandSafetyConfig>,
+  timeoutMs?: number
 ): { passed: boolean; output: string; commandLabel: string } {
   const result = runOptionalCommand(
     cwd,
     command,
     'Skipped: no mock test command configured.',
-    commandSafety
+    commandSafety,
+    timeoutMs
   )
 
   if (command?.trim() === LEGACY_DEFAULT_MOCK_TEST_COMMAND
@@ -2420,15 +2453,16 @@ async function executeStageAttempt(
   if (stage === 'unit_mock_test') {
     // Prefer project-defined verification steps so this stage can be reused across stacks.
     if (runtime.commands.unitMockTestSteps && runtime.commands.unitMockTestSteps.length > 0) {
-      const verification = runVerificationSteps(runCwd, runtime.commands.unitMockTestSteps, commandSafety)
+      const verification = runVerificationSteps(runCwd, runtime.commands.unitMockTestSteps, commandSafety, timeoutMs)
       stageSucceeded = verification.passed
       testOutput = verification.output
     } else {
       const unit = runSafeCommand(runCwd, runtime.commands.unitTest, {
         safety: commandSafety,
         interactive: process.stdin.isTTY && process.stdout.isTTY,
+        timeoutMs,
       })
-      const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety)
+      const mock = runOptionalMockCommand(runCwd, runtime.commands.mockTest, commandSafety, timeoutMs)
       stageSucceeded = unit.passed && mock.passed
       testOutput = [
         `## Unit Test (${runtime.commands.unitTest})\n${unit.output}`,
@@ -2439,6 +2473,7 @@ async function executeStageAttempt(
     const integration = runSafeCommand(runCwd, runtime.commands.integrationTest, {
       safety: commandSafety,
       interactive: process.stdin.isTTY && process.stdout.isTTY,
+      timeoutMs,
     })
     stageSucceeded = integration.passed
     testOutput = `## Integration Test (${runtime.commands.integrationTest})\n${integration.output}`
@@ -4396,6 +4431,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
 
   const config = loadConfig(ctx.configPath)
   const loopRuntime = resolveLoopConfig(config.capabilities.loop, config.capabilities.discuss?.reviewers, ctx.configPath)
+  applyResourceGuardStageRuntime(loopRuntime, config.capabilities.resource_guard)
   const executionHost = resolveExecutionHost(prepared)
   const commandSafety = buildCommandSafetyConfig(config.capabilities.safety)
   const routingDecision = isRoutingEnabled(config) && prepared.goal && prepared.prdPath
@@ -4425,6 +4461,23 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const sessionId = process.env.MAGPIE_SESSION_ID?.trim() || generateId()
   const sessionDir = getRepoSessionDir(ctx.cwd, 'loop', sessionId)
   const providerSessionsPath = join(sessionDir, 'provider-sessions.json')
+  const toolManifestPath = join(sessionDir, 'tool-manifest.json')
+  const toolManifest = resolveCapabilityToolManifest({
+    capabilityId: 'loop',
+    config,
+    routeBindings: routingDecision
+      ? [routingDecision.planning, routingDecision.execution]
+      : [
+          { tool: loopRuntime.plannerTool, model: loopRuntime.plannerModel, agent: loopRuntime.plannerAgent },
+          { tool: loopRuntime.executorTool, model: loopRuntime.executorModel, agent: loopRuntime.executorAgent },
+        ],
+    reviewerIds: routingDecision?.reviewerIds,
+  })
+  if (toolManifest.enabled) {
+    assertCapabilityToolManifestReady(toolManifest)
+  }
+  await mkdir(sessionDir, { recursive: true })
+  await writeFile(toolManifestPath, JSON.stringify(toolManifest, null, 2), 'utf-8')
 
   const { planner, executor, autoCommitProvider } = await withProviderSessionScope({
     sessionsPath: providerSessionsPath,
@@ -4484,13 +4537,22 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
   const sessionScopedDirs = await ensureSessionScopedDirectories(ctx.cwd, 'loop', sessionId, {
     clearTemp: true,
   })
+  const isolationContext = resolveExecutionIsolationContext({
+    cwd: ctx.cwd,
+    capability: 'loop',
+    sessionId,
+    config: config.capabilities.execution_isolation,
+  })
   await mkdir(sessionDir, { recursive: true })
   let branchName: string | undefined
   let branchNameResult: AutoBranchNameResult | undefined
   let workspaceMode: 'current' | 'worktree' = 'current'
   let workspacePath = ctx.cwd
   let worktreeFailureReason: string | undefined
-  const shouldUseWorktree = prepared.dryRun !== true && (routingDecision?.tier || prepared.complexity) === 'complex'
+  const shouldUseWorktree = prepared.dryRun !== true && (
+    (routingDecision?.tier || prepared.complexity) === 'complex'
+    || isolationContext.mode === 'worktree'
+  )
   if (shouldUseWorktree) {
     const worktree = await ensureWorktree({
       prefix: loopRuntime.autoBranchPrefix,
@@ -4632,6 +4694,10 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
       sessionUploadsDir: sessionScopedDirs.uploadsDir,
       sessionOutputsDir: sessionScopedDirs.outputsDir,
       sessionTempDir: sessionScopedDirs.tempDir,
+      executionIsolationMode: isolationContext.mode,
+      executionRecoveryPath: workspacePath,
+      ...(isolationContext.containerImage ? { executionContainerImage: isolationContext.containerImage } : {}),
+      toolManifestPath,
       ...(branchName ? { worktreeBranch: branchName } : {}),
       executionHost,
       ...resolveTmuxArtifacts(),

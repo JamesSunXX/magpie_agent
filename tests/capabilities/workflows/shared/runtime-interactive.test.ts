@@ -44,6 +44,60 @@ describe('workflow shared runtime interactive safety', () => {
     expect(closeSyncMock).toHaveBeenCalledTimes(2)
   })
 
+  it('prompts before allowing a command category that requires confirmation', () => {
+    openSyncMock
+      .mockReturnValueOnce(11)
+      .mockReturnValueOnce(12)
+    readSyncMock.mockImplementation((_fd, buffer: Buffer) => {
+      buffer.write('yes\n')
+      return 4
+    })
+
+    const result = enforceCommandSafety('touch output.txt', {
+      interactive: true,
+      safety: buildCommandSafetyConfig({
+        permission_policy: {
+          command_categories: {
+            write: 'confirm',
+          },
+        },
+      }),
+    })
+
+    expect(result).toBeNull()
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      12,
+      expect.stringContaining('Permission policy requires confirmation')
+    )
+    expect(closeSyncMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('blocks a command category confirmation when the user does not approve', () => {
+    openSyncMock
+      .mockReturnValueOnce(11)
+      .mockReturnValueOnce(12)
+    readSyncMock.mockImplementation((_fd, buffer: Buffer) => {
+      buffer.write('no\n')
+      return 3
+    })
+
+    const result = enforceCommandSafety('touch output.txt', {
+      interactive: true,
+      safety: buildCommandSafetyConfig({
+        permission_policy: {
+          command_categories: {
+            write: 'confirm',
+          },
+        },
+      }),
+    })
+
+    expect(result?.passed).toBe(false)
+    expect(result?.blocked).toBe(true)
+    expect(result?.output).toContain('Command blocked by permission policy')
+    expect(result?.output).toContain('confirmation was not approved')
+  })
+
   it('blocks the command when tty confirmation cannot be read', () => {
     openSyncMock.mockImplementation(() => {
       throw new Error('tty unavailable')

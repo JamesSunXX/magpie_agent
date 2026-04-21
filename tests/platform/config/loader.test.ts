@@ -122,6 +122,80 @@ describe('platform config loader', () => {
     )
   })
 
+  it('loads execution isolation config', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.execution_isolation = {
+      enabled: true,
+      mode: 'worktree',
+      worktree_root: '.magpie/worktrees',
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    const loaded = loadConfig('/path/to/config.yaml')
+
+    expect(loaded.capabilities.execution_isolation).toEqual({
+      enabled: true,
+      mode: 'worktree',
+      worktree_root: '.magpie/worktrees',
+    })
+  })
+
+  it('throws when execution isolation mode is unknown', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.execution_isolation = {
+      enabled: true,
+      mode: 'virtual-machine',
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.execution_isolation.mode must be one of disabled, worktree, container'
+    )
+  })
+
+  it('loads tool loading config', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.tool_loading = {
+      enabled: true,
+      globally_disabled: ['claw'],
+      capabilities: {
+        loop: {
+          required: ['codex'],
+          optional: ['gemini'],
+          disabled: ['kiro'],
+        },
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    const loaded = loadConfig('/path/to/config.yaml')
+
+    expect(loaded.capabilities.tool_loading).toEqual({
+      enabled: true,
+      globally_disabled: ['claw'],
+      capabilities: {
+        loop: {
+          required: ['codex'],
+          optional: ['gemini'],
+          disabled: ['kiro'],
+        },
+      },
+    })
+  })
+
+  it('throws when tool loading names an unknown tool', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.tool_loading = {
+      enabled: true,
+      globally_disabled: ['unknown-tool'],
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.tool_loading.globally_disabled[0] references unknown tool "unknown-tool"'
+    )
+  })
+
   it('throws when config file not found', () => {
     vi.mocked(existsSync).mockReturnValue(false)
     expect(() => loadConfig('/path/to/missing.yaml')).toThrow('Config file not found')
@@ -241,6 +315,67 @@ describe('platform config loader', () => {
 
     expect(() => loadConfig('/path/to/config.yaml')).toThrow(
       'Config error: capabilities.safety.dangerous_patterns[1] must be a non-empty string'
+    )
+  })
+
+  it('accepts permission policy and resource guard settings', () => {
+    const config = structuredClone(validConfig)
+    config.capabilities.safety = {
+      permission_policy: {
+        command_categories: {
+          dangerous: 'deny',
+          write: 'confirm',
+        },
+        denied_path_patterns: ['~/.ssh', '.env'],
+        tool_categories: {
+          im: 'deny',
+          operations: 'confirm',
+        },
+      },
+    }
+    config.capabilities.resource_guard = {
+      enabled: true,
+      max_queue_size: 3,
+      max_concurrent_harness: 1,
+      max_task_runtime_ms: 3600000,
+      max_stage_runtime_ms: 900000,
+      failure_budget: {
+        max_stage_retries: 2,
+        max_task_failures: 3,
+        max_same_signature_failures: 2,
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config)
+
+    expect(() => loadConfig('/path/to/config.yaml')).not.toThrow()
+  })
+
+  it('rejects invalid permission policy actions', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.safety = {
+      permission_policy: {
+        command_categories: {
+          dangerous: 'maybe',
+        },
+      },
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.safety.permission_policy.command_categories.dangerous must be one of allow, deny, confirm'
+    )
+  })
+
+  it('rejects invalid resource guard limits', () => {
+    const config = structuredClone(validConfig) as Record<string, any>
+    config.capabilities.resource_guard = {
+      enabled: true,
+      max_queue_size: 0,
+    }
+    vi.mocked(parse).mockReturnValue(config as MagpieConfigV2)
+
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow(
+      'Config error: capabilities.resource_guard.max_queue_size must be > 0'
     )
   })
 

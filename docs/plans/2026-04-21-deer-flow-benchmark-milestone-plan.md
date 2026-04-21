@@ -2,243 +2,350 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在不破坏 Magpie 现有命令体系的前提下，分阶段补齐“上手更快、默认更安全、长流程更稳、扩展更可控”的关键能力。
+**Goal:** 在不破坏 Magpie 现有命令体系的前提下，按里程碑补齐“执行更隔离、能力更按需、后台更可观测、权限更稳妥、飞书链路更闭环”的关键能力。
 
-**Architecture:** 以现有分层为边界推进：CLI 只负责入口，能力层承接业务流程，核心层承接通用机制，平台层承接配置和外部集成。每个里程碑都先补测试，再做最小改动，避免一次性大重构。
+**Architecture:** 继续沿用现有分层：CLI 只负责入口和展示，能力层承接 `loop` / `harness` / `harness-server` 流程，核心层承接隔离、权限、观测和失败策略，平台层承接配置与飞书集成。每个里程碑都必须有独立开关、独立验证和明确回退方式，避免一次性大重构。
 
-**Tech Stack:** TypeScript、Commander、Vitest、现有 Magpie capability runtime、仓库内 `.magpie/` 会话持久化
+**Tech Stack:** TypeScript、Commander、Vitest、现有 Magpie capability runtime、仓库内 `.magpie/` 会话持久化、现有 Feishu IM 集成
 
 ---
 
 ## 实施完成标准
 
-- 新增或改动能力都能在命令行直接使用，并且有对应帮助说明。
-- 高风险能力默认关闭，必须显式开启后才能执行。
-- 会话产物目录可按会话隔离，恢复时不会混用旧现场。
-- 长流程在上下文接近上限时能自动收敛，不影响继续执行。
-- 关键入口文档与能力映射文档同步更新并通过文档检查。
-- 全量验证通过：`npm run test:run`、`npm run test:coverage`、`npm run build`、`npm run check:docs`。
+- 每个里程碑都能单独交付、单独验证、单独回退。
+- 高风险能力默认关闭，必须显式开启后才执行。
+- 后台长任务必须能保留现场、记录失败、支持恢复。
+- 新增状态、产物和配置必须能通过 `status` / `inspect` / TUI 或文档找到。
+- 命令、能力、配置或项目结构变化必须同步更新入口文档。
+- 最终验收通过：`npm run test:run`、`npm run test:coverage`、`npm run build`、`npm run lint`、`npm run check:boundaries`、`npm run check:docs`。
+
+## 当前范围冻结
+
+本轮 DeerFlow 对标只保留 5 个方向：
+
+1. 强化执行隔离，优先降低长任务误伤本地环境的风险。
+2. 技能和工具按需加载，让任务只带必要能力。
+3. 增强后台任务观测，能直接看到进度、失败点和资源消耗。
+4. 完善权限、失败暂停和资源保护，避免无效重试或失控执行。
+5. IM 只保留飞书链路，继续完善现有飞书发单、确认和状态回写。
+
+明确不进入本轮范围：
+
+- 不扩展 Slack、微信、企业微信、Telegram 等其他 IM 渠道。
+- 不把 Magpie 改造成泛用内容生产平台。
+- 不为对齐 DeerFlow 重写现有工程闭环架构。
+
+## 现状基线
+
+已经具备的能力：
+
+- `doctor` 已提供环境与配置体检。
+- `capabilities.safety.allow_dangerous_commands` 已默认关闭危险命令。
+- `loop` / `harness` 已有会话目录、恢复现场、失败账本和上下文压缩。
+- 能力启停已通过 `capabilities.<name>.enabled` 接入。
+- 飞书链路已支持人工确认、文本发单、表单发单和状态回写。
+- `harness-server` 已有后台队列、失败重试和服务状态持久化。
+
+本计划不重复实现这些已有能力，只在其上补齐隔离、按需加载、观测、权限保护和飞书闭环。
 
 ## 里程碑总览
 
 | 里程碑 | 目标 | 预计工期 | 完成判定 |
 | --- | --- | --- | --- |
-| M0 | 锁定范围与基线 | 0.5 天 | 有冻结的目标清单、影响面清单、回退策略 |
-| M1 | 上手引导与体检入口 | 1.5 天 | 初始化后可一键检查环境并给出可执行修复建议 |
-| M2 | 默认安全护栏 | 1.5 天 | 高风险执行默认不可用，显式开启后才运行 |
-| M3 | 会话隔离工作区 | 2 天 | 每个会话有独立输入/输出/临时目录，恢复不串场 |
-| M4 | 扩展开关与按需加载 | 2 天 | 能力可配置启停，关闭后不参与执行与提示 |
-| M5 | 长流程上下文收敛与记忆沉淀 | 2 天 | 长流程自动压缩上下文并保留关键决策 |
-| M6 | 文档收口与发布验收 | 1 天 | 文档齐全、回归通过、可灰度发布 |
+| M0 | 基线冻结与回退合同 | 0.5 天 | 范围、开关、验证命令和回退路径固定 |
+| M1 | 执行隔离 | 2 天 | 长任务可选择隔离执行，失败后可恢复原现场 |
+| M2 | 技能和工具按需加载 | 2 天 | 每个任务只加载声明需要的工具/技能 |
+| M3 | 后台任务观测 | 2 天 | 能看到阶段进度、失败点、重试和资源摘要 |
+| M4 | 权限、失败暂停和资源保护 | 2 天 | 权限决策、失败预算和资源上限可配置、可解释 |
+| M5 | 飞书链路闭环 | 1.5 天 | 飞书线程里能完成发单、确认、状态查看和失败提示 |
+| M6 | 总体验收与发布收口 | 1 天 | 文档、测试、构建、回退演练全部通过 |
 
 ## 依赖关系
 
-- M1 依赖 M0。
-- M2 可与 M3 并行，但都依赖 M1 的配置骨架。
-- M4 依赖 M2 与 M3 的配置和目录约定。
-- M5 依赖 M3 的会话隔离与 M4 的能力加载机制。
-- M6 依赖前五个里程碑全部通过。
+- M0 是所有后续工作的入口。
+- M1 是 M3、M4 的前置基础，因为观测和保护需要知道任务运行在哪个执行环境里。
+- M2 可与 M1 并行设计，但落地时必须复用 M1 的执行上下文。
+- M3 依赖 M1 的执行上下文和现有失败账本。
+- M4 依赖 M1 的隔离配置、M2 的工具声明和 M3 的观测事件。
+- M5 依赖 M3 的观测摘要和 M4 的权限结果。
+- M6 依赖 M1 到 M5 全部完成。
 
-## Milestone 0: 锁定范围与基线
+## Milestone 0: 基线冻结与回退合同
 
 **Files:**
 - Modify: `docs/plans/2026-04-21-deer-flow-benchmark-milestone-plan.md`
 - Modify: `docs/references/capabilities.md`
+- Modify: `README.md`
 
-- [ ] **Step 1: 固化借鉴目标与不做项**
-  - 输出“要做 6 项、暂不做 3 项”的边界清单，避免后续扩散范围。
+- [x] **Step 1: 固化范围与不做项**
+  - 保留 5 个方向：执行隔离、按需加载、后台观测、权限保护、飞书链路。
+  - 明确多 IM 渠道、泛内容生产、架构重写不进入本轮。
 
-- [ ] **Step 2: 建立现状基线快照**
-  - 记录当前 `init`、`loop`、`harness`、`im-server` 的行为和已知限制，作为后续回归对照。
+- [x] **Step 2: 建立配置开关清单**
+  - `capabilities.execution_isolation.enabled`
+  - `capabilities.tool_loading.enabled`
+  - `capabilities.resource_guard.enabled`
+  - `integrations.im.enabled`
+  - 后台观测是只读增量，不改变执行路径；回退时忽略新增摘要，继续用原会话和失败记录排查。
 
-- [ ] **Step 3: 明确回退开关**
-  - 为每个后续里程碑定义一个可快速关闭的配置开关，确保上线可控。
-
-- [ ] **Step 4: 跑一次全量基线验证**
+- [x] **Step 3: 建立基线验证**
   - Run: `npm run test:run`
   - Run: `npm run build`
-  - Expected: PASS，生成基线记录。
+  - Run: `npm run check:docs`
+  - Expected: PASS，作为后续里程碑回归基线。
 
-**Milestone 0 exit:** 范围冻结，后续开发不再新增同级目标。
+- [x] **Step 4: 明确回退路径**
+  - 任一里程碑异常时，先关闭对应开关，再用 `loop inspect` / `harness inspect` / `harness-server status` / 会话 `failures/` 定位。
 
-## Milestone 1: 上手引导与体检入口
+**Milestone 0 exit:** 范围、开关、验证和回退合同固定，后续不新增同级目标。
 
-**Files:**
-- Modify: `src/cli/program.ts`
-- Modify: `src/cli/commands/init.ts`
-- Create: `src/cli/commands/doctor.ts`
-- Create: `src/capabilities/stats/application/doctor.ts`
-- Modify: `src/platform/config/loader.ts`
-- Test: `tests/cli/init-command.test.ts`
-- Create: `tests/cli/doctor-command.test.ts`
-
-- [ ] **Step 1: 先补失败测试**
-  - 为“缺配置、缺鉴权、缺依赖”三类场景写命令级测试，先看到失败结果。
-
-- [ ] **Step 2: 增加 `magpie doctor` 命令**
-  - 命令输出三段结果：通过项、失败项、下一步命令。
-
-- [ ] **Step 3: 让 `magpie init` 增加引导跳转**
-  - 初始化结束后直接提示并可选择执行体检命令。
-
-- [ ] **Step 4: 输出可执行修复建议**
-  - 每个失败项都给一条可复制执行的命令，不输出空泛建议。
-
-- [ ] **Step 5: 验证**
-  - Run: `npm run test:run -- tests/cli/init-command.test.ts tests/cli/doctor-command.test.ts`
-  - Expected: PASS
-
-**Milestone 1 exit:** 新用户执行 `init -> doctor` 能得到明确的下一步动作。
-
-## Milestone 2: 默认安全护栏
+## Milestone 1: 执行隔离
 
 **Files:**
 - Modify: `src/platform/config/types.ts`
+- Modify: `src/platform/config/init.ts`
 - Modify: `src/platform/config/loader.ts`
+- Modify: `src/capabilities/workflows/shared/runtime.ts`
 - Modify: `src/capabilities/loop/application/execute.ts`
 - Modify: `src/capabilities/workflows/harness/application/execute.ts`
-- Modify: `src/platform/operations/router.ts`
+- Modify: `src/capabilities/workflows/harness-server/runtime.ts`
 - Test: `tests/platform/config/loader.test.ts`
-- Test: `tests/platform/operations/router.test.ts`
-- Test: `tests/capabilities/loop/loop.test.ts`
-
-- [ ] **Step 1: 定义安全开关默认值**
-  - 高风险动作改为默认关闭，只有显式开启才允许执行。
-
-- [ ] **Step 2: 在执行入口统一拦截**
-  - 对危险命令和敏感目录写操作做统一前置拦截，不在多个能力里重复判断。
-
-- [ ] **Step 3: 给用户明确拒绝原因**
-  - 被拦截时返回“为什么被拒绝 + 如何开启 + 风险提示”三段信息。
-
-- [ ] **Step 4: 验证**
-  - Run: `npm run test:run -- tests/platform/config/loader.test.ts tests/platform/operations/router.test.ts tests/capabilities/loop/loop.test.ts`
-  - Expected: PASS
-
-**Milestone 2 exit:** 默认配置下不会误执行高风险动作。
-
-## Milestone 3: 会话隔离工作区
-
-**Files:**
-- Modify: `src/capabilities/workflows/shared/runtime.ts`
-- Modify: `src/capabilities/loop/application/session.ts`
-- Modify: `src/capabilities/workflows/harness/application/session.ts`
-- Modify: `src/platform/paths.ts`
 - Test: `tests/capabilities/workflows/shared/runtime.test.ts`
 - Test: `tests/capabilities/loop/loop.test.ts`
 - Test: `tests/capabilities/workflows/harness.test.ts`
+- Test: `tests/capabilities/workflows/harness-server.test.ts`
 
-- [ ] **Step 1: 设计统一目录约定**
-  - 每个会话固定 `workspace / uploads / outputs / temp` 四类目录。
+- [x] **Step 1: 增加隔离配置**
+  - 支持 `disabled`、`worktree`、`container` 三种模式。
+  - 默认使用 `worktree` 或当前已有兼容路径，不默认启用容器模式。
 
-- [ ] **Step 2: 会话创建时一次性建目录**
-  - 保证目录缺失时自动补齐，不依赖人工准备。
+- [x] **Step 2: 抽出统一执行上下文**
+  - 在 shared runtime 里生成执行上下文，包含真实工作目录、会话目录、隔离模式、恢复路径和清理策略。
+  - `loop`、`harness`、`harness-server` 只读取这份上下文，不各自拼路径。
 
-- [ ] **Step 3: 恢复流程复用原会话目录**
-  - 续跑时必须锁定原目录，禁止切到新目录造成串场。
+- [x] **Step 3: 接入 `loop` 与 `harness`**
+  - 新任务创建时记录隔离模式和工作目录。
+  - 恢复时必须复用原隔离上下文，不能切到新目录。
 
-- [ ] **Step 4: 清理策略最小化**
-  - 只清理临时目录，保留核心证据与产物目录。
+- [x] **Step 4: 接入后台服务**
+  - `harness-server` 入队、重试、恢复都带上隔离上下文。
+  - 失败时记录隔离模式和最后可恢复路径。
 
-- [ ] **Step 5: 验证**
-  - Run: `npm run test:run -- tests/capabilities/workflows/shared/runtime.test.ts tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness.test.ts`
+- [x] **Step 5: 验证**
+  - Run: `npm run test:run -- tests/platform/config/loader.test.ts tests/capabilities/workflows/shared/runtime.test.ts tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness.test.ts tests/capabilities/workflows/harness-server.test.ts`
   - Expected: PASS
 
-**Milestone 3 exit:** 多会话并行时现场互不干扰，失败后可原地恢复。
+**Milestone 1 exit:** 长任务可以在明确的隔离上下文中运行，失败后能从同一现场恢复。
 
-## Milestone 4: 扩展开关与按需加载
+## Milestone 2: 技能和工具按需加载
 
 **Files:**
 - Modify: `src/platform/config/types.ts`
+- Modify: `src/platform/config/init.ts`
 - Modify: `src/platform/config/loader.ts`
-- Modify: `src/cli/program.ts`
-- Modify: `src/capabilities/routing/`
+- Modify: `src/capabilities/routing/index.ts`
+- Modify: `src/capabilities/loop/application/execute.ts`
+- Modify: `src/capabilities/workflows/harness/application/prepare.ts`
+- Modify: `src/capabilities/workflows/harness/application/execute.ts`
 - Test: `tests/platform/config/loader.test.ts`
-- Test: `tests/cli/program.test.ts`
-- Test: `tests/capabilities/routing/`（新增对应测试）
+- Test: `tests/capabilities/routing/index.test.ts`
+- Test: `tests/capabilities/loop/loop.test.ts`
+- Test: `tests/capabilities/workflows/harness.test.ts`
 
-- [x] **Step 1: 增加能力启停配置**
-  - 支持按能力开关，不改动已有命令名。
+- [x] **Step 1: 定义工具/技能声明格式**
+  - 每个能力声明默认需要的工具、可选工具和禁止工具。
+  - 配置允许按能力覆盖，不允许任务临时绕过禁用项。
 
-- [x] **Step 2: 路由层按配置装配能力**
-  - 关闭能力时不注册入口，也不出现在推荐清单里。
+- [x] **Step 2: 路由层生成任务工具清单**
+  - `loop`、`harness`、`workflow` 在准备阶段生成本次任务的有效工具清单。
+  - 关闭的工具不进入 provider 提示、执行上下文或推荐列表。
 
-- [x] **Step 3: 输出统一降级提示**
-  - 调用被关闭能力时返回“当前关闭 + 开启方式 + 替代路径”。
+- [x] **Step 3: 接入执行阶段**
+  - 执行时只把有效工具清单交给 provider 和操作路由。
+  - 缺失必需工具时在任务开始前失败，并输出具体修复建议。
 
-- [x] **Step 4: 验证**
-  - Run: `npm run test:run -- tests/platform/config/loader.test.ts tests/cli/program.test.ts`
+- [x] **Step 4: 接入文档与状态输出**
+  - `status` / `inspect` 能看到本次任务实际启用的工具。
+  - 能力文档说明默认工具和覆盖方式。
+
+- [x] **Step 5: 验证**
+  - Run: `npm run test:run -- tests/platform/config/loader.test.ts tests/capabilities/routing/index.test.ts tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness.test.ts`
   - Expected: PASS
 
-**Milestone 4 exit:** 核心主线保持精简，扩展能力按需启用。
+**Milestone 2 exit:** 每个任务都只加载必要工具，工具缺失或被禁用时能提前失败并说明原因。
 
-## Milestone 5: 长流程上下文收敛与记忆沉淀
+## Milestone 3: 后台任务观测
 
 **Files:**
-- Modify: `src/core/debate/`（上下文裁剪接入点）
-- Modify: `src/knowledge/runtime.ts`
-- Modify: `src/memory/`
-- Modify: `src/capabilities/loop/application/execute.ts`
-- Test: `tests/knowledge/runtime.test.ts`
-- Test: `tests/state/state-manager.test.ts`
-- Create: `tests/capabilities/loop/context-compaction.test.ts`
+- Modify: `src/core/failures/types.ts`
+- Modify: `src/core/failures/ledger.ts`
+- Modify: `src/capabilities/workflows/shared/runtime.ts`
+- Modify: `src/capabilities/workflows/harness-server/runtime.ts`
+- Modify: `src/cli/commands/harness-server.ts`
+- Modify: `src/cli/commands/harness.ts`
+- Modify: `src/tui/graph-workbench-loader.ts`
+- Modify: `src/tui/components/graph-workbench.tsx`
+- Test: `tests/core/failures/ledger.test.ts`
+- Test: `tests/capabilities/workflows/harness-server.test.ts`
+- Test: `tests/cli/harness-server-command.test.ts`
+- Test: `tests/tui/graph-workbench-loader.test.ts`
 
-- [x] **Step 1: 增加上下文长度阈值策略**
-  - 达到阈值时自动生成阶段摘要，保留决策和待办，压缩冗余对话。
+- [x] **Step 1: 定义观测事件**
+  - 事件覆盖入队、开始、阶段切换、工具调用摘要、重试、暂停、恢复、完成、失败。
+  - 事件必须带 sessionId、阶段、隔离模式、工具清单、耗时和失败引用。
 
-- [x] **Step 2: 关键结论沉淀到长期记忆**
-  - 仅沉淀稳定事实和约束，不沉淀临时推测。
+- [x] **Step 2: 后台服务写入观测摘要**
+  - `harness-server` 每次状态变化都追加事件。
+  - 会话目录保留本任务事件，仓库级状态保留队列摘要。
 
-- [x] **Step 3: 续跑时优先加载摘要而非原始长上下文**
-  - 控制输入体积，保证执行稳定性。
+- [x] **Step 3: CLI 展示观测结果**
+  - `harness-server status` 显示队列、当前运行、最近失败、下次重试。
+  - `harness inspect` 显示最近阶段、失败点、重试次数和启用工具。
 
-- [x] **Step 4: 验证**
-  - Run: `npm run test:run -- tests/knowledge/runtime.test.ts tests/state/state-manager.test.ts tests/capabilities/loop/context-compaction.test.ts`
+- [x] **Step 4: TUI 展示观测结果**
+  - 图谱工作台显示任务状态分布、当前注意项、最近事件和失败摘要。
+  - 不读取原始大日志，只读取结构化摘要。
+
+- [x] **Step 5: 验证**
+  - Run: `npm run test:run -- tests/core/failures/ledger.test.ts tests/capabilities/workflows/harness-server.test.ts tests/cli/harness-server-command.test.ts tests/tui/graph-workbench-loader.test.ts`
   - Expected: PASS
 
-**Milestone 5 exit:** 长流程可持续运行，不因上下文膨胀而失稳。
+**Milestone 3 exit:** 后台任务不用翻原始日志，也能看清进度、失败点、重试状态和关键资源摘要。
 
-## Milestone 6: 文档收口与发布验收
+## Milestone 4: 权限、失败暂停和资源保护
+
+**Files:**
+- Modify: `src/platform/config/types.ts`
+- Modify: `src/platform/config/init.ts`
+- Modify: `src/platform/config/loader.ts`
+- Modify: `src/capabilities/workflows/shared/runtime.ts`
+- Modify: `src/core/failures/recovery-policy.ts`
+- Modify: `src/capabilities/loop/application/execute.ts`
+- Modify: `src/capabilities/workflows/harness/application/execute.ts`
+- Modify: `src/capabilities/workflows/harness-server/runtime.ts`
+- Test: `tests/platform/config/loader.test.ts`
+- Test: `tests/capabilities/workflows/shared/runtime.test.ts`
+- Test: `tests/core/failures/recovery-policy.test.ts`
+- Test: `tests/capabilities/loop/loop.test.ts`
+- Test: `tests/capabilities/workflows/harness-server.test.ts`
+
+- [x] **Step 1: 定义权限策略**
+  - 配置支持按命令类别、路径范围、工具类别决定允许、拒绝或要求确认。
+  - 默认继续拒绝危险命令。
+
+- [x] **Step 2: 定义失败预算**
+  - 配置支持单阶段最大重试、单任务最大失败次数、同类失败熔断阈值。
+  - 超过预算时进入暂停或人工确认，不继续自动重试。
+
+- [x] **Step 3: 定义资源保护**
+  - 配置支持单阶段超时、后台任务最长运行时间、最大并发和最大排队数量。
+  - 后台服务在入队和执行前都检查资源限制。
+
+- [x] **Step 4: 接入失败恢复策略**
+  - `recovery-policy` 把权限拒绝、失败预算耗尽、资源限制命中区分成不同原因。
+  - `status` / `inspect` 给出清楚的暂停原因和下一步动作。
+
+- [x] **Step 5: 验证**
+  - Run: `npm run test:run -- tests/platform/config/loader.test.ts tests/capabilities/workflows/shared/runtime.test.ts tests/core/failures/recovery-policy.test.ts tests/capabilities/loop/loop.test.ts tests/capabilities/workflows/harness-server.test.ts`
+  - Expected: PASS
+
+**Milestone 4 exit:** 系统能解释为什么放行、拒绝、暂停或重试，并能在失败过多或资源超限时自动停住。
+
+## Milestone 5: 飞书链路闭环
+
+**Files:**
+- Modify: `src/platform/integrations/im/feishu/events.ts`
+- Modify: `src/platform/integrations/im/feishu/task-command.ts`
+- Modify: `src/platform/integrations/im/feishu/task-status.ts`
+- Modify: `src/platform/integrations/im/feishu/confirmation-bridge.ts`
+- Modify: `src/cli/commands/im-server.ts`
+- Modify: `docs/channels/feishu-im.md`
+- Test: `tests/platform/integrations/im/feishu/events.test.ts`
+- Test: `tests/platform/integrations/im/feishu/task-command.test.ts`
+- Test: `tests/platform/integrations/im/feishu/task-status.test.ts`
+- Test: `tests/cli/im-server-command.test.ts`
+
+- [x] **Step 1: 明确飞书唯一 IM 范围**
+  - 文档和配置里只描述飞书链路。
+  - 不新增其他 IM provider、字段或路由。
+
+- [x] **Step 2: 增强飞书状态查询**
+  - 飞书线程支持查询任务当前状态。
+  - 回复内容来自 M3 结构化观测摘要，不直接拼原始日志。
+
+- [x] **Step 3: 增强失败提示**
+  - 任务暂停、失败、等待重试时，飞书回复包含原因、下一步动作和本地 inspect 命令。
+  - 发送失败只记录，不影响底层任务状态。
+
+- [x] **Step 4: 增强权限反馈**
+  - 白名单外用户点击确认按钮时，飞书线程收到拒绝说明。
+  - 权限结果写入事件，便于后续排查。
+
+- [x] **Step 5: 验证**
+  - Run: `npm run test:run -- tests/platform/im/feishu-events.test.ts tests/platform/im/feishu-task-command.test.ts tests/platform/im/feishu-task-status.test.ts tests/platform/im/confirmation-bridge.test.ts tests/cli/im-server-command.test.ts`
+  - Expected: PASS
+
+**Milestone 5 exit:** 飞书线程能完成发单、确认、状态查看和失败提示；IM 范围仍只保留飞书。
+
+## Milestone 6: 总体验收与发布收口
 
 **Files:**
 - Modify: `README.md`
 - Modify: `ARCHITECTURE.md`
 - Modify: `docs/README.md`
 - Modify: `docs/references/capabilities.md`
-- Modify: `AGENTS.md`（如新增协作规则）
+- Modify: `docs/channels/feishu-im.md`
+- Modify: `docs/plans/2026-04-21-deer-flow-benchmark-milestone-plan.md`
 
-- [x] **Step 1: 更新用户入口文档**
-  - 补齐新命令、新默认行为、风险提示和推荐用法。
+- [x] **Step 1: 更新入口文档**
+  - README 说明新增开关、推荐启用顺序、回退方式和飞书唯一 IM 范围。
+  - capability reference 更新命令入口、状态文件和主要代码位置。
 
-- [x] **Step 2: 更新架构与能力映射**
-  - 把新增职责放到正确分层，避免后续维护混乱。
+- [x] **Step 2: 更新架构说明**
+  - ARCHITECTURE 说明隔离、按需工具、观测、权限保护分别属于哪一层。
+  - 文档明确不引入新的 IM 抽象主线。
 
-- [x] **Step 3: 跑完整体验收**
+- [x] **Step 3: 跑总体验收**
   - Run: `npm run test:run`
   - Run: `npm run test:coverage`
   - Run: `npm run build`
-  - Run: `npm run check:docs`
   - Run: `npm run lint`
-  - Expected: 全部 PASS，覆盖率达到仓库要求。
+  - Run: `npm run check:boundaries`
+  - Run: `npm run check:docs`
+  - Expected: 全部 PASS。
 
-- [x] **Step 4: 灰度发布与回退演练**
-  - 在文档中固化灰度流程：小范围开启能力、保持危险命令默认关闭、异常时能力开关一键回退。
-  - 回退定位路径固定为 `loop/harness inspect + 会话 failures/`，确保可复盘。
+- [x] **Step 4: 回退演练**
+  - 分别关闭 M1 到 M5 的开关。
+  - 确认旧命令路径仍能给出清晰降级提示或回到原行为。
 
-**Milestone 6 exit:** 文档、测试、构建、回退全部闭环，可进入常规迭代。
+回退演练记录：
+
+| 范围 | 回退方式 | 预期结果 | 覆盖验证 |
+| --- | --- | --- | --- |
+| M1 执行隔离 | `capabilities.execution_isolation.enabled=false` 或 `mode=disabled` | loop / harness 回到当前工作区执行，并保留旧会话兼容 | `tests/capabilities/workflows/shared/runtime.test.ts`、`tests/capabilities/loop/loop.test.ts`、`tests/capabilities/workflows/harness.test.ts` |
+| M2 工具按需加载 | `capabilities.tool_loading.enabled=false` | 不生成强制工具门禁，继续使用原 provider 选择路径 | `tests/capabilities/routing/routing.test.ts`、`tests/capabilities/loop/loop.test.ts`、`tests/capabilities/workflows/harness.test.ts` |
+| M3 后台观测 | 不需要关闭；这是只读摘要 | 任务执行不受影响，旧会话仍可从原会话目录和失败记录排查 | `tests/capabilities/workflows/harness-server.test.ts`、`tests/cli/harness-server-command.test.ts`、`tests/tui/graph-workbench-loader.test.ts` |
+| M4 权限与资源保护 | `capabilities.resource_guard.enabled=false`，危险命令继续保持默认拦截 | 后台队列不执行新增资源限制；高风险命令仍由 safety 默认保护 | `tests/platform/config/loader.test.ts`、`tests/capabilities/workflows/shared/runtime.test.ts`、`tests/capabilities/workflows/harness-server.test.ts` |
+| M5 飞书链路 | `integrations.im.enabled=false` | 飞书入口停止发布状态，底层 loop / harness 会话不受影响 | `tests/platform/im/feishu-task-status.test.ts`、`tests/cli/im-server-command.test.ts` |
+
+**Milestone 6 exit:** 功能、文档、验证和回退全部闭环，可进入灰度。
 
 ## 风险与应对
 
 | 风险 | 影响 | 应对 |
 | --- | --- | --- |
-| 里程碑并行导致配置冲突 | 集成回归失败 | 先冻结配置字段命名，合并前统一校验 |
-| 安全拦截过严影响可用性 | 用户体验下降 | 提供显式开启路径和清晰提示 |
-| 会话隔离改动触发兼容问题 | 旧会话无法恢复 | 增加兼容读取与回退到旧路径机制 |
-| 文档不同步 | 使用方误操作 | M6 设为发布硬门槛，未通过不发布 |
+| 隔离模式影响旧会话恢复 | 旧任务不能续跑 | 恢复时优先读取旧会话 artifacts，缺字段时回退到当前工作区 |
+| 工具按需加载误关必要工具 | 任务提前失败 | 必需工具缺失时在准备阶段失败并给出修复建议 |
+| 观测事件过多 | 状态文件膨胀 | 保留结构化摘要，原始日志继续放在现有会话目录 |
+| 权限策略过严 | 自动化效率下降 | 默认保守，允许按能力显式放开，并输出拒绝原因 |
+| 飞书发送失败 | 用户看不到状态 | 发送失败只影响展示，底层会话状态不被回滚 |
 
-## 执行顺序建议
+## 推荐实施顺序
 
-1. 先完成 M0、M1，确保入口清晰。
-2. 再完成 M2、M3，确保安全和稳定底座。
-3. 随后完成 M4、M5，提升扩展性和长流程质量。
-4. 最后完成 M6，统一发布与验收。
+1. M0 固定范围、开关和回退合同。
+2. M1 先补执行隔离，作为后续安全与观测基础。
+3. M2 接工具/技能按需加载，减少任务输入和执行面。
+4. M3 补后台观测，让长任务能看清状态。
+5. M4 补权限、失败暂停和资源保护，让系统能及时停住。
+6. M5 收口飞书链路，只增强现有飞书入口。
+7. M6 做总体验收、文档和回退演练。

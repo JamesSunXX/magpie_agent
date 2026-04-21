@@ -121,7 +121,13 @@ magpie memory show --project
 
 `loop` 现在默认先走多模型确认：阶段只是低把握或普通失败时，会先让配置里的评审模型给出“通过 / 继续修改 / 必须人工确认”的判断，再决定是否继续。只有模型明确要求人工、阶段评估直接要求人工，或者命中危险命令拦截这类高风险情况时，才会真的落人工确认。`--no-wait-human` 的语义不变，只影响这种“必须人拍板”的场景；多模型确认仍会在当前执行里直接跑完。相关配置在 `capabilities.loop.human_confirmation`，默认 `gate_policy` 为 `multi_model`；生效的评审人列表必须至少有 2 个不同评审人，否则配置会直接报错。`reviewer_ids` 不填时会回退到 `capabilities.discuss.reviewers`。现在可以直接用 `magpie loop confirm <session-id> --approve` 或 `--reject --reason "..."` 处理最近一条待决确认：批准后会自动续跑；驳回后会自动发起一轮 discuss，并把结果重新压成新的短决策卡，不需要手改文件。真正的确认状态保存在 loop 会话里，`human_confirmation.md` 只保留成便于查看和兼容旧会话的摘要投影。
 
-危险命令现在默认会被拦截。只有显式把 `capabilities.safety.allow_dangerous_commands` 设为 `true` 后，才允许继续走确认执行。
+危险命令现在默认会被拦截。只有显式把 `capabilities.safety.allow_dangerous_commands` 设为 `true` 后，才允许继续走确认执行。`capabilities.safety.permission_policy` 还能按命令类别、路径和工具类别设置放行、拒绝或确认。
+
+执行隔离从 `capabilities.execution_isolation` 配置。默认是关闭状态，并预置 `mode: worktree` 作为灰度选择；显式开启后，`loop` 会优先沿用现有 worktree 执行路径，并在会话产物里记录隔离模式和恢复路径。`container` 目前只作为可配置模式和上下文记录，不会默认启用。
+
+工具按需加载从 `capabilities.tool_loading` 配置。默认关闭；显式开启后，`loop` 和 `harness` 会在开始前生成本次任务实际需要的工具清单，写到会话目录的 `tool-manifest.json`。如果必需工具被禁用或对应 provider 不可用，任务会在真正执行前停止，避免后续流程带着错误工具配置继续跑。
+
+资源保护从 `capabilities.resource_guard` 配置。默认关闭；开启后，后台 harness 会限制排队数量和并发数量，失败达到预算时会暂停，不再自动重试。
 
 大部分主干能力都支持独立启停（`capabilities.<name>.enabled`）。关闭后，对应命令会在入口直接提示“当前关闭、怎么开启、可替代命令”，不会继续执行。
 
@@ -141,7 +147,7 @@ magpie memory show --project
 
 如果开启阶段通知里的 `stage_ai` 摘要，可以用 `integrations.notifications.stage_ai.timeout_ms` 控制它最长等多久；超时后会直接回退到内置摘要，不会卡住主流程。
 
-`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`，`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
+`trd`、`loop`、`harness` 以及 workflow 会话产物默认写到当前仓库的 `.magpie/sessions/<capability>/<sessionId>/`，便于在仓库内查看、续跑和交给 TUI 展示。`loop` 和 `harness` 会记录 `tool-manifest.json`，用于查看本次任务实际启用、禁用和缺失的工具。`review --repo` 的多轮评审会把每一轮结果额外落到 `.magpie/state/<sessionId>/round_<N>.json`；中断后重新启动会先对齐这些轮次文件，再从最后一个成功轮次继续。`harness-server` 的后台状态会落到 `.magpie/harness-server/state.json`，`harness-server status` 会聚合显示当前任务、最近事件、最近失败、下次重试和启用工具；`im-server` 的线程映射、回调去重和服务状态会落到 `.magpie/im/`。
 
 ## 灰度发布与回退
 
@@ -152,13 +158,28 @@ magpie memory show --project
 3. 如果灰度期间出现异常，立刻把相关能力开关改回 `false`（例如 `capabilities.loop.enabled=false`、`capabilities.harness.enabled=false`），并保留当前 `.magpie/sessions/` 现场用于排查。
 4. 回退后优先使用 `magpie loop inspect`、`magpie harness inspect` 和会话 `failures/` 目录确认失败原因，再决定是否重新灰度。
 
+## DeerFlow 对标实施范围
+
+近期对标只做五件事：执行隔离、技能和工具按需加载、后台任务观测、权限与资源保护、飞书链路闭环。IM 只保留飞书，不扩 Slack、微信、企业微信、Telegram 等其他渠道，也不把 Magpie 改造成泛用内容生产平台。
+
+后续里程碑按下面方式灰度和回退：
+
+- `capabilities.execution_isolation.enabled`
+- `capabilities.tool_loading.enabled`
+- `capabilities.resource_guard.enabled`
+- `integrations.im.enabled`
+- 后台观测是只读增量，不改变任务执行；回退时继续用原会话目录和旧状态命令排查即可
+
+任一里程碑出问题时，先关闭对应开关，再用 `magpie loop inspect`、`magpie harness inspect`、`magpie harness-server status` 和会话目录里的 `failures/` 排查。
+
 ## Feishu IM 控制
 
-现在飞书线程支持三类动作：
+现在飞书线程支持四类动作：
 
 - 处理人工确认
 - 用固定格式消息直接发起新任务
 - 用消息卡片表单直接发起新任务
+- 用 `/magpie status` 查询当前任务状态
 
 当前做法是：
 
@@ -204,6 +225,8 @@ priority: high
 ```
 
 系统会回一张表单卡片。表单字段固定是 `type / goal / prd / priority`。填写后提交，后面的建线程、起任务和状态回写会走和文本命令完全相同的流程。`type`、`goal` 和 `prd` 都必填；`type` 只接受 `small / formal`；`priority` 只对 `formal` 任务有意义，且只接受 `interactive / high / normal / background`，其他值会被拒绝。
+
+任务发起后，可以在同一条任务线程里发送 `/magpie status` 查看当前状态、失败原因、下一步动作和本地 inspect 命令。
 
 人工确认场景下，Magpie 会：
 

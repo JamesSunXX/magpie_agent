@@ -4,6 +4,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { loadConfig } from '../../platform/config/loader.js'
 import { getRepoRoot } from '../../platform/paths.js'
+import { buildCommandSafetyConfig, enforceToolPermission } from '../../capabilities/workflows/shared/runtime.js'
 import { createImRuntime, loadImServerStatus, saveImServerStatus } from '../../platform/integrations/im/runtime.js'
 import { createFeishuCallbackServer } from '../../platform/integrations/im/feishu/server.js'
 import { startFeishuWsServer } from '../../platform/integrations/im/feishu/ws-server.js'
@@ -12,16 +13,26 @@ import { FeishuImClient } from '../../platform/integrations/im/feishu/client.js'
 import {
   isFeishuTaskCommandText,
   isFeishuTaskFormText,
+  isFeishuTaskStatusText,
   parseFeishuTaskCommand,
   parseFeishuTaskForm,
 } from '../../platform/integrations/im/feishu/task-command.js'
 import { buildFeishuTaskFormCard } from '../../platform/integrations/im/feishu/task-form.js'
 import { launchFeishuTask } from '../../platform/integrations/im/feishu/task-launch.js'
+import { replyFeishuTaskStatusForThread } from '../../platform/integrations/im/feishu/task-status.js'
 import type { FeishuAppImProviderConfig } from '../../platform/config/types.js'
 import type { ImInboundEvent } from '../../platform/integrations/im/types.js'
 
 export function resolveFeishuProvider(configPath?: string) {
   const config = loadConfig(configPath)
+  const permission = enforceToolPermission('im', {
+    safety: buildCommandSafetyConfig(config.capabilities?.safety),
+    interactive: process.stdin.isTTY && process.stdout.isTTY,
+  })
+  if (permission) {
+    throw new Error(permission.output)
+  }
+
   const integration = config.integrations.im
   if (!integration?.enabled || !integration.default_provider) {
     throw new Error('integrations.im is not enabled.')
@@ -143,6 +154,18 @@ function buildEventHandler(ctx: {
         if (event.eventId) {
           await runtime.markEventProcessed(event.eventId)
         }
+      }
+      return
+    }
+
+    if (isFeishuTaskStatusText(event.text)) {
+      const config = loadConfig(configPath)
+      const replied = await replyFeishuTaskStatusForThread(cwd, config, event.threadKey)
+      if (!replied) {
+        await client.replyTextMessage(event.sourceMessageId, 'Task status not found for this thread.').catch(() => {})
+      }
+      if (event.eventId) {
+        await runtime.markEventProcessed(event.eventId)
       }
       return
     }

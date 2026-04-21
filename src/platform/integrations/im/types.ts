@@ -20,6 +20,7 @@ export interface TaskCommandEvent {
   eventId?: string
   actorOpenId: string
   sourceMessageId: string
+  threadKey: string
   chatId: string
   text: string
 }

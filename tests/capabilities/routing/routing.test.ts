@@ -5,6 +5,7 @@ import {
   getRouteBindings,
   isRuntimeCapabilityEnabled,
   listEnabledRuntimeCapabilities,
+  resolveCapabilityToolManifest,
 } from '../../../src/capabilities/routing/index.js'
 import type { MagpieConfigV2 } from '../../../src/platform/config/types.js'
 
@@ -238,5 +239,54 @@ describe('routing', () => {
     expect(enabled).not.toContain('discuss')
     expect(enabled).not.toContain('docs-sync')
     expect(enabled).not.toContain('quality/unit-test-eval')
+  })
+
+  it('builds an effective tool manifest from route bindings and reviewer pools', () => {
+    const config = createConfig()
+    config.capabilities.tool_loading = {
+      enabled: true,
+      globally_disabled: ['claw'],
+    }
+    const decision = createRoutingDecision({
+      goal: 'Add payment migration with database auth compatibility and public API rollback support.',
+      overrideTier: 'complex',
+      config,
+    })
+
+    const manifest = resolveCapabilityToolManifest({
+      capabilityId: 'loop',
+      config,
+      routeBindings: [decision.planning, decision.execution],
+      reviewerIds: decision.reviewerIds,
+    })
+
+    expect(manifest.enabled).toBe(true)
+    expect(manifest.tools).toEqual(['kiro', 'gemini', 'codex'])
+    expect(manifest.disabledTools).toEqual(['claw'])
+    expect(manifest.blockedTools).toEqual([])
+    expect(manifest.missingRequiredTools).toEqual([])
+  })
+
+  it('reports blocked required tools before execution starts', () => {
+    const config = createConfig()
+    config.capabilities.tool_loading = {
+      enabled: true,
+      globally_disabled: ['kiro'],
+    }
+    const decision = createRoutingDecision({
+      goal: 'Add payment migration with database auth compatibility and public API rollback support.',
+      overrideTier: 'complex',
+      config,
+    })
+
+    const manifest = resolveCapabilityToolManifest({
+      capabilityId: 'loop',
+      config,
+      routeBindings: [decision.planning, decision.execution],
+      reviewerIds: decision.reviewerIds,
+    })
+
+    expect(manifest.blockedTools).toEqual(['kiro'])
+    expect(manifest.ready).toBe(false)
   })
 })

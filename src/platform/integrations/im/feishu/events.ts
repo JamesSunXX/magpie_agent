@@ -103,6 +103,8 @@ function parseTaskCommandEvent(payload: unknown): TaskCommandEvent {
       sender?: { sender_id?: { open_id?: unknown } }
       message?: {
         message_id?: unknown
+        root_id?: unknown
+        parent_id?: unknown
         chat_id?: unknown
         message_type?: unknown
         content?: unknown
@@ -132,6 +134,11 @@ function parseTaskCommandEvent(payload: unknown): TaskCommandEvent {
     eventId: typeof header?.event_id === 'string' ? header.event_id : undefined,
     actorOpenId: requireString(event?.sender?.sender_id?.open_id, 'event.sender.sender_id.open_id'),
     sourceMessageId: requireString(event?.message?.message_id, 'event.message.message_id'),
+    threadKey: typeof event?.message?.root_id === 'string' && event.message.root_id.trim().length > 0
+      ? event.message.root_id
+      : typeof event?.message?.parent_id === 'string' && event.message.parent_id.trim().length > 0
+        ? event.message.parent_id
+        : requireString(event?.message?.message_id, 'event.message.message_id'),
     chatId: requireString(event?.message?.chat_id, 'event.message.chat_id'),
     text,
   }

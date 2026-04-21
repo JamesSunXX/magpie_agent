@@ -69,6 +69,7 @@ function mergeIndexEntries(base: FailureIndexEntry, incoming: FailureIndexEntry)
     ]),
     capabilities: sumCapabilities(base.capabilities || {}, incoming.capabilities || {}),
     latestReason: latest.latestReason,
+    latestRecordPath: latest.latestRecordPath || base.latestRecordPath || incoming.latestRecordPath,
     latestEvidencePaths: latest.latestEvidencePaths || [],
     recentEvidencePaths: uniqRecent([
       ...(base.recentEvidencePaths || []),
@@ -238,7 +239,10 @@ export async function appendFailureRecord(input: {
       entries: [...current.entries],
     }
     const existingIndex = next.entries.findIndex((entry) => entry.signature === normalizedRecord.signature)
-    const merged = mergeEntry(existingIndex >= 0 ? next.entries[existingIndex] : undefined, normalizedRecord)
+    const merged = {
+      ...mergeEntry(existingIndex >= 0 ? next.entries[existingIndex] : undefined, normalizedRecord),
+      latestRecordPath: recordPath,
+    }
     if (existingIndex >= 0) {
       next.entries[existingIndex] = merged
     } else {

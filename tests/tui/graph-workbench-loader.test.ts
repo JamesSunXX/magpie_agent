@@ -29,7 +29,31 @@ describe('graph workbench loader', () => {
       artifacts: {
         graphPath,
         eventsPath,
+        toolManifestPath: join(harnessDir, 'tool-manifest.json'),
+        lastFailurePath: join(harnessDir, 'failures', 'failure-1.json'),
+        executionIsolationMode: 'worktree',
       },
+      evidence: {
+        runtime: {
+          retryCount: 1,
+          nextRetryAt: '2026-03-19T12:10:00.000Z',
+          lastError: 'Review provider timed out',
+        },
+      },
+    }), 'utf-8')
+    mkdirSync(join(harnessDir, 'failures'), { recursive: true })
+    writeFileSync(join(harnessDir, 'tool-manifest.json'), JSON.stringify({
+      schemaVersion: 1,
+      tools: ['kiro', 'codex'],
+      blockedTools: [],
+      missingRequiredTools: [],
+      ready: true,
+    }), 'utf-8')
+    writeFileSync(join(harnessDir, 'failures', 'failure-1.json'), JSON.stringify({
+      sessionId: 'harness-graph-1',
+      stage: 'reviewing',
+      reason: 'Review provider timed out',
+      timestamp: '2026-03-19T12:00:00.000Z',
     }), 'utf-8')
 
     writeFileSync(graphPath, JSON.stringify({
@@ -265,6 +289,20 @@ describe('graph workbench loader', () => {
         summary: 'Workflow started.',
       },
     ])
+    expect(workbench.observability).toMatchObject({
+      sessionId: 'harness-graph-1',
+      status: 'blocked',
+      stage: 'reviewing',
+      executionIsolationMode: 'worktree',
+      tools: ['kiro', 'codex'],
+      retryCount: 1,
+      nextRetryAt: '2026-03-19T12:10:00.000Z',
+      lastError: 'Review provider timed out',
+      recentFailure: {
+        stage: 'reviewing',
+        reason: 'Review provider timed out',
+      },
+    })
   })
 
   it('returns a compact error state when the harness session has no graph artifact', async () => {

@@ -5,7 +5,14 @@ import type { CapabilityContext } from '../../../../core/capability/context.js'
 import { createCapabilityContext } from '../../../../core/capability/context.js'
 import { runCapability } from '../../../../core/capability/runner.js'
 import { StateManager } from '../../../../core/state/index.js'
-import { createRoutingDecision, escalateRoutingDecision, getEscalationReason, isRoutingEnabled } from '../../../routing/index.js'
+import {
+  assertCapabilityToolManifestReady,
+  createRoutingDecision,
+  escalateRoutingDecision,
+  getEscalationReason,
+  isRoutingEnabled,
+  resolveCapabilityToolManifest,
+} from '../../../routing/index.js'
 import { discussCapability } from '../../../discuss/index.js'
 import { loopCapability } from '../../../loop/index.js'
 import type { LoopExecutionResult, LoopPreparedInput, LoopSummaryOutput } from '../../../loop/types.js'
@@ -21,6 +28,7 @@ import {
   isRecoverableLoopSession,
   loadWorkflowSession,
   persistWorkflowSession,
+  resolveExecutionIsolationContext,
   resolveWorkflowFailureArtifacts,
   sessionDirFor,
 } from '../../shared/runtime.js'
@@ -1841,6 +1849,7 @@ async function executeHarnessInternal(
   const harnessConfigPath = join(sessionDir, 'harness.config.yaml')
   const providerSelectionPath = join(sessionDir, 'provider-selection.json')
   const routingDecisionPath = join(sessionDir, 'routing-decision.json')
+  const toolManifestPath = join(sessionDir, 'tool-manifest.json')
   const eventsPath = join(sessionDir, 'events.jsonl')
   const providerSessionsPath = join(sessionDir, 'provider-sessions.json')
   const existingSession = await loadWorkflowSession(ctx.cwd, 'harness', sessionId)
@@ -1851,6 +1860,20 @@ async function executeHarnessInternal(
   )
   const sessionScopedDirs = await ensureSessionScopedDirectories(ctx.cwd, 'harness', sessionId, {
     clearTemp: true,
+  })
+  const isolationContext = resolveExecutionIsolationContext({
+    cwd: ctx.cwd,
+    capability: 'harness',
+    sessionId,
+    config: config.capabilities.execution_isolation,
+    existing: existingSession?.artifacts
+      ? {
+          mode: existingSession.artifacts.executionIsolationMode as 'disabled' | 'worktree' | 'container' | undefined,
+          workspaceMode: existingSession.artifacts.workspaceMode as 'current' | 'worktree' | 'container' | undefined,
+          workspacePath: existingSession.artifacts.workspacePath,
+          recoveryPath: existingSession.artifacts.executionRecoveryPath,
+        }
+      : undefined,
   })
 
   await mkdir(sessionDir, { recursive: true })
@@ -1906,11 +1929,17 @@ async function executeHarnessInternal(
       sessionUploadsDir: existingSession?.artifacts?.sessionUploadsDir || sessionScopedDirs.uploadsDir,
       sessionOutputsDir: existingSession?.artifacts?.sessionOutputsDir || sessionScopedDirs.outputsDir,
       sessionTempDir: existingSession?.artifacts?.sessionTempDir || sessionScopedDirs.tempDir,
+      executionIsolationMode: existingSession?.artifacts?.executionIsolationMode || isolationContext.mode,
+      executionRecoveryPath: existingSession?.artifacts?.executionRecoveryPath || isolationContext.recoveryPath,
+      ...(existingSession?.artifacts?.executionContainerImage || isolationContext.containerImage
+        ? { executionContainerImage: existingSession?.artifacts?.executionContainerImage || isolationContext.containerImage }
+        : {}),
       repoRootPath: ctx.cwd,
       harnessConfigPath,
       roundsPath,
       providerSelectionPath,
       routingDecisionPath,
+      toolManifestPath,
       eventsPath,
       ...resolveWorkflowFailureArtifacts(ctx.cwd, 'harness', sessionId),
       roleRosterPath: roleArtifacts.rolesPath,
@@ -2238,6 +2267,34 @@ async function executeHarnessInternal(
     routingDecision
   ))
   validatorBindings = resolveHarnessValidatorBindings(harnessConfig)
+  const toolManifest = resolveCapabilityToolManifest({
+    capabilityId: 'harness',
+    config: harnessConfig,
+    routeBindings: routingDecision
+      ? [routingDecision.planning, routingDecision.execution]
+      : [
+          {
+            tool: harnessConfig.capabilities.loop?.planner_tool,
+            model: harnessConfig.capabilities.loop?.planner_model,
+            agent: harnessConfig.capabilities.loop?.planner_agent,
+          },
+          {
+            tool: harnessConfig.capabilities.loop?.executor_tool,
+            model: harnessConfig.capabilities.loop?.executor_model,
+            agent: harnessConfig.capabilities.loop?.executor_agent,
+          },
+        ],
+    reviewerIds,
+    extraBindings: validatorBindings.map((binding) => ({
+      tool: binding.tool,
+      model: binding.model,
+      agent: binding.agent,
+    })),
+  })
+  if (toolManifest.enabled) {
+    assertCapabilityToolManifestReady(toolManifest)
+  }
+  await writeFile(toolManifestPath, JSON.stringify(toolManifest, null, 2), 'utf-8')
   const documentPlanner = await withProviderSessionScope({
     sessionsPath: providerSessionsPath,
     workflowSessionId: sessionId,

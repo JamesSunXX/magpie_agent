@@ -28,6 +28,13 @@ export function isFeishuTaskFormText(text: string): boolean {
     .filter(Boolean)[0] === '/magpie form'
 }
 
+export function isFeishuTaskStatusText(text: string): boolean {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)[0] === '/magpie status'
+}
+
 function normalizeTaskCreationRequest(input: {
   entryMode: TaskCreationRequest['entryMode']
   taskType?: string

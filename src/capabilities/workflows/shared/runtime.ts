@@ -9,7 +9,14 @@ import {
   getRepoSessionDir,
   getRepoSessionScopedDir,
 } from '../../../platform/paths.js'
-import type { SafetyConfig } from '../../../platform/config/types.js'
+import type {
+  CommandPermissionCategory,
+  ExecutionIsolationConfig,
+  ExecutionIsolationMode,
+  PermissionPolicyAction,
+  SafetyConfig,
+  ToolPermissionCategory,
+} from '../../../platform/config/types.js'
 import type { LoopReliablePoint } from '../../../state/types.js'
 import { appendFailureRecord, getFailureOccurrenceCount } from '../../../core/failures/ledger.js'
 import { buildFailureSignature, classifyFailureCategory, normalizeFailureSignature } from '../../../core/failures/classifier.js'
@@ -47,6 +54,10 @@ export interface WorkflowSession {
     sessionUploadsDir?: string
     sessionOutputsDir?: string
     sessionTempDir?: string
+    executionIsolationMode?: ExecutionIsolationMode
+    executionRecoveryPath?: string
+    executionContainerImage?: string
+    toolManifestPath?: string
     failureLogDir?: string
     failureIndexPath?: string
     lastFailurePath?: string
@@ -62,12 +73,47 @@ export interface WorkflowSession {
 }
 
 export interface WorkflowEvent {
+  sessionId?: string
   timestamp: Date
   type: string
   stage?: string
   cycle?: number
   summary?: string
   details?: Record<string, unknown>
+}
+
+export interface WorkflowObservabilityEvent {
+  sessionId: string
+  timestamp: string
+  type: string
+  stage?: string
+  cycle?: number
+  summary?: string
+}
+
+export interface WorkflowFailureObservation {
+  sessionId?: string
+  stage?: string
+  reason: string
+  timestamp?: string
+  recordPath?: string
+}
+
+export interface WorkflowObservabilitySummary {
+  sessionId: string
+  status: WorkflowSessionStatus
+  stage?: string
+  updatedAt: string
+  executionIsolationMode?: ExecutionIsolationMode
+  toolManifestPath?: string
+  tools: string[]
+  blockedTools: string[]
+  missingRequiredTools: string[]
+  retryCount: number
+  nextRetryAt?: string
+  lastError?: string
+  recentFailure?: WorkflowFailureObservation
+  recentEvents: WorkflowObservabilityEvent[]
 }
 
 export interface CommandRunResult {
@@ -80,11 +126,31 @@ export interface ResolvedCommandSafetyConfig {
   dangerousPatterns: string[]
   allowDangerousCommands: boolean
   requireConfirmationForDangerous: boolean
+  permissionPolicy: {
+    commandCategories: Partial<Record<CommandPermissionCategory, PermissionPolicyAction>>
+    deniedPathPatterns: string[]
+    toolCategories: Partial<Record<ToolPermissionCategory, PermissionPolicyAction>>
+  }
+}
+
+export interface CommandPermissionDecision {
+  action: PermissionPolicyAction
+  category: CommandPermissionCategory | 'path' | 'default'
+  reason: string
+  matchedRule?: string
+}
+
+export interface ToolPermissionDecision {
+  action: PermissionPolicyAction
+  category: ToolPermissionCategory
+  reason: string
+  matchedRule?: string
 }
 
 export interface CommandExecutionOptions {
   safety?: ResolvedCommandSafetyConfig
   interactive?: boolean
+  timeoutMs?: number
 }
 
 export interface SessionScopedDirectories {
@@ -92,6 +158,16 @@ export interface SessionScopedDirectories {
   uploadsDir: string
   outputsDir: string
   tempDir: string
+}
+
+export interface ExecutionIsolationContext {
+  enabled: boolean
+  mode: ExecutionIsolationMode
+  workspaceMode: 'current' | 'worktree' | 'container'
+  workspacePath: string
+  recoveryPath: string
+  sessionDirs: SessionScopedDirectories
+  containerImage?: string
 }
 
 type RecoverableLoopSessionLike = {
@@ -291,6 +367,64 @@ export async function ensureSessionScopedDirectories(
   return dirs
 }
 
+export function resolveExecutionIsolationContext(input: {
+  cwd: string
+  capability: WorkflowCapability
+  sessionId: string
+  config?: ExecutionIsolationConfig
+  existing?: Partial<Pick<ExecutionIsolationContext, 'mode' | 'workspaceMode' | 'workspacePath' | 'recoveryPath'>>
+}): ExecutionIsolationContext {
+  const sessionDirs = resolveSessionScopedDirectories(input.cwd, input.capability, input.sessionId)
+  if (input.existing?.workspacePath) {
+    const mode = input.existing.mode || (input.existing.workspaceMode === 'worktree' ? 'worktree' : 'disabled')
+    return {
+      enabled: mode !== 'disabled',
+      mode,
+      workspaceMode: input.existing.workspaceMode || (mode === 'worktree' ? 'worktree' : 'current'),
+      workspacePath: input.existing.workspacePath,
+      recoveryPath: input.existing.recoveryPath || input.existing.workspacePath,
+      sessionDirs,
+      ...(input.config?.container_image ? { containerImage: input.config.container_image } : {}),
+    }
+  }
+
+  if (input.config?.enabled !== true || input.config.mode === 'disabled') {
+    return {
+      enabled: false,
+      mode: 'disabled',
+      workspaceMode: 'current',
+      workspacePath: input.cwd,
+      recoveryPath: input.cwd,
+      sessionDirs,
+    }
+  }
+
+  if (input.config.mode === 'container') {
+    return {
+      enabled: true,
+      mode: 'container',
+      workspaceMode: 'container',
+      workspacePath: sessionDirs.workspaceDir,
+      recoveryPath: sessionDirs.workspaceDir,
+      sessionDirs,
+      ...(input.config.container_image ? { containerImage: input.config.container_image } : {}),
+    }
+  }
+
+  return {
+    enabled: true,
+    mode: 'worktree',
+    workspaceMode: 'worktree',
+    workspacePath: input.config?.worktree_root
+      ? join(input.cwd, input.config.worktree_root, input.sessionId)
+      : sessionDirs.workspaceDir,
+    recoveryPath: input.config?.worktree_root
+      ? join(input.cwd, input.config.worktree_root, input.sessionId)
+      : sessionDirs.workspaceDir,
+    sessionDirs,
+  }
+}
+
 export function resolveWorkflowFailureArtifacts(
   cwd: string,
   capability: FailureFactInput['capability'],
@@ -382,8 +516,114 @@ export async function appendWorkflowEvent(
   const dir = sessionDirFor(cwd, capability, id)
   const eventsPath = join(dir, 'events.jsonl')
   await mkdir(dir, { recursive: true })
-  await appendFile(eventsPath, `${JSON.stringify(event)}\n`, 'utf-8')
+  await appendFile(eventsPath, `${JSON.stringify({ sessionId: id, ...event })}\n`, 'utf-8')
   return eventsPath
+}
+
+type ToolManifestLike = {
+  tools?: string[]
+  blockedTools?: string[]
+  missingRequiredTools?: string[]
+}
+
+type RuntimeEvidenceLike = {
+  runtime?: {
+    retryCount?: number
+    nextRetryAt?: string
+    lastError?: string
+  }
+}
+
+async function readJsonFile<T>(path: string | undefined): Promise<T | null> {
+  if (!path) return null
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as T
+  } catch {
+    return null
+  }
+}
+
+async function loadRecentWorkflowEvents(
+  eventsPath: string | undefined,
+  fallbackSessionId: string,
+  limit = 8
+): Promise<WorkflowObservabilityEvent[]> {
+  if (!eventsPath) return []
+  const raw = await readFile(eventsPath, 'utf-8').catch(() => '')
+  return raw
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        const event = JSON.parse(line) as {
+          sessionId?: string
+          timestamp?: string
+          type?: string
+          stage?: string
+          cycle?: number
+          summary?: string
+        }
+        if (!event.timestamp || !event.type) return null
+        return {
+          sessionId: event.sessionId || fallbackSessionId,
+          timestamp: event.timestamp,
+          type: event.type,
+          ...(event.stage ? { stage: event.stage } : {}),
+          ...(typeof event.cycle === 'number' ? { cycle: event.cycle } : {}),
+          ...(event.summary ? { summary: event.summary } : {}),
+        }
+      } catch {
+        return null
+      }
+    })
+    .filter((event): event is WorkflowObservabilityEvent => event !== null)
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, limit)
+}
+
+export async function loadWorkflowObservabilitySummary(
+  cwd: string,
+  capability: WorkflowCapability,
+  sessionId: string
+): Promise<WorkflowObservabilitySummary | null> {
+  const session = await loadWorkflowSession(cwd, capability, sessionId)
+  if (!session) return null
+
+  const toolManifest = await readJsonFile<ToolManifestLike>(session.artifacts.toolManifestPath)
+  const failure = await readJsonFile<{
+    sessionId?: string
+    stage?: string
+    reason?: string
+    timestamp?: string
+  }>(session.artifacts.lastFailurePath)
+  const runtime = (session.evidence as RuntimeEvidenceLike | undefined)?.runtime
+
+  return {
+    sessionId: session.id,
+    status: session.status,
+    ...(session.currentStage ? { stage: session.currentStage } : {}),
+    updatedAt: session.updatedAt.toISOString(),
+    ...(session.artifacts.executionIsolationMode ? { executionIsolationMode: session.artifacts.executionIsolationMode } : {}),
+    ...(session.artifacts.toolManifestPath ? { toolManifestPath: session.artifacts.toolManifestPath } : {}),
+    tools: Array.isArray(toolManifest?.tools) ? toolManifest.tools : [],
+    blockedTools: Array.isArray(toolManifest?.blockedTools) ? toolManifest.blockedTools : [],
+    missingRequiredTools: Array.isArray(toolManifest?.missingRequiredTools) ? toolManifest.missingRequiredTools : [],
+    retryCount: Number.isFinite(runtime?.retryCount) ? Number(runtime?.retryCount) : 0,
+    ...(runtime?.nextRetryAt ? { nextRetryAt: runtime.nextRetryAt } : {}),
+    ...(runtime?.lastError ? { lastError: runtime.lastError } : {}),
+    ...(failure?.reason
+      ? {
+          recentFailure: {
+            sessionId: failure.sessionId || session.id,
+            ...(failure.stage ? { stage: failure.stage } : {}),
+            reason: failure.reason,
+            ...(failure.timestamp ? { timestamp: failure.timestamp } : {}),
+            ...(session.artifacts.lastFailurePath ? { recordPath: session.artifacts.lastFailurePath } : {}),
+          },
+        }
+      : {}),
+    recentEvents: await loadRecentWorkflowEvents(session.artifacts.eventsPath, session.id),
+  }
 }
 
 /**
@@ -524,6 +764,95 @@ export function buildCommandSafetyConfig(config?: SafetyConfig): ResolvedCommand
     ],
     allowDangerousCommands: config?.allow_dangerous_commands === true,
     requireConfirmationForDangerous: config?.require_confirmation_for_dangerous !== false,
+    permissionPolicy: {
+      commandCategories: {
+        ...(config?.permission_policy?.command_categories || {}),
+      },
+      deniedPathPatterns: config?.permission_policy?.denied_path_patterns || [],
+      toolCategories: {
+        ...(config?.permission_policy?.tool_categories || {}),
+      },
+    },
+  }
+}
+
+function detectCommandCategory(
+  command: string,
+  config: ResolvedCommandSafetyConfig
+): CommandPermissionCategory | 'default' {
+  const normalized = command.trim().toLowerCase()
+  if (config.dangerousPatterns.some((pattern) => normalized.includes(pattern.toLowerCase()))) {
+    return 'dangerous'
+  }
+  if (/^(git|gh|glab)\b/.test(normalized)) {
+    return 'git'
+  }
+  if (/^(curl|wget|ssh|scp|rsync|nc|ncat)\b/.test(normalized)) {
+    return 'network'
+  }
+  if (/^(touch|cp|mv|rm|mkdir|rmdir|chmod|chown|tee)\b/.test(normalized) || normalized.includes(' > ') || normalized.includes(' >> ')) {
+    return 'write'
+  }
+  if (/^(cat|ls|pwd|find|rg|grep|sed|awk|head|tail)\b/.test(normalized)) {
+    return 'read'
+  }
+  return 'default'
+}
+
+export function evaluateCommandPermission(
+  command: string,
+  config: ResolvedCommandSafetyConfig = buildCommandSafetyConfig()
+): CommandPermissionDecision {
+  const normalized = command.toLowerCase()
+  const deniedPathPattern = config.permissionPolicy.deniedPathPatterns
+    .find((pattern) => normalized.includes(pattern.toLowerCase()))
+  if (deniedPathPattern) {
+    return {
+      action: 'deny',
+      category: 'path',
+      reason: `Command touches a denied path pattern: ${deniedPathPattern}`,
+      matchedRule: deniedPathPattern,
+    }
+  }
+
+  const category = detectCommandCategory(command, config)
+  if (category !== 'default') {
+    const action = config.permissionPolicy.commandCategories[category]
+    if (action) {
+      return {
+        action,
+        category,
+        reason: `Command category policy requires ${action}: ${category}`,
+        matchedRule: category,
+      }
+    }
+  }
+
+  return {
+    action: 'allow',
+    category: category === 'default' ? 'default' : category,
+    reason: 'No matching permission policy rule.',
+  }
+}
+
+export function evaluateToolPermission(
+  category: ToolPermissionCategory,
+  config: ResolvedCommandSafetyConfig = buildCommandSafetyConfig()
+): ToolPermissionDecision {
+  const action = config.permissionPolicy.toolCategories[category]
+  if (action) {
+    return {
+      action,
+      category,
+      reason: `Tool category policy requires ${action}: ${category}`,
+      matchedRule: category,
+    }
+  }
+
+  return {
+    action: 'allow',
+    category,
+    reason: 'No matching tool permission policy rule.',
   }
 }
 
@@ -544,14 +873,14 @@ export function classifyDangerousCommand(
   return matchedPattern
 }
 
-function promptDangerousCommandConfirmation(command: string, matchedPattern: string): boolean {
+function promptConfirmation(prompt: string, subject: string): boolean {
   try {
     // Prompt against the controlling TTY so confirmation still works even when the
     // workflow command captures stdio for logs or runs under a spinner.
     const inputFd = openSync('/dev/tty', 'rs')
     const outputFd = openSync('/dev/tty', 'w')
     try {
-      writeSync(outputFd, `Dangerous command detected (${matchedPattern}). Type "yes" to continue:\n${command}\n> `)
+      writeSync(outputFd, `${prompt}. Type "yes" to continue:\n${subject}\n> `)
       const buffer = Buffer.alloc(256)
       const bytesRead = readSync(inputFd, buffer, 0, buffer.length, null)
       const answer = buffer.toString('utf-8', 0, bytesRead).trim().toLowerCase()
@@ -566,6 +895,42 @@ function promptDangerousCommandConfirmation(command: string, matchedPattern: str
   }
 }
 
+function promptDangerousCommandConfirmation(command: string, matchedPattern: string): boolean {
+  return promptConfirmation(`Dangerous command detected (${matchedPattern})`, command)
+}
+
+function promptPermissionConfirmation(subject: string, matchedRule: string): boolean {
+  return promptConfirmation(`Permission policy requires confirmation (${matchedRule})`, subject)
+}
+
+export function enforceToolPermission(
+  category: ToolPermissionCategory,
+  options: CommandExecutionOptions = {}
+): CommandRunResult | null {
+  const safety = options.safety || buildCommandSafetyConfig()
+  const permission = evaluateToolPermission(category, safety)
+  if (permission.action === 'deny') {
+    return {
+      passed: false,
+      blocked: true,
+      output: `Tool blocked by permission policy: ${category}\nMatched rule: ${permission.matchedRule || permission.category}\nReason: ${permission.reason}`,
+    }
+  }
+  if (permission.action === 'confirm') {
+    const confirmed = options.interactive === true
+      && promptPermissionConfirmation(category, permission.matchedRule || permission.category)
+    if (confirmed) {
+      return null
+    }
+    return {
+      passed: false,
+      blocked: true,
+      output: `Tool blocked by permission policy: ${category}\nMatched rule: ${permission.matchedRule || permission.category}\nReason: ${options.interactive === true ? 'confirmation was not approved' : `confirmation is required for ${permission.category} tools`}.`,
+    }
+  }
+  return null
+}
+
 /**
  * Stop obviously destructive commands before execution unless an interactive user
  * explicitly confirms them on the TTY.
@@ -575,6 +940,32 @@ export function enforceCommandSafety(
   options: CommandExecutionOptions = {}
 ): CommandRunResult | null {
   const safety = options.safety || buildCommandSafetyConfig()
+  const permission = evaluateCommandPermission(command, safety)
+  if (permission.action === 'deny') {
+    return {
+      passed: false,
+      blocked: true,
+      output: `Command blocked by permission policy: ${command}\nMatched rule: ${permission.matchedRule || permission.category}\nReason: ${permission.reason}`,
+    }
+  }
+  if (permission.action === 'confirm' && options.interactive !== true) {
+    return {
+      passed: false,
+      blocked: true,
+      output: `Command blocked by permission policy: ${command}\nMatched rule: ${permission.matchedRule || permission.category}\nReason: confirmation is required for ${permission.category} commands.`,
+    }
+  }
+  if (permission.action === 'confirm') {
+    const confirmed = promptPermissionConfirmation(command, permission.matchedRule || permission.category)
+    if (!confirmed) {
+      return {
+        passed: false,
+        blocked: true,
+        output: `Command blocked by permission policy: ${command}\nMatched rule: ${permission.matchedRule || permission.category}\nReason: confirmation was not approved.`,
+      }
+    }
+  }
+
   const matchedPattern = classifyDangerousCommand(command, safety)
 
   if (!matchedPattern) {
@@ -623,16 +1014,23 @@ export function runSafeCommand(
       stdio: 'pipe',
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
+      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
     })
     return {
       passed: true,
       output,
     }
   } catch (error) {
-    const e = error as { stdout?: string; stderr?: string; message?: string }
+    const e = error as { stdout?: string; stderr?: string; message?: string; signal?: string }
+    const timedOut = options.timeoutMs && (e.signal === 'SIGTERM' || e.message?.includes('ETIMEDOUT'))
     return {
       passed: false,
-      output: [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim(),
+      output: [
+        e.stdout,
+        e.stderr,
+        timedOut ? `Command timed out after ${options.timeoutMs}ms` : undefined,
+        e.message,
+      ].filter(Boolean).join('\n').trim(),
     }
   }
 }

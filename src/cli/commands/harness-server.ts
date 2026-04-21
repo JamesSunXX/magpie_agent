@@ -59,6 +59,28 @@ harnessServerCommand
     console.log(
       `Queue: queued=${summary.queue.queued} running=${summary.queue.running} waiting_retry=${summary.queue.waitingRetry} waiting_next_cycle=${summary.queue.waitingNextCycle} blocked=${summary.queue.blocked}`
     )
+    if (summary.observability.currentSession) {
+      const current = summary.observability.currentSession
+      console.log(
+        `Current: ${current.sessionId} stage=${current.stage || '-'} status=${current.status} isolation=${current.executionIsolationMode || '-'} tools=${current.tools.join(',') || '-'}`
+      )
+    }
+    if (summary.observability.nextRetry) {
+      const retry = summary.observability.nextRetry
+      console.log(
+        `Next retry: ${retry.sessionId} at ${formatLocalDateTime(retry.nextRetryAt)} retry_count=${retry.retryCount} last_error=${retry.lastError || '-'}`
+      )
+    }
+    const latestFailure = summary.observability.recentFailures[0]
+    if (latestFailure) {
+      console.log(`Recent failure: ${latestFailure.sessionId || '-'} stage=${latestFailure.stage || '-'} reason=${latestFailure.reason}`)
+    }
+    const latestEvent = summary.observability.recentEvents[0]
+    if (latestEvent) {
+      console.log(
+        `Recent event: ${formatLocalDateTime(latestEvent.timestamp)} ${latestEvent.sessionId} ${latestEvent.type} ${latestEvent.stage || '-'} ${latestEvent.summary || ''}`.trim()
+      )
+    }
   })
 
 harnessServerCommand

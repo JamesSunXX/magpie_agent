@@ -8,6 +8,7 @@ import { createConfiguredProvider } from '../../../../platform/providers/index.j
 import {
   buildCommandSafetyConfig,
   enforceCommandSafety,
+  enforceToolPermission,
   generateWorkflowId,
   persistWorkflowSession,
   runSafeCommand,
@@ -31,6 +32,12 @@ export async function executePostMergeRegression(
 
   const operationsRouter = createOperationsRouter(config.integrations.operations)
   const interactive = process.stdin.isTTY && process.stdout.isTTY
+  const operationsPermission = config.integrations.operations?.enabled
+    ? enforceToolPermission('operations', {
+        safety: commandSafety,
+        interactive,
+      })
+    : null
   const blockedRuns = commands.map((command) => {
     const blocked = enforceCommandSafety(command, {
       safety: commandSafety,
@@ -47,7 +54,7 @@ export async function executePostMergeRegression(
   })
 
   const runnableCommands = commands.filter((_, index) => blockedRuns[index] === null)
-  const executedEvidence = config.integrations.operations?.enabled
+  const executedEvidence = config.integrations.operations?.enabled && !operationsPermission
     ? await operationsRouter.collectEvidence({
         cwd: ctx.cwd,
         commands: runnableCommands,
@@ -55,10 +62,10 @@ export async function executePostMergeRegression(
     : {
         runs: runnableCommands.map((command) => ({
           command,
-          ...runSafeCommand(ctx.cwd, command, {
-            safety: commandSafety,
-            interactive,
-          }),
+          ...(operationsPermission || runSafeCommand(ctx.cwd, command, {
+              safety: commandSafety,
+              interactive,
+            })),
         })),
         summary: runnableCommands.join('\n'),
       }

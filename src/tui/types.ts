@@ -169,6 +169,22 @@ export interface GraphWorkbenchData {
   actions: GraphWorkbenchAction[]
   attention: string[]
   events: GraphWorkbenchEventItem[]
+  observability?: {
+    sessionId: string
+    status: string
+    stage?: string
+    executionIsolationMode?: string
+    tools: string[]
+    retryCount: number
+    nextRetryAt?: string
+    lastError?: string
+    recentFailure?: {
+      stage?: string
+      reason: string
+      timestamp?: string
+      recordPath?: string
+    }
+  }
   error?: string
 }
 

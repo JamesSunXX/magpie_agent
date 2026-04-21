@@ -56,6 +56,7 @@ describe('failure ledger', () => {
     expect(index.entries[0]).toMatchObject({
       signature: 'shared-signature',
       count: 1,
+      latestRecordPath: result.recordPath,
     })
   })
 

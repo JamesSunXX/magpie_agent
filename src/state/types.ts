@@ -230,6 +230,7 @@ export interface LoopSession {
     planPath: string
     humanConfirmationPath: string
     routingDecisionPath?: string
+    toolManifestPath?: string
     repoRootPath?: string
     sessionWorkspaceDir?: string
     sessionUploadsDir?: string
@@ -237,6 +238,9 @@ export interface LoopSession {
     sessionTempDir?: string
     workspaceMode?: 'current' | 'worktree'
     workspacePath?: string
+    executionIsolationMode?: 'disabled' | 'worktree' | 'container'
+    executionRecoveryPath?: string
+    executionContainerImage?: string
     worktreeBranch?: string
     executionHost?: ExecutionHost
     tmuxSession?: string

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { rm } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -118,5 +118,8 @@ describe('handleConfirmationAction', () => {
 
     const saved = await state.loadLoopSession('loop-456')
     expect(saved?.humanConfirmations[0]?.decision).toBe('pending')
+    const events = readFileSync(join(cwd, '.magpie', 'im', 'events.jsonl'), 'utf-8')
+    expect(events).toContain('"type":"confirmation_permission_denied"')
+    expect(events).toContain('"actorOpenId":"ou_guest"')
   })
 })

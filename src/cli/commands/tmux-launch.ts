@@ -7,6 +7,7 @@ import { getRepoSessionFile } from '../../platform/paths.js'
 import { loadConfig } from '../../platform/config/loader.js'
 import { createOperationsProviders } from '../../platform/integrations/operations/factory.js'
 import { TmuxOperationsProvider } from '../../platform/integrations/operations/providers/tmux.js'
+import { buildCommandSafetyConfig, enforceToolPermission } from '../../capabilities/workflows/shared/runtime.js'
 
 const SESSION_PATCH_POLL_INTERVAL_MS = 250
 const SESSION_PATCH_MAX_WAIT_MS = 60_000
@@ -79,6 +80,14 @@ function buildCliCommand(cwd: string, argv: string[], env: Record<string, string
 
 function resolveTmuxProvider(configPath?: string): TmuxOperationsProvider {
   const config = loadConfig(configPath)
+  const permission = enforceToolPermission('operations', {
+    safety: buildCommandSafetyConfig(config.capabilities?.safety),
+    interactive: process.stdin.isTTY && process.stdout.isTTY,
+  })
+  if (permission) {
+    throw new Error(permission.output)
+  }
+
   const operationsConfig = config.integrations.operations
   const providers = createOperationsProviders(operationsConfig)
   const defaultProviderId = operationsConfig?.default_provider

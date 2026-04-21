@@ -22,6 +22,19 @@ export type RuntimeCapabilityId =
   | 'quality/unit-test-eval'
   | 'stats'
 
+export interface CapabilityToolManifest {
+  schemaVersion: 1
+  capabilityId: RuntimeCapabilityId
+  enabled: boolean
+  tools: string[]
+  requiredTools: string[]
+  optionalTools: string[]
+  disabledTools: string[]
+  blockedTools: string[]
+  missingRequiredTools: string[]
+  ready: boolean
+}
+
 const DEFAULT_THRESHOLDS = {
   simple_max: 2,
   standard_max: 5,
@@ -144,6 +157,118 @@ function cloneBinding(binding: ModelRouteBinding): ModelRouteBinding {
     ...(binding.model ? { model: binding.model } : {}),
     ...(binding.agent ? { agent: binding.agent } : {}),
   }
+}
+
+function canonicalToolName(tool: string): string {
+  const provider = getProviderForTool(tool)
+  if (provider === 'claude-code') return 'claude'
+  if (provider === 'gemini-cli') return 'gemini'
+  return provider
+}
+
+function canonicalToolNameFromModel(model: string): string | null {
+  const provider = getProviderForModel(model)
+  if (provider === 'claude-code') return 'claude'
+  if (provider === 'gemini-cli') return 'gemini'
+  if (
+    provider === 'codex'
+    || provider === 'claw'
+    || provider === 'qwen-code'
+    || provider === 'kiro'
+  ) {
+    return provider
+  }
+  return null
+}
+
+function collectBindingTool(binding: ModelRouteBinding | undefined): string | null {
+  if (!binding) return null
+  try {
+    if (binding.tool) return canonicalToolName(binding.tool)
+    if (binding.model) return canonicalToolNameFromModel(binding.model)
+  } catch {
+    return null
+  }
+  return null
+}
+
+function uniqueTools(tools: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const tool of tools) {
+    if (!tool) continue
+    const canonical = canonicalToolName(tool)
+    if (seen.has(canonical)) continue
+    seen.add(canonical)
+    result.push(canonical)
+  }
+  return result
+}
+
+function isToolProviderEnabled(config: MagpieConfigV2, tool: string): boolean {
+  const providerName = getProviderForTool(tool)
+  if (
+    providerName === 'claude-code'
+    || providerName === 'codex'
+    || providerName === 'claw'
+    || providerName === 'gemini-cli'
+    || providerName === 'qwen-code'
+    || providerName === 'kiro'
+  ) {
+    return config.providers?.[providerName]?.enabled !== false
+  }
+  return true
+}
+
+export function resolveCapabilityToolManifest(input: {
+  capabilityId: RuntimeCapabilityId
+  config: MagpieConfigV2
+  routeBindings?: ModelRouteBinding[]
+  reviewerIds?: string[]
+  extraBindings?: ModelRouteBinding[]
+}): CapabilityToolManifest {
+  const policy = input.config.capabilities.tool_loading?.capabilities?.[input.capabilityId]
+  const enabled = input.config.capabilities.tool_loading?.enabled === true
+  const routeTools = uniqueTools([
+    ...(input.routeBindings || []).map(collectBindingTool),
+    ...(input.extraBindings || []).map(collectBindingTool),
+    ...(input.reviewerIds || []).map((reviewerId) => {
+      const reviewer = input.config.reviewers?.[reviewerId]
+      return collectBindingTool(reviewer)
+    }),
+  ])
+  const requiredTools = uniqueTools([...(policy?.required || []), ...routeTools])
+  const optionalTools = uniqueTools(policy?.optional || [])
+  const globallyDisabled = input.config.capabilities.tool_loading?.globally_disabled || []
+  const disabledTools = uniqueTools([...(policy?.disabled || []), ...globallyDisabled])
+  const allowedTools = policy?.allowed ? new Set(uniqueTools(policy.allowed)) : null
+  const blockedTools = requiredTools.filter(tool =>
+    disabledTools.includes(tool) || (allowedTools !== null && !allowedTools.has(tool))
+  )
+  const missingRequiredTools = requiredTools.filter(tool => !isToolProviderEnabled(input.config, tool))
+  const ready = !enabled || (blockedTools.length === 0 && missingRequiredTools.length === 0)
+
+  return {
+    schemaVersion: 1,
+    capabilityId: input.capabilityId,
+    enabled,
+    tools: requiredTools,
+    requiredTools,
+    optionalTools,
+    disabledTools,
+    blockedTools,
+    missingRequiredTools,
+    ready,
+  }
+}
+
+export function assertCapabilityToolManifestReady(manifest: CapabilityToolManifest): void {
+  if (manifest.ready) return
+  const reasons = [
+    manifest.blockedTools.length > 0 ? `blocked tools: ${manifest.blockedTools.join(', ')}` : '',
+    manifest.missingRequiredTools.length > 0 ? `missing required tools: ${manifest.missingRequiredTools.join(', ')}` : '',
+  ].filter(Boolean).join('; ')
+  throw new Error(`Capability ${manifest.capabilityId} cannot start because required tools are unavailable: ${reasons}. Enable the provider or update capabilities.tool_loading before retrying.`)
 }
 
 function getRoutingConfig(config: MagpieConfigV2): RoutingConfig {

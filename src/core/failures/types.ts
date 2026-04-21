@@ -4,6 +4,9 @@ export type FailureCategory =
   | 'quality'
   | 'prompt_or_parse'
   | 'workflow_defect'
+  | 'permission_denied'
+  | 'failure_budget_exhausted'
+  | 'resource_limit'
   | 'unknown'
 
 export type RecoveryAction =
@@ -54,6 +57,7 @@ export interface FailureIndexEntry {
   recentSessionIds: string[]
   capabilities: Partial<Record<FailureFactInput['capability'], number>>
   latestReason: string
+  latestRecordPath?: string
   latestEvidencePaths: string[]
   recentEvidencePaths: string[]
   selfHealCandidateCount: number

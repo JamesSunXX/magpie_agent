@@ -11,6 +11,7 @@ import {
   isRecoverableLoopSession,
   listWorkflowSessions,
   loadWorkflowSession,
+  loadWorkflowObservabilitySummary,
   persistWorkflowSession,
 } from '../../capabilities/workflows/shared/runtime.js'
 import {
@@ -1354,6 +1355,19 @@ harnessCommand
 
     await printDocumentPlanSummary(session.artifacts.documentPlanPath)
     await printKnowledgeInspectView(session.artifacts, legacyHarnessKnowledgeState(session))
+    const observability = await loadWorkflowObservabilitySummary(process.cwd(), 'harness', sessionId)
+    if (observability) {
+      console.log(`Observability: stage=${observability.stage || '-'} status=${observability.status} retries=${observability.retryCount} tools=${observability.tools.join(',') || '-'}`)
+      if (observability.nextRetryAt) {
+        console.log(`Next retry: ${formatLocalDateTime(observability.nextRetryAt)}`)
+      }
+      if (observability.lastError) {
+        console.log(`Last error: ${observability.lastError}`)
+      }
+      if (observability.recentFailure) {
+        console.log(`Recent failure: ${observability.recentFailure.stage || '-'} - ${observability.recentFailure.reason}`)
+      }
+    }
     const graph = await loadHarnessGraph(session)
     if (graph) {
       printHarnessGraphSummary(graph)

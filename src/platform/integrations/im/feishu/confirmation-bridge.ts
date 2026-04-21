@@ -1,5 +1,6 @@
 import { applyLoopConfirmationDecision } from '../../../../cli/commands/human-confirmation-actions.js'
 import { StateManager } from '../../../../state/state-manager.js'
+import { appendImEvent } from '../runtime.js'
 import type { ConfirmationAction } from '../types.js'
 
 export async function handleConfirmationAction(cwd: string, input: {
@@ -18,6 +19,15 @@ export async function handleConfirmationAction(cwd: string, input: {
   reason?: string
 }> {
   if (!input.whitelist.includes(input.actorOpenId)) {
+    await appendImEvent(cwd, {
+      type: 'confirmation_permission_denied',
+      actorOpenId: input.actorOpenId,
+      action: input.action,
+      sessionId: input.sessionId,
+      confirmationId: input.confirmationId,
+      threadKey: input.threadKey,
+      chatId: input.chatId,
+    })
     return {
       status: 'rejected',
       reason: `Actor ${input.actorOpenId} is not allowed to approve confirmations.`,
@@ -36,6 +46,15 @@ export async function handleConfirmationAction(cwd: string, input: {
 
   const pending = loopSession.humanConfirmations.find((item) => item.id === input.confirmationId && item.decision === 'pending')
   if (!pending) {
+    await appendImEvent(cwd, {
+      type: 'confirmation_missing',
+      actorOpenId: input.actorOpenId,
+      action: input.action,
+      sessionId: input.sessionId,
+      confirmationId: input.confirmationId,
+      threadKey: input.threadKey,
+      chatId: input.chatId,
+    })
     return {
       status: 'rejected',
       reason: `Pending confirmation ${input.confirmationId} not found.`,
@@ -52,11 +71,23 @@ export async function handleConfirmationAction(cwd: string, input: {
         reason: input.rejectionReason || 'Rejected from Feishu.',
         extraInstruction: input.extraInstruction,
       })
+  const decision = result.resolvedItem.decision === 'pending'
+    ? 'rejected'
+    : result.resolvedItem.decision
+
+  await appendImEvent(cwd, {
+    type: 'confirmation_permission_applied',
+    actorOpenId: input.actorOpenId,
+    action: input.action,
+    sessionId: input.sessionId,
+    confirmationId: input.confirmationId,
+    threadKey: input.threadKey,
+    chatId: input.chatId,
+    decision,
+  })
 
   return {
     status: 'applied',
-    decision: result.resolvedItem.decision === 'pending'
-      ? 'rejected'
-      : result.resolvedItem.decision,
+    decision,
   }
 }

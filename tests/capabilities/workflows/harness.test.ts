@@ -1923,6 +1923,8 @@ integrations:
       expect(result.session?.artifacts.workspaceMode).toBe('worktree')
       expect(result.session?.artifacts.workspacePath).toBe('/tmp/worktrees/sch/run-1')
       expect(result.session?.artifacts.worktreeBranch).toBe('sch/run-1')
+      expect(result.session?.artifacts.executionIsolationMode).toBe('disabled')
+      expect(result.session?.artifacts.executionRecoveryPath).toBe(dir)
       const harnessSessionDir = realpathSync(join(dir, '.magpie', 'sessions', 'harness', result.session!.id))
       expect(result.session?.artifacts.sessionDir).toBe(harnessSessionDir)
       expect(result.session?.artifacts.sessionWorkspaceDir).toBe(join(harnessSessionDir, 'workspace'))
@@ -3110,6 +3112,97 @@ integrations:
       expect(harnessConfig).toContain('executor_model: codex')
       expect(harnessConfig).not.toContain('planner_agent: architect')
       expect(harnessConfig).not.toContain('executor_agent: dev')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.MAGPIE_HOME
+    }
+  })
+
+  it('persists the effective tool manifest for a routed harness run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magpie-harness-tool-manifest-'))
+    const magpieHome = join(dir, '.magpie-home')
+    mkdirSync(magpieHome, { recursive: true })
+    process.env.MAGPIE_HOME = magpieHome
+
+    const configPath = join(dir, 'config.yaml')
+    writeConfig(configPath, {
+      routingEnabled: true,
+    })
+    writeFileSync(configPath, readFileSync(configPath, 'utf-8').replace(
+      '  routing:\n    enabled: true',
+      '  routing:\n    enabled: true\n  tool_loading:\n    enabled: true'
+    ), 'utf-8')
+
+    const runCapabilityMock = vi.mocked(runCapability)
+    runCapabilityMock.mockImplementation(async (module, input) => {
+      if (module.name === 'loop') {
+        return {
+          prepared: {} as never,
+          result: { status: 'completed', session: { id: 'loop-tool-manifest' } },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'review') {
+        const reviewOutput = (input as { options: { output: string } }).options.output
+        await writeFile(reviewOutput, JSON.stringify({ parsedIssues: [] }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      if (module.name === 'quality/unit-test-eval') {
+        return {
+          prepared: {} as never,
+          result: {
+            generatedTests: [],
+            coverage: { sourceFileCount: 1, testFileCount: 1, estimatedCoverage: 1 },
+            scores: [],
+            testRun: { command: 'npm run test:run', passed: true, output: 'all good', exitCode: 0 },
+          },
+          output: {} as never,
+        }
+      }
+
+      if (module.name === 'discuss') {
+        const outputPath = (input as { options: { output: string } }).options.output
+        await writeFile(outputPath, JSON.stringify({
+          finalConclusion: '```json\n{"decision":"approved","rationale":"ready","requiredActions":[]}\n```',
+        }, null, 2), 'utf-8')
+        return {
+          prepared: {} as never,
+          result: { status: 'completed' },
+          output: { summary: 'ok' },
+        }
+      }
+
+      return {
+        prepared: {} as never,
+        result: { status: 'completed' },
+        output: { summary: 'ok' },
+      }
+    })
+
+    try {
+      const ctx = createCapabilityContext({ cwd: dir, configPath })
+      const prepared = await prepareHarnessInput({
+        goal: 'Add payment migration with database auth compatibility and public API rollback support.',
+        prdPath: join(dir, 'docs', 'prd.md'),
+        complexity: 'complex',
+      }, ctx)
+      const result = await executeHarness(prepared, ctx)
+
+      expect(result.session?.artifacts.toolManifestPath).toBeTruthy()
+      const manifest = readJson<{
+        capabilityId: string
+        tools: string[]
+        ready: boolean
+      }>(result.session!.artifacts.toolManifestPath!)
+      expect(manifest.capabilityId).toBe('harness')
+      expect(manifest.tools).toEqual(['kiro', 'claw', 'gemini', 'codex'])
+      expect(manifest.ready).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
       delete process.env.MAGPIE_HOME

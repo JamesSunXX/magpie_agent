@@ -60,6 +60,14 @@ export function GraphWorkbench(props: {
           {' · '}failed {props.workbench.graph.rollup.failed}
         </Text>
         {props.workbench.error ? <Text color="red">{props.workbench.error}</Text> : null}
+        {props.workbench.observability ? (
+          <Text color="gray">
+            session {props.workbench.observability.status}
+            {' · '}stage {props.workbench.observability.stage || '-'}
+            {' · '}isolation {props.workbench.observability.executionIsolationMode || '-'}
+            {' · '}tools {props.workbench.observability.tools.join(',') || '-'}
+          </Text>
+        ) : null}
         {props.workbench.nodes.map((node) => renderNodeLine(node, props.workbench.selectedNodeId, props.focusedPanel))}
       </>
     ),
@@ -133,6 +141,17 @@ export function GraphWorkbench(props: {
             {formatEventTimestamp(event.timestamp)}  {event.summary}
           </Text>
         )) : <Text color="gray">No recent events.</Text>}
+        {props.workbench.observability?.recentFailure ? (
+          <Text color="red">
+            Recent failure: {props.workbench.observability.recentFailure.stage || '-'} - {props.workbench.observability.recentFailure.reason}
+          </Text>
+        ) : null}
+        {props.workbench.observability?.nextRetryAt ? (
+          <Text color="yellow">
+            Next retry: {formatEventTimestamp(props.workbench.observability.nextRetryAt)}
+            {props.workbench.observability.lastError ? ` - ${props.workbench.observability.lastError}` : ''}
+          </Text>
+        ) : null}
       </>
     ),
   })

@@ -1,6 +1,10 @@
 import { readFile } from 'fs/promises'
 import { join } from 'path'
-import { loadWorkflowSession, type WorkflowSession } from '../capabilities/workflows/shared/runtime.js'
+import {
+  loadWorkflowObservabilitySummary,
+  loadWorkflowSession,
+  type WorkflowSession,
+} from '../capabilities/workflows/shared/runtime.js'
 import type { HarnessGraphArtifact, HarnessGraphNode } from '../capabilities/workflows/harness-server/graph.js'
 import { getRepoSessionDir } from '../platform/paths.js'
 import type {
@@ -392,6 +396,7 @@ async function loadRecentEvents(eventsPath: string | undefined): Promise<GraphWo
 
 export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Promise<GraphWorkbenchData> {
   const session = await loadWorkflowSession(options.cwd, 'harness', options.sessionId)
+  const observability = await loadWorkflowObservabilitySummary(options.cwd, 'harness', options.sessionId)
   if (!session?.artifacts.graphPath) {
     return {
       graph: {
@@ -414,6 +419,17 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
       actions: [],
       attention: [],
       events: [],
+      ...(observability ? { observability: {
+        sessionId: observability.sessionId,
+        status: observability.status,
+        ...(observability.stage ? { stage: observability.stage } : {}),
+        ...(observability.executionIsolationMode ? { executionIsolationMode: observability.executionIsolationMode } : {}),
+        tools: observability.tools,
+        retryCount: observability.retryCount,
+        ...(observability.nextRetryAt ? { nextRetryAt: observability.nextRetryAt } : {}),
+        ...(observability.lastError ? { lastError: observability.lastError } : {}),
+        ...(observability.recentFailure ? { recentFailure: observability.recentFailure } : {}),
+      } } : {}),
       error: 'Graph artifact is not available for this session.',
     }
   }
@@ -441,6 +457,17 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
       actions: [],
       attention: [],
       events: await loadRecentEvents(session.artifacts.eventsPath),
+      ...(observability ? { observability: {
+        sessionId: observability.sessionId,
+        status: observability.status,
+        ...(observability.stage ? { stage: observability.stage } : {}),
+        ...(observability.executionIsolationMode ? { executionIsolationMode: observability.executionIsolationMode } : {}),
+        tools: observability.tools,
+        retryCount: observability.retryCount,
+        ...(observability.nextRetryAt ? { nextRetryAt: observability.nextRetryAt } : {}),
+        ...(observability.lastError ? { lastError: observability.lastError } : {}),
+        ...(observability.recentFailure ? { recentFailure: observability.recentFailure } : {}),
+      } } : {}),
       error: 'Graph artifact could not be read.',
     }
   }
@@ -482,5 +509,16 @@ export async function loadGraphWorkbench(options: LoadGraphWorkbenchOptions): Pr
     actions: buildSelectedNodeActions(graph, options.sessionId, selectedNode, linkedExecution),
     attention: buildAttention(graph),
     events: await loadRecentEvents(session.artifacts.eventsPath),
+    ...(observability ? { observability: {
+      sessionId: observability.sessionId,
+      status: observability.status,
+      ...(observability.stage ? { stage: observability.stage } : {}),
+      ...(observability.executionIsolationMode ? { executionIsolationMode: observability.executionIsolationMode } : {}),
+      tools: observability.tools,
+      retryCount: observability.retryCount,
+      ...(observability.nextRetryAt ? { nextRetryAt: observability.nextRetryAt } : {}),
+      ...(observability.lastError ? { lastError: observability.lastError } : {}),
+      ...(observability.recentFailure ? { recentFailure: observability.recentFailure } : {}),
+    } } : {}),
   }
 }

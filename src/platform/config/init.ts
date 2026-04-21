@@ -255,6 +255,56 @@ function buildDefaultSafetyConfig() {
   return {
     allow_dangerous_commands: false,
     require_confirmation_for_dangerous: true,
+    permission_policy: {
+      command_categories: {
+        dangerous: 'deny',
+      },
+      denied_path_patterns: ['.env', '~/.ssh'],
+      tool_categories: {
+        im: 'deny',
+      },
+    },
+  }
+}
+
+function buildDefaultExecutionIsolationConfig() {
+  return {
+    enabled: false,
+    mode: 'worktree',
+  }
+}
+
+function buildDefaultToolLoadingConfig() {
+  return {
+    enabled: false,
+    globally_disabled: [],
+    capabilities: {
+      loop: {
+        required: [],
+        optional: ['claude', 'codex', 'gemini', 'kiro', 'claw'],
+        disabled: [],
+      },
+      harness: {
+        required: [],
+        optional: ['claude', 'codex', 'gemini', 'kiro', 'claw'],
+        disabled: [],
+      },
+    },
+  }
+}
+
+function buildDefaultResourceGuardConfig() {
+  return {
+    enabled: false,
+    max_queue_size: 20,
+    max_concurrent_harness: 1,
+    max_task_runtime_ms: 3600000,
+    max_stage_runtime_ms: 900000,
+    failure_budget: {
+      max_stage_retries: 2,
+      max_task_failures: 3,
+      max_same_signature_failures: 2,
+    },
   }
 }
 
@@ -628,6 +678,25 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   } else if (deepMergeMissing(capabilities.safety, buildDefaultSafetyConfig())) {
     changes.push('Filled missing capabilities.safety defaults.')
   }
+
+  if (!isObjectRecord(capabilities.execution_isolation)) {
+    capabilities.execution_isolation = buildDefaultExecutionIsolationConfig()
+    changes.push('Added capabilities.execution_isolation defaults.')
+  } else if (deepMergeMissing(capabilities.execution_isolation, buildDefaultExecutionIsolationConfig())) {
+    changes.push('Filled missing capabilities.execution_isolation defaults.')
+  }
+  if (!isObjectRecord(capabilities.tool_loading)) {
+    capabilities.tool_loading = buildDefaultToolLoadingConfig()
+    changes.push('Added capabilities.tool_loading defaults.')
+  } else if (deepMergeMissing(capabilities.tool_loading, buildDefaultToolLoadingConfig())) {
+    changes.push('Filled missing capabilities.tool_loading defaults.')
+  }
+  if (!isObjectRecord(capabilities.resource_guard)) {
+    capabilities.resource_guard = buildDefaultResourceGuardConfig()
+    changes.push('Added capabilities.resource_guard defaults.')
+  } else if (deepMergeMissing(capabilities.resource_guard, buildDefaultResourceGuardConfig())) {
+    changes.push('Filled missing capabilities.resource_guard defaults.')
+  }
   if (!isObjectRecord(capabilities.loop)) {
     capabilities.loop = {
       execution_timeout: buildDefaultLoopExecutionTimeoutConfig(),
@@ -921,6 +990,37 @@ capabilities:
   safety:
     allow_dangerous_commands: false
     require_confirmation_for_dangerous: true
+    permission_policy:
+      command_categories:
+        dangerous: deny
+      denied_path_patterns: [".env", "~/.ssh"]
+      tool_categories:
+        im: deny
+  execution_isolation:
+    enabled: false
+    mode: worktree
+  tool_loading:
+    enabled: false
+    globally_disabled: []
+    capabilities:
+      loop:
+        required: []
+        optional: [claude, codex, gemini, kiro, claw]
+        disabled: []
+      harness:
+        required: []
+        optional: [claude, codex, gemini, kiro, claw]
+        disabled: []
+  resource_guard:
+    enabled: false
+    max_queue_size: 20
+    max_concurrent_harness: 1
+    max_task_runtime_ms: 3600000
+    max_stage_runtime_ms: 900000
+    failure_budget:
+      max_stage_retries: 2
+      max_task_failures: 3
+      max_same_signature_failures: 2
   loop:
     enabled: true
     planner_model: ${analyzerModel}
@@ -1061,6 +1161,15 @@ ${jiraCredentialLines}
           - "ou_xxx_operator"
         callback_port: 9321
         callback_path: "/callbacks/feishu"
+  wiki:
+    enabled: false
+    default_provider: "feishu_wiki"
+    providers:
+      feishu_wiki:
+        type: "feishu-wiki"
+        app_id: ${yamlStringOrEnvRef('${FEISHU_APP_ID}')}
+        app_secret: ${yamlStringOrEnvRef('${FEISHU_APP_SECRET}')}
+        default_space_id: ${yamlStringOrEnvRef('${FEISHU_WIKI_SPACE_ID}')}
 `
 }
 

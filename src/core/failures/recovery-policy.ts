@@ -62,6 +62,30 @@ export function decideRecovery(input: RecoveryInput): RecoveryDecision {
         reason: 'Workflow defects should be elevated into self-repair candidates immediately.',
         diagnosticChecks: [],
       }
+    case 'permission_denied':
+      return {
+        action: 'block_for_human',
+        retryable: false,
+        candidateForSelfRepair: false,
+        reason: 'Permission policy denied the operation; a human must adjust the request or policy.',
+        diagnosticChecks: [],
+      }
+    case 'failure_budget_exhausted':
+      return {
+        action: 'block_for_human',
+        retryable: false,
+        candidateForSelfRepair: false,
+        reason: 'Failure budget is exhausted; automatic retries should pause.',
+        diagnosticChecks: [],
+      }
+    case 'resource_limit':
+      return {
+        action: 'block_for_human',
+        retryable: false,
+        candidateForSelfRepair: false,
+        reason: 'Resource limits were reached; automatic execution should pause.',
+        diagnosticChecks: [],
+      }
     case 'unknown':
     default:
       if (input.retryableHint) {

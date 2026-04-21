@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isFeishuTaskFormText,
+  isFeishuTaskStatusText,
   parseFeishuTaskCommand,
   parseFeishuTaskForm,
 } from '../../../src/platform/integrations/im/feishu/task-command.js'
@@ -51,6 +52,12 @@ describe('parseFeishuTaskCommand', () => {
   it('detects the form-open command header', () => {
     expect(isFeishuTaskFormText('/magpie form')).toBe(true)
     expect(isFeishuTaskFormText('/magpie task')).toBe(false)
+  })
+
+  it('detects the status command header', () => {
+    expect(isFeishuTaskStatusText('/magpie status')).toBe(true)
+    expect(isFeishuTaskStatusText('/magpie status\nextra ignored')).toBe(true)
+    expect(isFeishuTaskStatusText('/magpie task')).toBe(false)
   })
 
   it('normalizes a form submission into a harness request', () => {

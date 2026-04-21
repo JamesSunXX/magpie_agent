@@ -19,10 +19,14 @@ import type {
   LoopStageBindingConfig,
   LoopStageBindingsConfig,
   SafetyConfig,
+  ExecutionIsolationConfig,
+  CapabilityToolPolicy,
+  ToolLoadingConfig,
+  ResourceGuardConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 25
+export const CURRENT_CONFIG_VERSION = 26
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 const LOOP_STAGE_NAMES: LoopStageName[] = [
@@ -38,6 +42,9 @@ const LOOP_STAGE_NAMES: LoopStageName[] = [
   'integration_test',
 ]
 const LOOP_STAGE_BINDING_KEYS = ['primary', 'reviewer', 'rescue'] as const
+const PERMISSION_POLICY_ACTIONS = ['allow', 'deny', 'confirm'] as const
+const COMMAND_PERMISSION_CATEGORIES = ['dangerous', 'write', 'read', 'network', 'git'] as const
+const TOOL_PERMISSION_CATEGORIES = ['cli', 'api', 'im', 'operations'] as const
 
 export interface ConfigVersionStatus {
   path: string
@@ -353,18 +360,154 @@ function validateSafetyConfig(safety: SafetyConfig | undefined): void {
     throw new Error('Config error: capabilities.safety.require_confirmation_for_dangerous must be a boolean')
   }
 
-  if (safety.dangerous_patterns === undefined) {
-    return
-  }
-
-  if (!Array.isArray(safety.dangerous_patterns)) {
-    throw new Error('Config error: capabilities.safety.dangerous_patterns must be an array')
-  }
-
-  for (const [index, pattern] of safety.dangerous_patterns.entries()) {
-    if (typeof pattern !== 'string' || pattern.trim().length === 0) {
-      throw new Error(`Config error: capabilities.safety.dangerous_patterns[${index}] must be a non-empty string`)
+  if (safety.dangerous_patterns !== undefined) {
+    if (!Array.isArray(safety.dangerous_patterns)) {
+      throw new Error('Config error: capabilities.safety.dangerous_patterns must be an array')
     }
+
+    for (const [index, pattern] of safety.dangerous_patterns.entries()) {
+      if (typeof pattern !== 'string' || pattern.trim().length === 0) {
+        throw new Error(`Config error: capabilities.safety.dangerous_patterns[${index}] must be a non-empty string`)
+      }
+    }
+  }
+
+  const policy = safety.permission_policy
+  if (!policy) return
+  if (typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new Error('Config error: capabilities.safety.permission_policy must be an object')
+  }
+
+  if (policy.command_categories !== undefined) {
+    if (typeof policy.command_categories !== 'object' || Array.isArray(policy.command_categories)) {
+      throw new Error('Config error: capabilities.safety.permission_policy.command_categories must be an object')
+    }
+    for (const [category, action] of Object.entries(policy.command_categories)) {
+      if (!COMMAND_PERMISSION_CATEGORIES.includes(category as typeof COMMAND_PERMISSION_CATEGORIES[number])) {
+        throw new Error(`Config error: capabilities.safety.permission_policy.command_categories has unknown category "${category}"`)
+      }
+      if (!PERMISSION_POLICY_ACTIONS.includes(action as typeof PERMISSION_POLICY_ACTIONS[number])) {
+        throw new Error(`Config error: capabilities.safety.permission_policy.command_categories.${category} must be one of allow, deny, confirm`)
+      }
+    }
+  }
+
+  if (policy.tool_categories !== undefined) {
+    if (typeof policy.tool_categories !== 'object' || Array.isArray(policy.tool_categories)) {
+      throw new Error('Config error: capabilities.safety.permission_policy.tool_categories must be an object')
+    }
+    for (const [category, action] of Object.entries(policy.tool_categories)) {
+      if (!TOOL_PERMISSION_CATEGORIES.includes(category as typeof TOOL_PERMISSION_CATEGORIES[number])) {
+        throw new Error(`Config error: capabilities.safety.permission_policy.tool_categories has unknown category "${category}"`)
+      }
+      if (!PERMISSION_POLICY_ACTIONS.includes(action as typeof PERMISSION_POLICY_ACTIONS[number])) {
+        throw new Error(`Config error: capabilities.safety.permission_policy.tool_categories.${category} must be one of allow, deny, confirm`)
+      }
+    }
+  }
+
+  if (policy.denied_path_patterns !== undefined) {
+    if (!Array.isArray(policy.denied_path_patterns)) {
+      throw new Error('Config error: capabilities.safety.permission_policy.denied_path_patterns must be an array')
+    }
+    for (const [index, pattern] of policy.denied_path_patterns.entries()) {
+      if (typeof pattern !== 'string' || pattern.trim().length === 0) {
+        throw new Error(`Config error: capabilities.safety.permission_policy.denied_path_patterns[${index}] must be a non-empty string`)
+      }
+    }
+  }
+}
+
+function validatePositiveLimit(name: string, value: unknown): void {
+  if (value === undefined) return
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`Config error: ${name} must be > 0`)
+  }
+}
+
+function validateResourceGuardConfig(config: ResourceGuardConfig | undefined): void {
+  if (!config) return
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Config error: capabilities.resource_guard must be an object')
+  }
+  validateOptionalBoolean('capabilities.resource_guard.enabled', config.enabled)
+  validatePositiveLimit('capabilities.resource_guard.max_queue_size', config.max_queue_size)
+  validatePositiveLimit('capabilities.resource_guard.max_concurrent_harness', config.max_concurrent_harness)
+  validatePositiveLimit('capabilities.resource_guard.max_task_runtime_ms', config.max_task_runtime_ms)
+  validatePositiveLimit('capabilities.resource_guard.max_stage_runtime_ms', config.max_stage_runtime_ms)
+
+  if (config.failure_budget === undefined) return
+  if (typeof config.failure_budget !== 'object' || Array.isArray(config.failure_budget)) {
+    throw new Error('Config error: capabilities.resource_guard.failure_budget must be an object')
+  }
+  validatePositiveLimit('capabilities.resource_guard.failure_budget.max_stage_retries', config.failure_budget.max_stage_retries)
+  validatePositiveLimit('capabilities.resource_guard.failure_budget.max_task_failures', config.failure_budget.max_task_failures)
+  validatePositiveLimit('capabilities.resource_guard.failure_budget.max_same_signature_failures', config.failure_budget.max_same_signature_failures)
+}
+
+function validateExecutionIsolationConfig(config: ExecutionIsolationConfig | undefined): void {
+  if (!config) return
+  validateOptionalBoolean('capabilities.execution_isolation.enabled', config.enabled)
+  if (
+    config.mode !== undefined
+    && config.mode !== 'disabled'
+    && config.mode !== 'worktree'
+    && config.mode !== 'container'
+  ) {
+    throw new Error('Config error: capabilities.execution_isolation.mode must be one of disabled, worktree, container')
+  }
+  if (config.worktree_root !== undefined && typeof config.worktree_root !== 'string') {
+    throw new Error('Config error: capabilities.execution_isolation.worktree_root must be a string')
+  }
+  if (config.container_image !== undefined && typeof config.container_image !== 'string') {
+    throw new Error('Config error: capabilities.execution_isolation.container_image must be a string')
+  }
+}
+
+function validateToolNameList(name: string, value: unknown): void {
+  if (value === undefined) return
+  if (!Array.isArray(value)) {
+    throw new Error(`Config error: ${name} must be an array`)
+  }
+
+  value.forEach((tool, index) => {
+    if (typeof tool !== 'string' || tool.trim().length === 0) {
+      throw new Error(`Config error: ${name}[${index}] must be a non-empty string`)
+    }
+    try {
+      getProviderForTool(tool.trim())
+    } catch {
+      throw new Error(`Config error: ${name}[${index}] references unknown tool "${tool}"`)
+    }
+  })
+}
+
+function validateCapabilityToolPolicy(name: string, policy: CapabilityToolPolicy | undefined): void {
+  if (policy === undefined) return
+  if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) {
+    throw new Error(`Config error: ${name} must be an object`)
+  }
+  validateToolNameList(`${name}.required`, policy.required)
+  validateToolNameList(`${name}.optional`, policy.optional)
+  validateToolNameList(`${name}.disabled`, policy.disabled)
+  validateToolNameList(`${name}.allowed`, policy.allowed)
+}
+
+function validateToolLoadingConfig(config: ToolLoadingConfig | undefined): void {
+  if (!config) return
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Config error: capabilities.tool_loading must be an object')
+  }
+
+  validateOptionalBoolean('capabilities.tool_loading.enabled', config.enabled)
+  validateToolNameList('capabilities.tool_loading.globally_disabled', config.globally_disabled)
+
+  if (config.capabilities === undefined) return
+  if (typeof config.capabilities !== 'object' || config.capabilities === null || Array.isArray(config.capabilities)) {
+    throw new Error('Config error: capabilities.tool_loading.capabilities must be an object')
+  }
+  for (const [capabilityId, policy] of Object.entries(config.capabilities)) {
+    validateCapabilityToolPolicy(`capabilities.tool_loading.capabilities.${capabilityId}`, policy)
   }
 }
 
@@ -626,6 +769,9 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
 
   validateRoutingConfig(config.capabilities.routing, config.reviewers)
   validateSafetyConfig(config.capabilities.safety)
+  validateExecutionIsolationConfig(config.capabilities.execution_isolation)
+  validateToolLoadingConfig(config.capabilities.tool_loading)
+  validateResourceGuardConfig(config.capabilities.resource_guard)
   validateLoopConfig(config.capabilities.loop, config.reviewers, config.capabilities.discuss?.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)
   validateLoopExecutionTimeout(config.capabilities.loop?.execution_timeout)

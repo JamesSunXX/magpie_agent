@@ -22,6 +22,18 @@ describe('failure recovery policy', () => {
       action: 'spawn_self_repair_candidate',
       candidateForSelfRepair: true,
     })
+    expect(decideRecovery({ category: 'permission_denied', occurrenceCount: 1 })).toMatchObject({
+      action: 'block_for_human',
+      retryable: false,
+    })
+    expect(decideRecovery({ category: 'failure_budget_exhausted', occurrenceCount: 1 })).toMatchObject({
+      action: 'block_for_human',
+      retryable: false,
+    })
+    expect(decideRecovery({ category: 'resource_limit', occurrenceCount: 1 })).toMatchObject({
+      action: 'block_for_human',
+      retryable: false,
+    })
   })
 
   it('upgrades repeated prompt_or_parse failures into self-repair candidates', () => {

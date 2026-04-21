@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getRepoMagpieDir } from '../../paths.js'
 import type { ImServerStatus } from './types.js'
@@ -9,6 +9,10 @@ function processedEventsPath(cwd: string): string {
 
 function serverStatusPath(cwd: string): string {
   return join(getRepoMagpieDir(cwd), 'im', 'server-state.json')
+}
+
+function imEventsPath(cwd: string): string {
+  return join(getRepoMagpieDir(cwd), 'im', 'events.jsonl')
 }
 
 async function loadProcessedEventIds(cwd: string): Promise<string[]> {
@@ -60,4 +64,13 @@ export async function loadImServerStatus(cwd: string): Promise<ImServerStatus | 
   } catch {
     return null
   }
+}
+
+export async function appendImEvent(cwd: string, event: Record<string, unknown>): Promise<void> {
+  const path = imEventsPath(cwd)
+  await mkdir(dirname(path), { recursive: true })
+  await appendFile(path, `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ...event,
+  })}\n`, 'utf-8')
 }

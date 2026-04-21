@@ -12,6 +12,7 @@ const listWorkflowSessions = vi.fn()
 const loadWorkflowSession = vi.fn()
 const persistWorkflowSession = vi.fn()
 const appendWorkflowEvent = vi.fn()
+const loadWorkflowObservabilitySummary = vi.fn()
 const isRecoverableHarnessSession = vi.fn()
 const isRecoverableLoopSession = vi.fn()
 const launchMagpieInTmux = vi.fn()
@@ -44,6 +45,7 @@ vi.mock('../../src/capabilities/workflows/shared/runtime.js', () => ({
   loadWorkflowSession,
   persistWorkflowSession,
   appendWorkflowEvent,
+  loadWorkflowObservabilitySummary,
   isRecoverableHarnessSession,
   isRecoverableLoopSession,
 }))
@@ -93,6 +95,7 @@ describe('top-level harness CLI command', () => {
     createDefaultCapabilityRegistry.mockReturnValue({ registry: true })
     getTypedCapability.mockImplementation((_registry, name) => ({ name }))
     listWorkflowSessions.mockResolvedValue([])
+    loadWorkflowObservabilitySummary.mockResolvedValue(null)
     launchMagpieInTmux.mockResolvedValue({
       sessionId: 'harness-tmux-1',
       tmuxSession: 'magpie-harness-tmux-1',

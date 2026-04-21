@@ -17,9 +17,11 @@ const handleConfirmationActionMock = vi.hoisted(() => vi.fn().mockResolvedValue(
 }))
 const isFeishuTaskCommandTextMock = vi.hoisted(() => vi.fn())
 const isFeishuTaskFormTextMock = vi.hoisted(() => vi.fn())
+const isFeishuTaskStatusTextMock = vi.hoisted(() => vi.fn())
 const parseFeishuTaskCommandMock = vi.hoisted(() => vi.fn())
 const parseFeishuTaskFormMock = vi.hoisted(() => vi.fn())
 const launchFeishuTaskMock = vi.hoisted(() => vi.fn())
+const replyFeishuTaskStatusForThreadMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 const replyTextMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: 'reply-1' }))
 const replyInteractiveCardMock = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: 'reply-card-1' }))
 const buildFeishuTaskFormCardMock = vi.hoisted(() => vi.fn(() => ({ type: 'card' })))
@@ -57,6 +59,7 @@ vi.mock('../../src/platform/integrations/im/feishu/confirmation-bridge.js', () =
 vi.mock('../../src/platform/integrations/im/feishu/task-command.js', () => ({
   isFeishuTaskCommandText: isFeishuTaskCommandTextMock,
   isFeishuTaskFormText: isFeishuTaskFormTextMock,
+  isFeishuTaskStatusText: isFeishuTaskStatusTextMock,
   parseFeishuTaskCommand: parseFeishuTaskCommandMock,
   parseFeishuTaskForm: parseFeishuTaskFormMock,
 }))
@@ -67,6 +70,10 @@ vi.mock('../../src/platform/integrations/im/feishu/task-form.js', () => ({
 
 vi.mock('../../src/platform/integrations/im/feishu/task-launch.js', () => ({
   launchFeishuTask: launchFeishuTaskMock,
+}))
+
+vi.mock('../../src/platform/integrations/im/feishu/task-status.js', () => ({
+  replyFeishuTaskStatusForThread: replyFeishuTaskStatusForThreadMock,
 }))
 
 vi.mock('../../src/platform/integrations/im/feishu/client.js', () => ({
@@ -115,6 +122,8 @@ describe('im-server command', () => {
     })
     isFeishuTaskCommandTextMock.mockImplementation((text: string) => text.startsWith('/magpie task'))
     isFeishuTaskFormTextMock.mockImplementation((text: string) => text.startsWith('/magpie form'))
+    isFeishuTaskStatusTextMock.mockImplementation((text: string) => text.startsWith('/magpie status'))
+    replyFeishuTaskStatusForThreadMock.mockResolvedValue(true)
     parseFeishuTaskCommandMock.mockReturnValue({
       entryMode: 'command',
       taskType: 'small',
@@ -162,6 +171,46 @@ describe('im-server command', () => {
     )
     expect(logSpy).toHaveBeenCalledWith('IM server started (pid=4242).')
     logSpy.mockRestore()
+  })
+
+  it('blocks im server start when the im tool category is denied', async () => {
+    loadConfigMock.mockReturnValue({
+      capabilities: {
+        safety: {
+          permission_policy: {
+            tool_categories: {
+              im: 'deny',
+            },
+          },
+        },
+      },
+      integrations: {
+        im: {
+          enabled: true,
+          default_provider: 'feishu_main',
+          providers: {
+            feishu_main: {
+              type: 'feishu-app',
+              app_id: 'app-id',
+              app_secret: 'app-secret',
+              verification_token: 'verify-token',
+              default_chat_id: 'oc_chat',
+              approval_whitelist_open_ids: ['ou_operator'],
+              callback_port: 9321,
+              callback_path: '/callbacks/feishu',
+            },
+          },
+        },
+      },
+    })
+    const { imServerCommand } = await import('../../src/cli/commands/im-server.js')
+
+    await expect(imServerCommand.parseAsync(
+      ['node', 'im-server', 'start'],
+      { from: 'node' }
+    )).rejects.toThrow('Tool blocked by permission policy')
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(saveImServerStatusMock).not.toHaveBeenCalled()
   })
 
   it('prints stopped status when no server state exists', async () => {
@@ -321,6 +370,54 @@ describe('im-server command', () => {
     logSpy.mockRestore()
   })
 
+  it('replies with the permission rejection reason for unauthorized confirmation actions', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+    handleConfirmationActionMock.mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'Actor ou_guest is not allowed to approve confirmations.',
+    })
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'confirmation_action',
+            eventId: 'evt-denied-1',
+            action: 'approve_confirmation',
+            actorOpenId: 'ou_guest',
+            sessionId: 'loop-123',
+            confirmationId: 'confirm-1',
+            threadKey: 'om_root',
+            chatId: 'oc_chat',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(replyTextMessageMock).toHaveBeenCalledWith(
+      'om_root',
+      'Confirmation rejected: Actor ou_guest is not allowed to approve confirmations.'
+    )
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-denied-1')
+    logSpy.mockRestore()
+  })
+
   it('skips duplicate callbacks that were already processed', async () => {
     const onceSpy = vi.spyOn(process, 'once')
     const signalHandlers = new Map<string, () => void>()
@@ -381,6 +478,7 @@ describe('im-server command', () => {
             eventId: 'evt-task-1',
             actorOpenId: 'ou_requester',
             sourceMessageId: 'om_source',
+            threadKey: 'om_source',
             chatId: 'oc_chat',
             text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
           }))
@@ -412,6 +510,49 @@ describe('im-server command', () => {
     expect(markEventProcessedMock).toHaveBeenCalledWith('evt-task-1')
   })
 
+  it('routes a thread status command into the task status responder', async () => {
+    const onceSpy = vi.spyOn(process, 'once')
+    const signalHandlers = new Map<string, () => void>()
+    onceSpy.mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      signalHandlers.set(event, handler)
+      return process
+    }) as typeof process.once)
+
+    createFeishuCallbackServerMock.mockImplementation(({ onEvent }) => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback()
+        void Promise.resolve()
+          .then(() => onEvent({
+            kind: 'task_command',
+            eventId: 'evt-status-1',
+            actorOpenId: 'ou_requester',
+            sourceMessageId: 'om_status_reply',
+            threadKey: 'om_task_root',
+            chatId: 'oc_chat',
+            text: '/magpie status',
+          }))
+          .then(() => signalHandlers.get('SIGTERM')?.())
+      }),
+      close: vi.fn((callback: () => void) => callback()),
+    }))
+
+    const { runImServerLoop } = await import('../../src/cli/commands/im-server.js')
+    await runImServerLoop({
+      cwd: process.cwd(),
+    })
+
+    expect(replyFeishuTaskStatusForThreadMock).toHaveBeenCalledWith(
+      process.cwd(),
+      expect.any(Object),
+      'om_task_root'
+    )
+    expect(parseFeishuTaskCommandMock).not.toHaveBeenCalled()
+    expect(launchFeishuTaskMock).not.toHaveBeenCalled()
+    expect(markEventProcessedMock).toHaveBeenCalledWith('evt-status-1')
+  })
+
   it('opens a task form card when the form command is received', async () => {
     const onceSpy = vi.spyOn(process, 'once')
     const signalHandlers = new Map<string, () => void>()
@@ -431,6 +572,7 @@ describe('im-server command', () => {
             eventId: 'evt-form-open-1',
             actorOpenId: 'ou_requester',
             sourceMessageId: 'om_source',
+            threadKey: 'om_source',
             chatId: 'oc_chat',
             text: '/magpie form',
           }))
@@ -470,6 +612,7 @@ describe('im-server command', () => {
             eventId: 'evt-chat-1',
             actorOpenId: 'ou_requester',
             sourceMessageId: 'om_source',
+            threadKey: 'om_source',
             chatId: 'oc_chat',
             text: 'hello team',
           }))
@@ -509,6 +652,7 @@ describe('im-server command', () => {
             eventId: 'evt-task-fail-1',
             actorOpenId: 'ou_requester',
             sourceMessageId: 'om_source',
+            threadKey: 'om_source',
             chatId: 'oc_chat',
             text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
           }).catch(() => {}))
@@ -545,6 +689,7 @@ describe('im-server command', () => {
             eventId: 'evt-task-blocked-1',
             actorOpenId: 'ou_requester',
             sourceMessageId: 'om_source',
+            threadKey: 'om_source',
             chatId: 'oc_chat',
             text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
           }))

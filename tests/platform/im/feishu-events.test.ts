@@ -30,8 +30,42 @@ describe('parseFeishuEvent', () => {
       eventId: 'evt-task-1',
       actorOpenId: 'ou_requester',
       sourceMessageId: 'om_source',
+      threadKey: 'om_source',
       chatId: 'oc_chat',
       text: '/magpie task\ntype: small\ngoal: Fix login timeout\nprd: docs/plans/login-timeout.md',
+    })
+  })
+
+  it('uses the root message id as the thread key for thread replies', () => {
+    const normalized = parseFeishuEvent({
+      header: {
+        event_id: 'evt-status-1',
+        event_type: 'im.message.receive_v1',
+      },
+      event: {
+        sender: {
+          sender_id: {
+            open_id: 'ou_requester',
+          },
+        },
+        message: {
+          message_id: 'om_status_reply',
+          root_id: 'om_task_root',
+          chat_id: 'oc_chat',
+          message_type: 'text',
+          content: JSON.stringify({
+            text: '/magpie status',
+          }),
+        },
+      },
+    })
+
+    expect(normalized).toMatchObject({
+      kind: 'task_command',
+      eventId: 'evt-status-1',
+      sourceMessageId: 'om_status_reply',
+      threadKey: 'om_task_root',
+      text: '/magpie status',
     })
   })
 

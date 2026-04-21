@@ -148,6 +148,114 @@ integrations:
     expect(loadHarnessServerState(cwd)).resolves.toBeNull()
   })
 
+  it('rejects enqueue when the resource guard queue limit is reached', async () => {
+    const { enqueueHarnessSession } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    runtimeMocks.loadConfig.mockReturnValue({
+      capabilities: {
+        resource_guard: {
+          enabled: true,
+          max_queue_size: 1,
+        },
+      },
+      integrations: {
+        operations: {
+          default_provider: 'tmux',
+        },
+      },
+    })
+
+    await enqueueHarnessSession(cwd, {
+      goal: 'First queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    }, {
+      configPath,
+    })
+
+    await expect(enqueueHarnessSession(cwd, {
+      goal: 'Second queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    }, {
+      configPath,
+    })).rejects.toThrow('Harness queue limit reached')
+  })
+
+  it('uses the default config when enforcing the resource guard queue limit', async () => {
+    const { enqueueHarnessSession } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    runtimeMocks.loadConfig.mockReturnValue({
+      capabilities: {
+        resource_guard: {
+          enabled: true,
+          max_queue_size: 1,
+        },
+      },
+      integrations: {
+        operations: {
+          default_provider: 'tmux',
+        },
+      },
+    })
+
+    await enqueueHarnessSession(cwd, {
+      goal: 'First queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    })
+
+    await expect(enqueueHarnessSession(cwd, {
+      goal: 'Second queued task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    })).rejects.toThrow('Harness queue limit reached')
+    expect(runtimeMocks.loadConfig).toHaveBeenCalledWith(undefined)
+  })
+
+  it('fails a harness task that exceeds the resource guard runtime limit', async () => {
+    const {
+      enqueueHarnessSession,
+      runHarnessServerOnce,
+    } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    const { loadWorkflowSession } = await import('../../../src/capabilities/workflows/shared/runtime.js')
+    runtimeMocks.loadConfig.mockReturnValue({
+      capabilities: {
+        resource_guard: {
+          enabled: true,
+          max_task_runtime_ms: 25,
+        },
+      },
+      integrations: {
+        operations: {
+          default_provider: 'tmux',
+        },
+      },
+    })
+    runCapability.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      return {
+        result: {
+          status: 'completed',
+        },
+        output: {
+          summary: 'Completed too late.',
+        },
+      }
+    })
+
+    const queued = await enqueueHarnessSession(cwd, {
+      goal: 'Slow task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    }, {
+      configPath,
+    })
+
+    const result = await runHarnessServerOnce({ cwd, configPath })
+    const updated = await loadWorkflowSession(cwd, 'harness', queued.id)
+
+    expect(result.status).not.toBe('completed')
+    expect(updated?.evidence).toMatchObject({
+      runtime: {
+        lastError: expect.stringContaining('exceeded max task runtime'),
+      },
+    })
+  })
+
   it('persists a graph artifact alongside a queued harness session when provided', async () => {
     const { createHarnessGraphArtifact, loadHarnessGraphArtifact } = await import('../../../src/capabilities/workflows/harness-server/graph.js')
     const { enqueueHarnessSession } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
@@ -238,6 +346,128 @@ integrations:
       blocked: 1,
     })
     expect(queued.status).toBe('queued')
+  })
+
+  it('summarizes recent observability signals across harness sessions', async () => {
+    const {
+      enqueueHarnessSession,
+      saveHarnessServerState,
+      summarizeHarnessServer,
+    } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    const { appendWorkflowEvent, appendWorkflowFailure } = await import('../../../src/capabilities/workflows/shared/runtime.js')
+
+    const retrying = await enqueueHarnessSession(cwd, {
+      goal: 'Retryable task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    })
+    const running = await enqueueHarnessSession(cwd, {
+      goal: 'Running task',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    })
+    const toolManifestPath = join(cwd, '.magpie', 'sessions', 'harness', running.id, 'tool-manifest.json')
+    writeFileSync(toolManifestPath, JSON.stringify({
+      schemaVersion: 1,
+      capabilityId: 'harness',
+      enabled: true,
+      tools: ['kiro', 'codex'],
+      requiredTools: ['kiro', 'codex'],
+      optionalTools: [],
+      disabledTools: [],
+      blockedTools: [],
+      missingRequiredTools: [],
+      ready: true,
+    }, null, 2), 'utf-8')
+
+    for (const patch of [
+      {
+        id: retrying.id,
+        status: 'waiting_retry',
+        currentStage: 'reviewing',
+        evidence: {
+          ...retrying.evidence as Record<string, unknown>,
+          runtime: {
+            retryCount: 2,
+            nextRetryAt: '2026-04-12T10:05:00.000Z',
+            lastError: 'Codex timed out',
+            lastReliablePoint: 'waiting_retry',
+          },
+        },
+      },
+      {
+        id: running.id,
+        status: 'in_progress',
+        currentStage: 'developing',
+        artifacts: {
+          ...running.artifacts,
+          toolManifestPath,
+          executionIsolationMode: 'worktree',
+        },
+      },
+    ]) {
+      const sessionPath = join(cwd, '.magpie', 'sessions', 'harness', patch.id, 'session.json')
+      const raw = JSON.parse(readFileSync(sessionPath, 'utf-8')) as Record<string, unknown>
+      writeFileSync(sessionPath, JSON.stringify({ ...raw, ...patch }, null, 2), 'utf-8')
+    }
+
+    const failure = await appendWorkflowFailure(cwd, {
+      capability: 'harness-server',
+      sessionId: retrying.id,
+      stage: 'reviewing',
+      reason: 'Codex timed out',
+      rawError: 'Codex timed out',
+      evidencePaths: [retrying.artifacts.eventsPath],
+      lastReliablePoint: 'waiting_retry',
+      metadata: {
+        retryCount: 2,
+      },
+    })
+    const retryingPath = join(cwd, '.magpie', 'sessions', 'harness', retrying.id, 'session.json')
+    const retryingRaw = JSON.parse(readFileSync(retryingPath, 'utf-8')) as Record<string, any>
+    retryingRaw.artifacts.lastFailurePath = failure.recordPath
+    retryingRaw.artifacts.failureIndexPath = failure.indexPath
+    writeFileSync(retryingPath, JSON.stringify(retryingRaw, null, 2), 'utf-8')
+
+    await appendWorkflowEvent(cwd, 'harness', running.id, {
+      timestamp: new Date('2026-04-12T10:00:00.000Z'),
+      type: 'stage_changed',
+      stage: 'developing',
+      summary: 'Started development.',
+    })
+    await saveHarnessServerState(cwd, {
+      serverId: 'server-1',
+      status: 'running',
+      startedAt: '2026-04-12T09:55:00.000Z',
+      updatedAt: '2026-04-12T10:01:00.000Z',
+      executionHost: 'foreground',
+      currentSessionId: running.id,
+    })
+
+    const summary = await summarizeHarnessServer(cwd)
+
+    expect(summary.observability.currentSession).toMatchObject({
+      sessionId: running.id,
+      status: 'in_progress',
+      stage: 'developing',
+      executionIsolationMode: 'worktree',
+      tools: ['kiro', 'codex'],
+    })
+    expect(summary.observability.nextRetry).toMatchObject({
+      sessionId: retrying.id,
+      nextRetryAt: '2026-04-12T10:05:00.000Z',
+      retryCount: 2,
+      lastError: 'Codex timed out',
+    })
+    expect(summary.observability.recentFailures[0]).toMatchObject({
+      sessionId: retrying.id,
+      reason: 'Codex timed out',
+      recordPath: failure.recordPath,
+    })
+    expect(summary.observability.recentEvents).toContainEqual(expect.objectContaining({
+      sessionId: running.id,
+      type: 'stage_changed',
+      stage: 'developing',
+      summary: 'Started development.',
+    }))
   })
 
   it('reports whether a server is alive for foreground and tmux hosts', async () => {
@@ -630,6 +860,67 @@ integrations:
     expect(failureIndex.entries[0]?.lastRecoveryAction).toBe('retry_with_backoff')
   })
 
+  it('blocks retryable execution failures when the failure budget is exhausted', async () => {
+    const {
+      enqueueHarnessSession,
+      runHarnessServerOnce,
+      saveHarnessServerState,
+    } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    const { loadWorkflowSession } = await import('../../../src/capabilities/workflows/shared/runtime.js')
+    runtimeMocks.loadConfig.mockReturnValue({
+      capabilities: {
+        resource_guard: {
+          enabled: true,
+          failure_budget: {
+            max_task_failures: 1,
+            max_same_signature_failures: 1,
+          },
+        },
+      },
+      integrations: {
+        operations: {
+          default_provider: 'tmux',
+        },
+      },
+    })
+
+    const queued = await enqueueHarnessSession(cwd, {
+      goal: 'Budgeted retryable failure',
+      prdPath: join(cwd, 'docs', 'prd.md'),
+    }, {
+      configPath,
+    })
+    await saveHarnessServerState(cwd, {
+      serverId: 'server-1',
+      status: 'running',
+      startedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z').toISOString(),
+      executionHost: 'foreground',
+    })
+    runCapability.mockRejectedValue(new Error('Codex CLI timed out after 900s'))
+
+    const outcome = await runHarnessServerOnce({ cwd, configPath })
+    const updated = await loadWorkflowSession(cwd, 'harness', queued.id)
+
+    expect(outcome).toMatchObject({
+      processed: true,
+      sessionId: queued.id,
+      status: 'failed',
+    })
+    expect(updated?.status).toBe('blocked')
+    expect(updated?.summary).toContain('failure budget')
+    expect(updated?.evidence).toMatchObject({
+      runtime: {
+        retryCount: 1,
+        lastReliablePoint: 'failed',
+      },
+    })
+    const failureIndex = JSON.parse(readFileSync(join(cwd, '.magpie', 'failure-index.json'), 'utf-8')) as {
+      entries: Array<{ category: string; lastRecoveryAction: string }>
+    }
+    expect(failureIndex.entries.some((entry) => entry.category === 'failure_budget_exhausted')).toBe(true)
+  })
+
   it('marks non-retryable execution failures as failed', async () => {
     const {
       enqueueHarnessSession,
@@ -722,6 +1013,30 @@ integrations:
     expect(state?.status).toBe('running')
     expect(state?.executionHost).toBe('tmux')
     expect(state?.tmuxSession).toBe('magpie-harness-server-test')
+  })
+
+  it('blocks tmux launch when the operations tool category is denied', async () => {
+    const { launchHarnessServerInTmux } = await import('../../../src/capabilities/workflows/harness-server/runtime.js')
+    runtimeMocks.loadConfig.mockReturnValue({
+      capabilities: {
+        safety: {
+          permission_policy: {
+            tool_categories: {
+              operations: 'deny',
+            },
+          },
+        },
+      },
+      integrations: {
+        operations: {
+          default_provider: 'tmux',
+        },
+      },
+    })
+
+    await expect(launchHarnessServerInTmux({ cwd, configPath }))
+      .rejects.toThrow('Tool blocked by permission policy')
+    expect(runtimeMocks.launchCommand).not.toHaveBeenCalled()
   })
 
   it('stops a running tmux-backed server and clears the active pointer', async () => {

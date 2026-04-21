@@ -99,6 +99,18 @@ export function classifyFailureCategory(
   const message = collectMessageParts(fact)
   const metadata = fact.metadata || {}
 
+  if (metadata.failureKind === 'permission_denied' || message.includes('permission policy denied')) {
+    return 'permission_denied'
+  }
+
+  if (metadata.failureKind === 'failure_budget_exhausted' || message.includes('failure budget exhausted')) {
+    return 'failure_budget_exhausted'
+  }
+
+  if (metadata.failureKind === 'resource_limit' || message.includes('resource limit')) {
+    return 'resource_limit'
+  }
+
   if (
     metadata.checkpointMissing === true
     || metadata.stateMismatch === true
