@@ -50,6 +50,17 @@ interface WorkflowSessionFile {
   currentStage?: string
   updatedAt: string
   artifacts?: Record<string, string>
+  evidence?: unknown
+}
+
+interface HarnessCollaborationRole {
+  roleType?: string
+  responsibility?: string
+}
+
+interface HarnessCollaborationEvidence {
+  title?: string
+  roles?: HarnessCollaborationRole[]
 }
 
 interface HarnessRoleRoundSummary {
@@ -490,6 +501,68 @@ function buildHarnessSelectedDetail(summary: HarnessRoleRoundSummary | null): Se
   }
 }
 
+function readHarnessCollaboration(evidence: unknown): HarnessCollaborationEvidence | undefined {
+  if (!evidence || typeof evidence !== 'object') {
+    return undefined
+  }
+
+  const collaboration = (evidence as { collaboration?: unknown }).collaboration
+  if (!collaboration || typeof collaboration !== 'object') {
+    return undefined
+  }
+
+  const title = typeof (collaboration as { title?: unknown }).title === 'string'
+    ? (collaboration as { title: string }).title.trim()
+    : undefined
+  const roles = Array.isArray((collaboration as { roles?: unknown }).roles)
+    ? ((collaboration as { roles: unknown[] }).roles
+      .map((role): HarnessCollaborationRole | null => {
+        if (!role || typeof role !== 'object') {
+          return null
+        }
+
+        const roleType = typeof (role as { roleType?: unknown }).roleType === 'string'
+          ? (role as { roleType: string }).roleType.trim()
+          : undefined
+        const responsibility = typeof (role as { responsibility?: unknown }).responsibility === 'string'
+          ? (role as { responsibility: string }).responsibility.trim()
+          : undefined
+
+        return roleType || responsibility ? { roleType, responsibility } : null
+      })
+      .filter((role): role is HarnessCollaborationRole => role !== null))
+    : undefined
+
+  return title || roles?.length
+    ? { title, roles }
+    : undefined
+}
+
+function buildHarnessCollaborationDetail(evidence: unknown): Pick<NonNullable<SessionCard['selectedDetail']>, 'collaborationTemplate' | 'collaborationRoles'> | undefined {
+  const collaboration = readHarnessCollaboration(evidence)
+  if (!collaboration) {
+    return undefined
+  }
+
+  const collaborationRoles = (collaboration.roles || [])
+    .map((role) => {
+      if (role.roleType && role.responsibility) {
+        return `${role.roleType}: ${role.responsibility}`
+      }
+      return role.roleType || role.responsibility
+    })
+    .filter((line): line is string => Boolean(line?.trim()))
+
+  if (!collaboration.title && collaborationRoles.length === 0) {
+    return undefined
+  }
+
+  return {
+    ...(collaboration.title ? { collaborationTemplate: collaboration.title } : {}),
+    ...(collaborationRoles.length > 0 ? { collaborationRoles } : {}),
+  }
+}
+
 function summarizeReadyNodes(nodes: HarnessGraphNode[]): string {
   const readyNodes = nodes.filter((node) => node.state === 'ready').map((node) => node.id)
   return readyNodes.length > 0
@@ -640,6 +713,9 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
   const harnessSummary = session.capability === 'harness'
     ? buildHarnessSelectedDetail(latestHarnessRound)
     : undefined
+  const collaborationDetail = session.capability === 'harness'
+    ? buildHarnessCollaborationDetail(session.evidence)
+    : undefined
 
   return withResumeCommand({
     id: session.id,
@@ -649,6 +725,7 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
     detail: latestHarnessRound
       ? [
         session.currentStage || session.status,
+        collaborationDetail?.collaborationTemplate,
         harnessRoundIndex.map((round) => `${round.cycle}=${round.finalAction}`).join(', ') || latestHarnessRound.finalAction || 'unknown',
         buildHarnessParticipantSummary(latestHarnessRound),
         buildHarnessReasonSummary(latestHarnessRound),
@@ -658,13 +735,16 @@ async function mapWorkflowSession(session: WorkflowSessionFile): Promise<Session
       : graphInsight?.detailSummary
         ? [
           session.currentStage || session.status,
+          collaborationDetail?.collaborationTemplate,
           graphInsight.detailSummary,
           session.summary,
         ].filter((part): part is string => Boolean(part && part.trim())).join(' · ')
-      : undefined,
+      : collaborationDetail?.collaborationTemplate,
     selectedDetail: session.capability === 'harness'
       ? {
         reviewerSummaries: harnessSummary?.reviewerSummaries || [],
+        ...(collaborationDetail?.collaborationTemplate ? { collaborationTemplate: collaborationDetail.collaborationTemplate } : {}),
+        ...(collaborationDetail?.collaborationRoles ? { collaborationRoles: collaborationDetail.collaborationRoles } : {}),
         ...(harnessSummary?.participants ? { participants: harnessSummary.participants } : {}),
         ...(harnessSummary?.arbitration ? { arbitration: harnessSummary.arbitration } : {}),
         ...(harnessSummary?.nextStep ? { nextStep: harnessSummary.nextStep } : {}),

@@ -139,7 +139,7 @@ describe('publishFeishuTaskStatusFromConfig', () => {
     expect(requestBody.content).toContain('Status: waiting_retry')
     expect(requestBody.content).toContain('Stage: reviewing')
     expect(requestBody.content).toContain('Reason: Codex CLI timed out after 900s')
-    expect(requestBody.content).toContain('Next: retry scheduled at 2026-04-16T00:10:00.000Z')
+    expect(requestBody.content).toContain('Next: wait for retry at 2026-04-16T00:10:00.000Z')
     expect(requestBody.content).toContain('Inspect: magpie harness inspect harness-123')
   })
 

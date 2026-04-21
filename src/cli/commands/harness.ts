@@ -68,6 +68,11 @@ interface PersistedHarnessResumeEvidence {
     lastError?: string
     processId?: number
   }
+  collaboration?: {
+    templateId?: string
+    title?: string
+    roles?: Array<{ roleType?: string; responsibility?: string }>
+  }
 }
 
 interface HarnessRoundViewOptions {
@@ -1355,6 +1360,16 @@ harnessCommand
 
     await printDocumentPlanSummary(session.artifacts.documentPlanPath)
     await printKnowledgeInspectView(session.artifacts, legacyHarnessKnowledgeState(session))
+    const collaboration = (session.evidence as PersistedHarnessResumeEvidence | undefined)?.collaboration
+    if (collaboration?.title) {
+      console.log(`Collaboration template: ${collaboration.title}`)
+      const roles = collaboration.roles || []
+      roles.slice(0, 5).forEach((role) => {
+        if (role.roleType && role.responsibility) {
+          console.log(`  - ${role.roleType}: ${role.responsibility}`)
+        }
+      })
+    }
     const observability = await loadWorkflowObservabilitySummary(process.cwd(), 'harness', sessionId)
     if (observability) {
       console.log(`Observability: stage=${observability.stage || '-'} status=${observability.status} retries=${observability.retryCount} tools=${observability.tools.join(',') || '-'}`)

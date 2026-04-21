@@ -22,11 +22,12 @@ import type {
   ExecutionIsolationConfig,
   CapabilityToolPolicy,
   ToolLoadingConfig,
+  SkillsConfig,
   ResourceGuardConfig,
 } from './types.js'
 
 const ROUTE_REVIEWER_PROMPT = 'You are a senior technical reviewer. Focus on trade-offs, risk, correctness, and practical next steps.'
-export const CURRENT_CONFIG_VERSION = 26
+export const CURRENT_CONFIG_VERSION = 27
 const LEGACY_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/integration'
 const DEFAULT_INTEGRATION_TEST_COMMAND = 'npm run test:run -- tests/e2e'
 const LOOP_STAGE_NAMES: LoopStageName[] = [
@@ -511,6 +512,31 @@ function validateToolLoadingConfig(config: ToolLoadingConfig | undefined): void 
   }
 }
 
+function validateSkillsConfig(config: SkillsConfig | undefined): void {
+  if (!config) return
+  if (!isRecord(config)) {
+    throw new Error('Config error: capabilities.skills must be an object')
+  }
+  validateOptionalBoolean('capabilities.skills.enabled', config.enabled)
+  if (config.defaults !== undefined && !isRecord(config.defaults)) {
+    throw new Error('Config error: capabilities.skills.defaults must be an object')
+  }
+  for (const [capabilityId, skillIds] of Object.entries(config.defaults || {})) {
+    if (!Array.isArray(skillIds) || skillIds.some((id) => typeof id !== 'string' || id.trim().length === 0)) {
+      throw new Error(`Config error: capabilities.skills.defaults.${capabilityId} must be an array of non-empty strings`)
+    }
+  }
+  if (config.overrides !== undefined && !isRecord(config.overrides)) {
+    throw new Error('Config error: capabilities.skills.overrides must be an object')
+  }
+  for (const [skillId, override] of Object.entries(config.overrides || {})) {
+    if (!isRecord(override)) {
+      throw new Error(`Config error: capabilities.skills.overrides.${skillId} must be an object`)
+    }
+    validateOptionalBoolean(`capabilities.skills.overrides.${skillId}.enabled`, override.enabled)
+  }
+}
+
 function validateLoopConfig(
   loop: LoopConfig | undefined,
   reviewers: Record<string, ReviewerConfig>,
@@ -771,6 +797,7 @@ function validateConfig(config: MagpieConfigV2, raw: Record<string, unknown>): v
   validateSafetyConfig(config.capabilities.safety)
   validateExecutionIsolationConfig(config.capabilities.execution_isolation)
   validateToolLoadingConfig(config.capabilities.tool_loading)
+  validateSkillsConfig(config.capabilities.skills)
   validateResourceGuardConfig(config.capabilities.resource_guard)
   validateLoopConfig(config.capabilities.loop, config.reviewers, config.capabilities.discuss?.reviewers)
   validateHarnessConfig(config.capabilities.harness, config.reviewers)

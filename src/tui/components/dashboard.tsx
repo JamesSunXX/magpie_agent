@@ -200,6 +200,14 @@ export function Dashboard(props: {
 
       {selectedHarnessDetail ? (
         <Section title="Selected Harness Summary">
+          {selectedHarnessDetail.collaborationTemplate ? (
+            <Text>Template: {selectedHarnessDetail.collaborationTemplate}</Text>
+          ) : null}
+          {(selectedHarnessDetail.collaborationRoles || []).map((line, index) => (
+            <Text key={`${selectedCard?.id || 'harness'}-collaboration-${index}`}>
+              {line}
+            </Text>
+          ))}
           {selectedHarnessDetail.participants ? (
             <Text>Participants: {selectedHarnessDetail.participants}</Text>
           ) : null}

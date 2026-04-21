@@ -8,6 +8,7 @@ import {
   type InitNotificationsOptions,
   type InitOperationsOptions,
   type InitPlanningOptions,
+  type InitProfile,
   type ReviewerOption,
 } from '../../platform/config/init.js'
 
@@ -73,6 +74,29 @@ function parseCommaSeparated(input: string): string[] {
 function isAffirmative(input: string): boolean {
   const normalized = input.trim().toLowerCase()
   return normalized === 'y' || normalized === 'yes'
+}
+
+export function parseInitProfileSelection(answer: string): InitProfile {
+  const normalized = answer.trim().toLowerCase()
+  if (normalized === '2' || normalized === 'team') return 'team'
+  if (normalized === '3' || normalized === 'background') return 'background'
+  return 'local'
+}
+
+export async function promptForInitProfile(
+  ask: AskFn,
+  log: LogFn = console.log
+): Promise<InitProfile> {
+  log(chalk.cyan('\nChoose setup profile:\n'))
+  log('  1. Local development - simplest setup for local reviews and loop runs')
+  log('  2. Team collaboration - enables skills metadata for shared workflows')
+  log('  3. Background hosting - enables managed runs, skill checks, and resource guard defaults')
+  const answer = await ask(chalk.white('Profile [1]: '))
+  return parseInitProfileSelection(answer)
+}
+
+async function selectInitProfile(): Promise<InitProfile> {
+  return withPromptSession(ask => promptForInitProfile(ask))
 }
 
 function parsePositiveInteger(input: string): number | undefined {
@@ -200,6 +224,7 @@ interface InitCommandOptions {
 
 interface CollectInitInputsDependencies {
   availableReviewers?: ReviewerOption[]
+  selectProfile?: () => Promise<InitProfile>
   selectReviewers?: () => Promise<string[]>
   selectNotificationOptions?: () => Promise<InitNotificationsOptions | undefined>
   selectPlanningOptions?: () => Promise<InitPlanningOptions | undefined>
@@ -208,6 +233,7 @@ interface CollectInitInputsDependencies {
 }
 
 export interface CollectInitInputsResult {
+  profile?: InitProfile
   selectedReviewers?: string[]
   notificationOptions?: InitNotificationsOptions
   planningOptions?: InitPlanningOptions
@@ -230,18 +256,21 @@ export async function collectInitInputs(
   deps: CollectInitInputsDependencies = {}
 ): Promise<CollectInitInputsResult> {
   const availableReviewers = deps.availableReviewers || AVAILABLE_REVIEWERS
+  const chooseProfile = deps.selectProfile || selectInitProfile
   const chooseReviewers = deps.selectReviewers || selectReviewers
   const chooseNotificationOptions = deps.selectNotificationOptions || selectNotificationOptions
   const choosePlanningOptions = deps.selectPlanningOptions || selectPlanningOptions
   const chooseOperationsOptions = deps.selectOperationsOptions || selectOperationsOptions
   const log = deps.log || console.log
 
+  let profile: InitProfile | undefined
   let selectedReviewers: string[] | undefined
   let notificationOptions: InitNotificationsOptions | undefined
   let planningOptions: InitPlanningOptions | undefined
   let operationsOptions: InitOperationsOptions | undefined
 
   if (!options.yes) {
+    profile = await chooseProfile()
     selectedReviewers = await chooseReviewers()
 
     if (selectedReviewers.length === 0) {
@@ -275,6 +304,7 @@ export async function collectInitInputs(
   }
 
   return {
+    profile,
     selectedReviewers,
     notificationOptions,
     planningOptions,
@@ -317,6 +347,7 @@ export const initCommand = new Command('init')
       }
 
       const {
+        profile,
         selectedReviewers,
         notificationOptions,
         planningOptions,
@@ -324,6 +355,7 @@ export const initCommand = new Command('init')
       } = await collectInitInputs(options)
 
       const result = initConfigWithResult(undefined, selectedReviewers, {
+        profile,
         notifications: notificationOptions,
         planning: planningOptions,
         operations: operationsOptions,

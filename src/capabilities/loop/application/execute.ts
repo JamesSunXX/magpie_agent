@@ -4473,7 +4473,7 @@ async function executeRun(prepared: LoopPreparedInput, ctx: CapabilityContext): 
         ],
     reviewerIds: routingDecision?.reviewerIds,
   })
-  if (toolManifest.enabled) {
+  if (toolManifest.enabled || (toolManifest.skills || []).length > 0 || config.capabilities.skills?.enabled === true) {
     assertCapabilityToolManifestReady(toolManifest)
   }
   await mkdir(sessionDir, { recursive: true })

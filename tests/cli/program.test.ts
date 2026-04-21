@@ -127,6 +127,21 @@ describe('CLI program', () => {
     expect(stats).toBeTruthy()
   })
 
+  it('registers status and skills as top-level commands', () => {
+    const program = createProgram()
+    const status = program.commands.find((command) => command.name() === 'status')
+    const skills = program.commands.find((command) => command.name() === 'skills')
+
+    expect(status).toBeTruthy()
+    expect(skills).toBeTruthy()
+    expect(skills?.commands.map((subcommand) => subcommand.name())).toEqual([
+      'list',
+      'inspect',
+      'enable',
+      'disable',
+    ])
+  })
+
   it('registers doctor as a top-level command', () => {
     const program = createProgram()
     const doctor = program.commands.find((command) => command.name() === 'doctor')

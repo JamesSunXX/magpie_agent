@@ -48,7 +48,10 @@ export interface InitOperationsOptions {
   maxBufferBytes?: number
 }
 
+export type InitProfile = 'local' | 'team' | 'background'
+
 export interface InitConfigOptions {
+  profile?: InitProfile
   notifications?: InitNotificationsOptions
   planning?: InitPlanningOptions
   operations?: InitOperationsOptions
@@ -290,6 +293,20 @@ function buildDefaultToolLoadingConfig() {
         disabled: [],
       },
     },
+  }
+}
+
+function buildDefaultSkillsConfig(profile: InitProfile = 'local') {
+  const enabled = profile !== 'local'
+  return {
+    enabled,
+    defaults: {
+      review: ['guided-onboarding'],
+      loop: ['guided-onboarding', 'task-state'],
+      harness: ['task-state', 'multi-role-delivery', 'feishu-control'],
+      status: ['task-state'],
+    },
+    overrides: {},
   }
 }
 
@@ -691,6 +708,12 @@ function upgradeExistingConfig(content: string): { content: string; changes: str
   } else if (deepMergeMissing(capabilities.tool_loading, buildDefaultToolLoadingConfig())) {
     changes.push('Filled missing capabilities.tool_loading defaults.')
   }
+  if (!isObjectRecord(capabilities.skills)) {
+    capabilities.skills = buildDefaultSkillsConfig()
+    changes.push('Added capabilities.skills defaults.')
+  } else if (deepMergeMissing(capabilities.skills, buildDefaultSkillsConfig())) {
+    changes.push('Filled missing capabilities.skills defaults.')
+  }
   if (!isObjectRecord(capabilities.resource_guard)) {
     capabilities.resource_guard = buildDefaultResourceGuardConfig()
     changes.push('Added capabilities.resource_guard defaults.')
@@ -796,6 +819,9 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   const notifications = resolveNotificationsOptions(options)
   const planning = resolvePlanningOptions(options)
   const operations = resolveOperationsOptions(options)
+  const profile = options?.profile || 'local'
+  const profileEnablesManagedRuns = profile === 'background'
+  const profileEnablesSkills = profile !== 'local'
   const jiraCredentialLines = planning.jiraAuthMode === 'basic'
     ? `        username: ${yamlStringOrEnvRef(planning.jiraUsername)}
         password: ${yamlStringOrEnvRef(planning.jiraPassword)}`
@@ -810,6 +836,7 @@ export function generateConfig(selectedReviewerIds: string[], options?: InitConf
   return `# Magpie Configuration
 
 config_version: ${CURRENT_CONFIG_VERSION}
+onboarding_profile: ${profile}
 
 ${providersSection}
 
@@ -997,10 +1024,10 @@ capabilities:
       tool_categories:
         im: deny
   execution_isolation:
-    enabled: false
+    enabled: ${profileEnablesManagedRuns}
     mode: worktree
   tool_loading:
-    enabled: false
+    enabled: ${profileEnablesManagedRuns}
     globally_disabled: []
     capabilities:
       loop:
@@ -1011,8 +1038,16 @@ capabilities:
         required: []
         optional: [claude, codex, gemini, kiro, claw]
         disabled: []
+  skills:
+    enabled: ${profileEnablesSkills}
+    defaults:
+      review: [guided-onboarding]
+      loop: [guided-onboarding, task-state]
+      harness: [task-state, multi-role-delivery, feishu-control]
+      status: [task-state]
+    overrides: {}
   resource_guard:
-    enabled: false
+    enabled: ${profileEnablesManagedRuns}
     max_queue_size: 20
     max_concurrent_harness: 1
     max_task_runtime_ms: 3600000

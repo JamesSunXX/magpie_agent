@@ -169,6 +169,15 @@ describe('init CLI command helpers', () => {
     expect(result).toBeUndefined()
   })
 
+  it('parses onboarding profile answers with local development as default', async () => {
+    const { parseInitProfileSelection } = await import('../../src/cli/commands/init.js')
+
+    expect(parseInitProfileSelection('')).toBe('local')
+    expect(parseInitProfileSelection('2')).toBe('team')
+    expect(parseInitProfileSelection('3')).toBe('background')
+    expect(parseInitProfileSelection('unknown')).toBe('local')
+  })
+
   it('collects planning and operations options during interactive init', async () => {
     const log = vi.fn()
     const { collectInitInputs } = await import('../../src/cli/commands/init.js')
@@ -192,6 +201,7 @@ describe('init CLI command helpers', () => {
             needsApiKey: false,
           },
         ],
+        selectProfile: async () => 'team',
         selectReviewers: async () => ['claude-code', 'codex'],
         selectNotificationOptions: async () => undefined,
         selectPlanningOptions: async () => ({
@@ -213,6 +223,7 @@ describe('init CLI command helpers', () => {
     )
 
     expect(result).toEqual({
+      profile: 'team',
       selectedReviewers: ['claude-code', 'codex'],
       notificationOptions: undefined,
       planningOptions: {
@@ -265,6 +276,7 @@ describe('init CLI command helpers', () => {
             provider: 'openai',
           },
         ],
+        selectProfile: async () => 'local',
         selectReviewers: async () => [],
         selectNotificationOptions: async () => undefined,
         selectPlanningOptions: async () => undefined,
@@ -289,6 +301,7 @@ describe('init CLI command helpers', () => {
             provider: 'openai',
           },
         ],
+        selectProfile: async () => 'local',
         selectReviewers: async () => ['gpt'],
         selectNotificationOptions: async () => undefined,
         selectPlanningOptions: async () => undefined,
@@ -340,6 +353,20 @@ describe('init CLI command helpers', () => {
     expect(content).toContain('model: gemini-cli')
     expect(content).toContain('rescue:')
     expect(content).toContain('tool: kiro')
+  })
+
+  it('generates profile-specific defaults for background hosting', async () => {
+    const { generateConfig } = await vi.importActual<typeof import('../../src/platform/config/init.js')>(
+      '../../src/platform/config/init.js'
+    )
+
+    const content = generateConfig(['codex', 'gemini-cli'], { profile: 'background' })
+
+    expect(content).toContain('onboarding_profile: background')
+    expect(content).toContain('resource_guard:')
+    expect(content).toContain('enabled: true')
+    expect(content).toContain('tool_loading:')
+    expect(content).toContain('skills:')
   })
 
   it('upgrades config via --upgrade with dry-run and custom path', async () => {

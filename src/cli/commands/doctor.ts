@@ -39,6 +39,10 @@ export const doctorCommand = new Command('doctor')
       console.log(chalk.cyan(
         `Doctor summary: ${result.summary.pass} passed, ${result.summary.warn} warnings, ${result.summary.fail} failed.`
       ))
+      console.log(chalk.cyan(`Ready: ${result.readiness.headline}`))
+      result.readiness.nextSteps.forEach(step => {
+        console.log(chalk.white(`  Next: ${step}`))
+      })
 
       if (result.summary.fail > 0) {
         console.error(chalk.red('Doctor found blocking issues.'))

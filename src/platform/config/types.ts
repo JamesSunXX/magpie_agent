@@ -494,6 +494,18 @@ export interface ToolLoadingConfig {
   capabilities?: Record<string, CapabilityToolPolicy>
 }
 
+export type SkillCapabilityId = 'review' | 'discuss' | 'trd' | 'loop' | 'harness' | 'workflow' | 'status'
+
+export interface SkillOverrideConfig {
+  enabled?: boolean
+}
+
+export interface SkillsConfig {
+  enabled?: boolean
+  defaults?: Partial<Record<string, string[]>>
+  overrides?: Record<string, SkillOverrideConfig>
+}
+
 export interface FailureBudgetConfig {
   max_stage_retries?: number
   max_task_failures?: number
@@ -521,6 +533,7 @@ export interface CapabilitiesConfig {
   safety?: SafetyConfig
   execution_isolation?: ExecutionIsolationConfig
   tool_loading?: ToolLoadingConfig
+  skills?: SkillsConfig
   resource_guard?: ResourceGuardConfig
   issue_fix?: IssueFixConfig
   docs_sync?: DocsSyncConfig
@@ -532,6 +545,7 @@ export interface CapabilitiesConfig {
 
 export interface MagpieConfigV2 {
   config_version?: number
+  onboarding_profile?: 'local' | 'team' | 'background'
   providers: {
     anthropic?: ProviderConfig
     openai?: ProviderConfig

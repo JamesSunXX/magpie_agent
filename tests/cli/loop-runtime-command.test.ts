@@ -89,6 +89,68 @@ describe('loop CLI runtime command', () => {
     logSpy.mockRestore()
   })
 
+  it('prints key runtime progress events during loop execution', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    runCapability.mockImplementation(async (_capability, _input, ctx) => {
+      const observer = (ctx as { metadata?: { loopProgress?: { onEvent?: (event: Record<string, unknown>) => void } } })
+        .metadata?.loopProgress
+      observer?.onEvent?.({
+        sessionId: 'loop-1',
+        ts: '2026-04-21T00:00:00.000Z',
+        event: 'stage_entered',
+        stage: 'prd_review',
+      })
+      observer?.onEvent?.({
+        sessionId: 'loop-1',
+        ts: '2026-04-21T00:00:01.000Z',
+        event: 'provider_progress',
+        stage: 'prd_review',
+        provider: 'codex',
+        progressType: 'error',
+        summary: 'Reconnecting... 2/5',
+      })
+      observer?.onEvent?.({
+        sessionId: 'loop-1',
+        ts: '2026-04-21T00:00:02.000Z',
+        event: 'trd_convergence_cycle_completed',
+        stage: 'trd_generation',
+        cycle: 2,
+        decision: 'revise_trd',
+        rationale: 'Need rollback strategy',
+      })
+      observer?.onEvent?.({
+        sessionId: 'loop-1',
+        ts: '2026-04-21T00:00:03.000Z',
+        event: 'loop_completed',
+      })
+
+      return {
+        output: {
+          summary: 'Loop completed successfully.',
+          details: {
+            id: 'loop-1',
+            status: 'completed',
+            artifacts: {
+              humanConfirmationPath: '/tmp/human_confirmation.md',
+            },
+          },
+        },
+      }
+    })
+
+    const { loopCommand } = await import('../../src/cli/commands/loop.js')
+    await loopCommand.parseAsync(
+      ['node', 'loop', 'run', 'Ship checkout v2', '--prd', '/tmp/prd.md'],
+      { from: 'node' }
+    )
+
+    expect(logSpy).toHaveBeenCalledWith('[loop] Stage started: prd review')
+    expect(logSpy).toHaveBeenCalledWith('[loop] prd review codex: Reconnecting... 2/5')
+    expect(logSpy).toHaveBeenCalledWith('[loop] TRD convergence cycle 2 completed: revise_trd (Need rollback strategy)')
+    expect(logSpy).toHaveBeenCalledWith('[loop] Session completed: loop-1')
+    logSpy.mockRestore()
+  })
+
   it('forwards host overrides and prints workspace metadata', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     runCapability.mockResolvedValue({

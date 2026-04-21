@@ -80,6 +80,8 @@ export interface SessionCard {
   detail?: string
   graphPath?: string
   selectedDetail?: {
+    collaborationTemplate?: string
+    collaborationRoles?: string[]
     participants?: string
     reviewerSummaries: string[]
     arbitration?: string

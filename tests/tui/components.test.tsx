@@ -135,6 +135,12 @@ describe('TUI components', () => {
             title: 'Deliver checkout v2',
             detail: 'reviewing · 1=revise · dev+2 reviewers+arbitrator · revise: reviewer-1: Missing rollback handling · Fix rollback handling before rerun.',
             selectedDetail: {
+              collaborationTemplate: 'Formal requirement',
+              collaborationRoles: [
+                'architect: Plan the delivery path and constraints.',
+                'developer: Make the implementation change.',
+                'reviewer: Review correctness, risk, and gaps.',
+              ],
               participants: 'developer, 2 reviewers, arbitrator',
               reviewerSummaries: [
                 'security: revise - Missing rollback handling.',
@@ -164,6 +170,10 @@ describe('TUI components', () => {
     })
 
     expect(normalizedText(element)).toContain('Participants: developer, 2 reviewers, arbitrator')
+    expect(normalizedText(element)).toContain('Template: Formal requirement')
+    expect(normalizedText(element)).toContain('architect: Plan the delivery path and constraints.')
+    expect(normalizedText(element)).toContain('developer: Make the implementation change.')
+    expect(normalizedText(element)).toContain('reviewer: Review correctness, risk, and gaps.')
     expect(normalizedText(element)).toContain('security: revise - Missing rollback handling.')
     expect(normalizedText(element)).toContain('Decision: revise - Need another cycle after rollback fixes.')
     expect(normalizedText(element)).toContain('Next: Fix rollback handling before rerun.')

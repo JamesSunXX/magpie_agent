@@ -18,6 +18,7 @@ import type { KnowledgeState } from '../../knowledge/runtime.js'
 import { formatLocalDateTime } from '../../platform/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 import { applyLoopConfirmationDecision, type ConfirmationDecisionOptions } from './human-confirmation-actions.js'
+import type { LoopProgressObserver, LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
 
 interface SharedLoopOptions {
   config?: string
@@ -36,6 +37,116 @@ interface LoopConfirmOptions extends Pick<SharedLoopOptions, 'config'> {
   reason?: string
 }
 
+interface LoopCliProgressState {
+  printed: Set<string>
+}
+
+function humanizeLoopStage(stage: string | undefined): string {
+  return (stage || 'unknown').replaceAll('_', ' ')
+}
+
+function extractEventString(event: LoopRuntimeEvent, key: string): string | undefined {
+  const value = (event as unknown as Record<string, unknown>)[key]
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function extractEventNumber(event: LoopRuntimeEvent, key: string): number | undefined {
+  const value = (event as unknown as Record<string, unknown>)[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function dedupeLoopProgress(state: LoopCliProgressState, key: string, message: string): string | null {
+  if (state.printed.has(key)) {
+    return null
+  }
+  state.printed.add(key)
+  return message
+}
+
+function buildLoopProgressLine(event: LoopRuntimeEvent, state: LoopCliProgressState): string | null {
+  const stage = humanizeLoopStage(event.stage)
+  const summary = event.summary?.trim() ? event.summary.trim() : undefined
+  const reason = event.reason?.trim() ? event.reason.trim() : undefined
+  const provider = event.provider || 'provider'
+
+  switch (event.event) {
+    case 'loop_started':
+      return dedupeLoopProgress(state, `loop_started:${event.sessionId}`, `[loop] Started session ${event.sessionId}`)
+    case 'stage_entered':
+      return `[loop] Stage started: ${stage}`
+    case 'provider_progress': {
+      if (event.progressType === 'error') {
+        return `[loop] ${stage} ${provider}: ${summary || 'Progress error'}`
+      }
+      if (event.progressType === 'thread.started') {
+        return dedupeLoopProgress(
+          state,
+          `provider_thread_started:${event.sessionId}:${event.stage}:${provider}`,
+          `[loop] ${stage} ${provider} connected`
+        )
+      }
+      if (event.progressType === 'turn.started') {
+        return dedupeLoopProgress(
+          state,
+          `provider_turn_started:${event.sessionId}:${event.stage}:${provider}`,
+          `[loop] ${stage} ${provider} running`
+        )
+      }
+      return null
+    }
+    case 'trd_convergence_cycle_started': {
+      const cycle = event.cycle ?? extractEventNumber(event, 'cycle')
+      return `[loop] TRD convergence cycle ${cycle || '?'} started`
+    }
+    case 'trd_convergence_cycle_completed': {
+      const cycle = event.cycle ?? extractEventNumber(event, 'cycle')
+      const decision = extractEventString(event, 'decision')
+      const rationale = extractEventString(event, 'rationale')
+      return `[loop] TRD convergence cycle ${cycle || '?'} completed: ${decision || 'unknown'}${rationale ? ` (${rationale})` : ''}`
+    }
+    case 'stage_completed': {
+      const confidence = extractEventNumber(event, 'confidence')
+      const rerouteToStage = extractEventString(event, 'rerouteToStage')
+      return `[loop] Stage completed: ${stage}${typeof confidence === 'number' ? ` (confidence ${confidence.toFixed(2)})` : ''}${rerouteToStage ? ` -> reroute ${humanizeLoopStage(rerouteToStage)}` : ''}`
+    }
+    case 'stage_rerouted': {
+      const rerouteToStage = extractEventString(event, 'rerouteToStage')
+      return `[loop] Stage rerouted: ${stage}${rerouteToStage ? ` -> ${humanizeLoopStage(rerouteToStage)}` : ''}${reason ? ` (${reason})` : ''}`
+    }
+    case 'stage_failed':
+      return `[loop] Stage failed: ${stage}${reason ? ` (${reason})` : ''}`
+    case 'loop_paused':
+      return `[loop] Paused at stage: ${stage}`
+    case 'loop_failed':
+      return `[loop] Failed at stage: ${stage}${reason ? ` (${reason})` : ''}`
+    case 'loop_completed':
+      return dedupeLoopProgress(state, `loop_completed:${event.sessionId}`, `[loop] Session completed: ${event.sessionId}`)
+    case 'provider_fallback_applied': {
+      const from = extractEventString(event, 'fromProvider')
+      const to = extractEventString(event, 'toProvider')
+      return `[loop] Provider fallback: ${from || 'unknown'} -> ${to || 'unknown'}${reason ? ` (${reason})` : ''}`
+    }
+    default:
+      return null
+  }
+}
+
+function createLoopCliProgressObserver(log: (line: string) => void): LoopProgressObserver {
+  const state: LoopCliProgressState = {
+    printed: new Set<string>(),
+  }
+
+  return {
+    onEvent(event) {
+      const line = buildLoopProgressLine(event, state)
+      if (!line) {
+        return
+      }
+      log(line)
+    },
+  }
+}
+
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
   const registry = createDefaultCapabilityRegistry({ configPath: options.config })
   const capability = getTypedCapability<
@@ -45,9 +156,14 @@ async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): 
     LoopSummaryOutput
   >(registry, 'loop')
 
+  const loopProgress = input.mode === 'run' || input.mode === 'resume'
+    ? createLoopCliProgressObserver((line) => console.log(line))
+    : undefined
+  const metadata = loopProgress ? { loopProgress } : undefined
   const ctx = createCapabilityContext({
     cwd: process.cwd(),
     configPath: options.config,
+    metadata,
   })
 
   const { output } = await runCapability(capability, input, ctx)

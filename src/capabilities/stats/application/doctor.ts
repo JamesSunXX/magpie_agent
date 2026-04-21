@@ -24,6 +24,11 @@ export interface DoctorRunResult {
   configPath: string
   checks: DoctorCheckResult[]
   summary: DoctorSummary
+  readiness: {
+    ready: boolean
+    headline: string
+    nextSteps: string[]
+  }
 }
 
 export interface DoctorInput {
@@ -195,10 +200,12 @@ export function runDoctorChecks(
   }
 
   if (!hasConfig) {
+    const summary = summarize(checks)
     return {
       configPath,
       checks,
-      summary: summarize(checks),
+      summary,
+      readiness: buildReadiness(summary, checks),
     }
   }
 
@@ -224,6 +231,7 @@ export function runDoctorChecks(
       configPath,
       checks,
       summary: summarize(checks),
+      readiness: buildReadiness(summarize(checks), checks),
     }
   }
 
@@ -293,5 +301,33 @@ export function runDoctorChecks(
     configPath,
     checks,
     summary: summarize(checks),
+    readiness: buildReadiness(summarize(checks), checks),
+  }
+}
+
+function buildReadiness(summary: DoctorSummary, checks: DoctorCheckResult[]): DoctorRunResult['readiness'] {
+  if (summary.fail > 0) {
+    return {
+      ready: false,
+      headline: 'Fix blocking issues before running tasks.',
+      nextSteps: checks
+        .filter((check) => check.status === 'fail')
+        .map((check) => check.fixCommand || check.message)
+        .slice(0, 3),
+    }
+  }
+
+  if (summary.warn > 0) {
+    return {
+      ready: true,
+      headline: 'Ready, with warnings to review.',
+      nextSteps: ['Run `magpie status` to check current tasks.', 'Run `magpie review --local` for a first review.'],
+    }
+  }
+
+  return {
+    ready: true,
+    headline: 'Ready to run Magpie tasks.',
+    nextSteps: ['Run `magpie status` to check current tasks.', 'Run `magpie review --local` for a first review.'],
   }
 }

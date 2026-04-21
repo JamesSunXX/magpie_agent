@@ -11,6 +11,11 @@ import {
 import { FeishuImClient } from './client.js'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
+import {
+  formatTaskStatus,
+  nextActionForTask,
+  type UnifiedTaskStatus,
+} from '../../../../core/status/task-status.js'
 
 type TaskStatusInput = {
   capability: 'loop' | 'harness'
@@ -46,35 +51,6 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
   }
 }
 
-function inspectCommand(capability: 'loop' | 'harness', sessionId: string): string {
-  return `magpie ${capability} inspect ${sessionId}`
-}
-
-function nextActionForStatus(input: {
-  capability: 'loop' | 'harness'
-  sessionId: string
-  status: string
-  nextRetryAt?: string
-  reason?: string
-}): string {
-  if (input.nextRetryAt) {
-    return `retry scheduled at ${input.nextRetryAt}`
-  }
-  if (input.status === 'paused_for_human' || input.status === 'blocked') {
-    return `review locally with ${inspectCommand(input.capability, input.sessionId)}`
-  }
-  if (input.status === 'waiting_retry') {
-    return 'waiting for the next retry window'
-  }
-  if (input.status === 'failed') {
-    return `inspect the failure with ${inspectCommand(input.capability, input.sessionId)}`
-  }
-  if (input.status === 'completed') {
-    return 'no action required'
-  }
-  return 'task is still running'
-}
-
 function formatStatusLines(input: {
   capability: 'loop' | 'harness'
   sessionId: string
@@ -85,18 +61,31 @@ function formatStatusLines(input: {
   reason?: string
   nextRetryAt?: string
 }): string {
-  const lines = [
-    `${input.capability} task status`,
-    `Session: ${input.sessionId}`,
-    `Status: ${input.status}`,
-  ]
-  if (input.title) lines.push(`Title: ${input.title}`)
-  if (input.stage) lines.push(`Stage: ${input.stage}`)
-  if (input.summary) lines.push(`Summary: ${input.summary}`)
-  if (input.reason) lines.push(`Reason: ${input.reason}`)
-  lines.push(`Next: ${nextActionForStatus(input)}`)
-  lines.push(`Inspect: ${inspectCommand(input.capability, input.sessionId)}`)
-  return lines.join('\n')
+  const task: UnifiedTaskStatus = {
+    capability: input.capability,
+    sessionId: input.sessionId,
+    title: input.title || input.sessionId,
+    status: input.status,
+    kind: input.status === 'completed'
+      ? 'completed'
+      : input.status === 'failed'
+        ? 'failed'
+        : input.status === 'queued'
+          ? 'queued'
+          : input.status === 'blocked' || input.status === 'paused_for_human' || input.status === 'waiting_retry'
+            ? 'waiting'
+            : 'running',
+    ...(input.stage ? { stage: input.stage } : {}),
+    ...(input.summary ? { summary: input.summary } : {}),
+    ...(input.reason ? { reason: input.reason } : {}),
+    nextAction: nextActionForTask({
+      capability: input.capability,
+      sessionId: input.sessionId,
+      status: input.status,
+      ...(input.nextRetryAt ? { nextRetryAt: input.nextRetryAt } : {}),
+    }),
+  }
+  return formatTaskStatus(task)
 }
 
 async function buildHarnessStatusReply(

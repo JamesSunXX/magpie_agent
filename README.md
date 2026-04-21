@@ -20,6 +20,8 @@ Magpie 是一个面向工程协作的多模型 CLI。它把代码评审、技术
 - `harness`：需求到交付的闭环入口
 - `harness-server`：后台托管 harness 队列
 - `im-server`：接收飞书回调并驱动人工确认、命令发单和表单发单
+- `status`：查看最近任务状态、失败原因和下一步动作
+- `skills`：查看和启停本地任务技能
 - `workflow issue-fix`、`docs-sync`、`post-merge-regression`
 - `memory`：查看、编辑、提炼用户记忆和项目记忆；只会沉淀稳定结论
 - `tui`：任务工作台
@@ -61,10 +63,16 @@ magpie init
 # 2) 体检当前环境和配置
 magpie doctor
 
-# 3) 打开任务入口
+# 3) 查看当前任务状态
+magpie status
+
+# 4) 查看可用技能
+magpie skills list
+
+# 5) 打开任务入口
 magpie tui
 
-# 4) 看当前配置里的评审人
+# 6) 看当前配置里的评审人
 magpie reviewers list
 
 # 5) 评审本地改动
@@ -115,7 +123,15 @@ magpie workflow docs-sync
 magpie memory show --project
 ```
 
+`magpie init` 现在会先选择使用场景：本地开发、团队协作、后台托管。默认是本地开发；后台托管会打开更适合长任务的隔离、技能和资源保护默认值。`magpie doctor` 会在检查项之外给出“能不能开始跑任务”和下一步建议。
+
+`magpie status` 会聚合最近的 loop / harness 任务，直接显示任务现在处于运行、等待、失败、完成还是排队，以及下一步该看哪里。飞书里的 `/magpie status` 使用同一套状态摘要，避免本地和飞书看到的说法不一致。
+
+`magpie skills` 管理本地任务技能。技能描述任务需要的能力、适用入口和依赖工具；`loop` / `harness` 会把本次任务实际技能和工具写入会话里的 `tool-manifest.json`。团队协作和后台托管场景会默认启用技能记录和门禁；本地开发场景下，单独启用某个技能也会让它参与任务开始前检查。当前技能只来自本地内置目录和配置，不做远程市场或在线安装。
+
 `trd` 会把当前仓库可执行的最小约束落到 `.magpie/constraints.json`。`loop` 现在把开发主线拆成 10 个正式阶段。前三段分别产出需求决策卡、拆分卡和执行卡；随后 `milestone_planning` 会在动代码前写出里程碑计划；开发中段拆成准备开发、确认失败基线、实施改动、实现后补修；后两段保留为正式验证阶段，失败时会明确标记成验证返工或联调返工。正式阶段可以按 `primary/reviewer/rescue` 配置工具，异常轮次会继承当前阶段的 `rescue`。每个阶段结束后都会留下结构化交接卡，`loop inspect` 也能直接看到最新交接卡路径，方便接着跑。
+
+前台执行 `magpie loop run|resume` 时，终端会实时打印关键进度（阶段进入、provider 重连错误、TRD 收敛轮次、阶段完成/回退），便于判断是否在正常推进。
 
 如果想把 `unit_mock_test` 复用到 Java、Go 或别的项目，不一定非要沿用默认的 `unit_test` / `mock_test` 命令名。现在可以直接在 `capabilities.loop.commands.unit_mock_test_steps` 里按顺序写项目自己的检查步骤，每一步自己起名字、自己填命令；只有没配这组步骤时，才会回退到原来的旧配置。
 
@@ -143,7 +159,7 @@ magpie memory show --project
 
 `memory` 同步项目记忆时会过滤不稳定条目。带有明显不确定表达（例如 `maybe`、`possible`、`TBD`、`待确认`、`可能`）或标记为低稳定性的内容，不会写入项目记忆；只有稳定且可复用的结论才会被沉淀。
 
-`harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。评审、仲裁和附加检查如果命中已知的 Gemini 模型不存在错误，会自动切到 Kiro 重试当前步骤，避免整轮直接挂掉。`harness` 进入内层 `loop` 前仍会把内层确认策略压成 `manual_only`，避免外层多模型评审和内层阶段确认叠两次。现在如果内层 `loop` 失败但已经留下可继续的工作区和下一步线索，外层 `harness` 会停在 `blocked`，后续直接 `harness resume` 就会沿用同一个开发现场继续；重新执行同样的 `harness submit` 也会优先接回最近一条同目标、同 PRD 的可恢复会话，而不是再开一条重复会话。人工确认不再要求手改 `human_confirmation.md`：可以直接用 `magpie harness confirm <session-id> --approve` 或 `--reject --reason "..."` 处理关联的内层 loop 决策，批准后会自动恢复 harness，驳回后会自动发起 discuss 并生成新的短决策卡。真正的确认状态保存在关联 loop 会话里，`human_confirmation.md` 只保留成摘要和旧会话兼容层。每一轮会把参与者、评审结论、仲裁结果和下一步单独落盘，所以 `status`、`inspect`、`attach` 和 TUI 都能直接看最近一轮，`status/inspect` 也可以用 `--cycle` 指定回看某一轮。图谱会话已经能在 `status`、`inspect` 和 `list` 里看到图谱总览；需要钻到单个节点时，可以用 `status --node <id>` 或 `inspect --node <id>`。现在在 `magpie tui` 里选中带图谱的 harness 会话后按 `Enter`，会进入独立图谱工作台：可以切换节点、看节点详情、区分“当前要注意什么”和“最近发生了什么”，还可以直接批准/拒绝等待中的 gate，或者跳到关联 loop/harness 会话的现有入口。如果图谱卡在“等批准”，也可以继续用 `harness approve` 或 `harness reject` 对整张图或指定节点写入决定，结果会落盘并立刻影响后续可运行节点。
+`harness` 的默认评审人和每轮附加检查工具可以放在 `capabilities.harness` 里配置；如果没配，才会回退到代码内置默认值。评审、仲裁和附加检查如果命中已知的 Gemini 模型不存在错误，会自动切到 Kiro 重试当前步骤，避免整轮直接挂掉。`harness` 进入内层 `loop` 前仍会把内层确认策略压成 `manual_only`，避免外层多模型评审和内层阶段确认叠两次。现在如果内层 `loop` 失败但已经留下可继续的工作区和下一步线索，外层 `harness` 会停在 `blocked`，后续直接 `harness resume` 就会沿用同一个开发现场继续；重新执行同样的 `harness submit` 也会优先接回最近一条同目标、同 PRD 的可恢复会话，而不是再开一条重复会话。人工确认不再要求手改 `human_confirmation.md`：可以直接用 `magpie harness confirm <session-id> --approve` 或 `--reject --reason "..."` 处理关联的内层 loop 决策，批准后会自动恢复 harness，驳回后会自动发起 discuss 并生成新的短决策卡。真正的确认状态保存在关联 loop 会话里，`human_confirmation.md` 只保留成摘要和旧会话兼容层。每一轮会把参与者、评审结论、仲裁结果和下一步单独落盘，所以 `status`、`inspect`、`attach` 和 TUI 都能直接看最近一轮；TUI 选中 harness 会话时也会显示协作模板和角色职责，`status/inspect` 可以用 `--cycle` 指定回看某一轮。图谱会话已经能在 `status`、`inspect` 和 `list` 里看到图谱总览；需要钻到单个节点时，可以用 `status --node <id>` 或 `inspect --node <id>`。现在在 `magpie tui` 里选中带图谱的 harness 会话后按 `Enter`，会进入独立图谱工作台：可以切换节点、看节点详情、区分“当前要注意什么”和“最近发生了什么”，还可以直接批准/拒绝等待中的 gate，或者跳到关联 loop/harness 会话的现有入口。如果图谱卡在“等批准”，也可以继续用 `harness approve` 或 `harness reject` 对整张图或指定节点写入决定，结果会落盘并立刻影响后续可运行节点。
 
 如果开启阶段通知里的 `stage_ai` 摘要，可以用 `integrations.notifications.stage_ai.timeout_ms` 控制它最长等多久；超时后会直接回退到内置摘要，不会卡住主流程。
 

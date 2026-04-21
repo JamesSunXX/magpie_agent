@@ -9,6 +9,10 @@ import type {
   RoutingDecision,
   RoutingSignalBreakdown,
 } from '../../platform/config/types.js'
+import {
+  assertSkillManifestReady,
+  resolveSkillManifestForCapability,
+} from '../../core/skills/catalog.js'
 
 export type RuntimeCapabilityId =
   | 'review'
@@ -32,6 +36,8 @@ export interface CapabilityToolManifest {
   disabledTools: string[]
   blockedTools: string[]
   missingRequiredTools: string[]
+  skills?: string[]
+  missingRequiredSkillTools?: string[]
   ready: boolean
 }
 
@@ -246,7 +252,12 @@ export function resolveCapabilityToolManifest(input: {
     disabledTools.includes(tool) || (allowedTools !== null && !allowedTools.has(tool))
   )
   const missingRequiredTools = requiredTools.filter(tool => !isToolProviderEnabled(input.config, tool))
-  const ready = !enabled || (blockedTools.length === 0 && missingRequiredTools.length === 0)
+  const skillManifest = resolveSkillManifestForCapability({
+    capabilityId: input.capabilityId,
+    config: input.config,
+  })
+  const ready = (!enabled || (blockedTools.length === 0 && missingRequiredTools.length === 0))
+    && skillManifest.ready
 
   return {
     schemaVersion: 1,
@@ -258,6 +269,8 @@ export function resolveCapabilityToolManifest(input: {
     disabledTools,
     blockedTools,
     missingRequiredTools,
+    skills: skillManifest.skills,
+    missingRequiredSkillTools: skillManifest.missingRequiredTools,
     ready,
   }
 }
@@ -267,7 +280,18 @@ export function assertCapabilityToolManifestReady(manifest: CapabilityToolManife
   const reasons = [
     manifest.blockedTools.length > 0 ? `blocked tools: ${manifest.blockedTools.join(', ')}` : '',
     manifest.missingRequiredTools.length > 0 ? `missing required tools: ${manifest.missingRequiredTools.join(', ')}` : '',
+    (manifest.missingRequiredSkillTools || []).length > 0 ? `missing skill tools: ${manifest.missingRequiredSkillTools?.join(', ')}` : '',
   ].filter(Boolean).join('; ')
+  if ((manifest.missingRequiredSkillTools || []).length > 0 && reasons === `missing skill tools: ${manifest.missingRequiredSkillTools?.join(', ')}`) {
+    assertSkillManifestReady({
+      schemaVersion: 1,
+      capabilityId: manifest.capabilityId,
+      enabled: true,
+      skills: manifest.skills || [],
+      missingRequiredTools: manifest.missingRequiredSkillTools || [],
+      ready: false,
+    })
+  }
   throw new Error(`Capability ${manifest.capabilityId} cannot start because required tools are unavailable: ${reasons}. Enable the provider or update capabilities.tool_loading before retrying.`)
 }
 

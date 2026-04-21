@@ -50,6 +50,7 @@ import {
   type RoleOpenIssue,
   type RoleReviewResult,
 } from '../../../../core/roles/index.js'
+import { getCollaborationTemplate } from '../../../../core/roles/templates.js'
 import type {
   HarnessCycle,
   HarnessPreparedInput,
@@ -141,6 +142,11 @@ interface PersistedHarnessResumeEvidence {
     lastError?: string
     lastReliablePoint?: string
     processId?: number
+  }
+  collaboration?: {
+    templateId: string
+    title: string
+    roles: Array<{ roleType: string; responsibility: string }>
   }
 }
 
@@ -759,6 +765,7 @@ function buildPersistedHarnessResumeEvidence(
     ? existingEvidence
     : {}) as Partial<PersistedHarnessResumeEvidence>
 
+  const template = getCollaborationTemplate('formal_requirement')
   return {
     ...evidence,
     input: {
@@ -780,6 +787,11 @@ function buildPersistedHarnessResumeEvidence(
       ...(typeof evidence.runtime?.lastError === 'string' ? { lastError: evidence.runtime.lastError } : {}),
       lastReliablePoint: evidence.runtime?.lastReliablePoint || 'queued',
       ...(Number.isInteger(evidence.runtime?.processId) ? { processId: Number(evidence.runtime?.processId) } : {}),
+    },
+    collaboration: evidence.collaboration || {
+      templateId: template.id,
+      title: template.title,
+      roles: template.roles,
     },
   }
 }
@@ -2291,7 +2303,7 @@ async function executeHarnessInternal(
       agent: binding.agent,
     })),
   })
-  if (toolManifest.enabled) {
+  if (toolManifest.enabled || (toolManifest.skills || []).length > 0 || config.capabilities.skills?.enabled === true) {
     assertCapabilityToolManifestReady(toolManifest)
   }
   await writeFile(toolManifestPath, JSON.stringify(toolManifest, null, 2), 'utf-8')

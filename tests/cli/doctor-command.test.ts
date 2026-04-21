@@ -35,6 +35,11 @@ describe('doctor CLI command', () => {
         warn: 0,
         fail: 0,
       },
+      readiness: {
+        ready: true,
+        headline: 'Ready to run Magpie tasks.',
+        nextSteps: ['Run `magpie review --local`.'],
+      },
     })
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -48,6 +53,8 @@ describe('doctor CLI command', () => {
       configPath: '/tmp/config.yaml',
     })
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Doctor summary: 2 passed, 0 warnings, 0 failed.'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Ready: Ready to run Magpie tasks.'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Next: Run `magpie review --local`.'))
     expect(errorSpy).not.toHaveBeenCalled()
     expect(process.exitCode).toBe(0)
 
@@ -72,6 +79,11 @@ describe('doctor CLI command', () => {
         warn: 0,
         fail: 1,
       },
+      readiness: {
+        ready: false,
+        headline: 'Fix blocking issues before running tasks.',
+        nextSteps: ['export OPENAI_API_KEY=your_key_here'],
+      },
     })
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -81,6 +93,7 @@ describe('doctor CLI command', () => {
     await doctorCommand.parseAsync(['node', 'doctor'], { from: 'node' })
 
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Fix: export OPENAI_API_KEY=your_key_here'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Ready: Fix blocking issues before running tasks.'))
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Doctor found blocking issues'))
     expect(process.exitCode).toBe(1)
 

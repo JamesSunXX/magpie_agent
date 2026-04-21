@@ -249,6 +249,51 @@ describe('session dashboard', () => {
     })
   })
 
+  it('surfaces persisted harness collaboration templates for selected TUI detail', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
+    const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
+
+    mkdirSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-collab'), { recursive: true })
+
+    writeFileSync(join(repoDir, '.magpie', 'sessions', 'harness', 'harness-collab', 'session.json'), JSON.stringify({
+      id: 'harness-collab',
+      capability: 'harness',
+      title: 'Deliver formal requirement',
+      createdAt: '2026-03-19T09:00:00.000Z',
+      updatedAt: '2026-03-19T11:00:00.000Z',
+      status: 'blocked',
+      currentStage: 'reviewing',
+      summary: 'Waiting for review fix.',
+      artifacts: {
+        eventsPath: '/tmp/workflow/events.jsonl',
+      },
+      evidence: {
+        collaboration: {
+          templateId: 'formal_requirement',
+          title: 'Formal requirement',
+          roles: [
+            { roleType: 'architect', responsibility: 'Plan the delivery path and constraints.' },
+            { roleType: 'developer', responsibility: 'Make the implementation change.' },
+            { roleType: 'reviewer', responsibility: 'Review correctness, risk, and gaps.' },
+          ],
+        },
+      },
+    }), 'utf-8')
+
+    const result = await loadSessionDashboard({ cwd: repoDir, magpieHomeDir })
+    const harnessCard = result.continue[0]
+
+    expect(harnessCard.detail).toContain('Formal requirement')
+    expect(harnessCard.selectedDetail).toMatchObject({
+      collaborationTemplate: 'Formal requirement',
+      collaborationRoles: [
+        'architect: Plan the delivery path and constraints.',
+        'developer: Make the implementation change.',
+        'reviewer: Review correctness, risk, and gaps.',
+      ],
+    })
+  })
+
   it('uses default approved wording when a harness round has no explicit next-step brief', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'magpie-tui-repo-'))
     const magpieHomeDir = mkdtempSync(join(tmpdir(), 'magpie-tui-home-'))
