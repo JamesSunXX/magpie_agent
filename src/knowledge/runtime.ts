@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
 import { join, resolve } from 'path'
+import { compactContextSections } from '../core/debate/context-compaction.js'
 import { getMagpieHomeDir } from '../platform/paths.js'
 import {
   loadPersistentMemoryContext,
@@ -15,6 +16,7 @@ export interface KnowledgeArtifacts {
   knowledgeStatePath: string
   knowledgeSummaryDir: string
   knowledgeCandidatesPath: string
+  knowledgeCompactionPath?: string
 }
 
 export type KnowledgeCandidateType = 'decision' | 'failure-pattern' | 'workflow-rule'
@@ -71,7 +73,15 @@ export interface PromotionResult {
   deferred: KnowledgeCandidate[]
 }
 
+export interface RenderKnowledgeContextOptions {
+  maxChars?: number
+  preferCompactedSummary?: boolean
+}
+
 const SUMMARY_ORDER = ['goal', 'plan', 'open-issues', 'evidence', 'final']
+const DEFAULT_KNOWLEDGE_CONTEXT_MAX_CHARS = 6000
+const DEFAULT_STAGE_DIGEST_COUNT = 3
+const DEFAULT_COMPACTED_CONTEXT_PLACEHOLDER = '# Compacted Context\n\nNo compaction generated yet.\n'
 
 function knowledgeDirFromArtifacts(artifacts: KnowledgeArtifacts): string {
   return resolve(artifacts.knowledgeSummaryDir, '..')
@@ -79,6 +89,10 @@ function knowledgeDirFromArtifacts(artifacts: KnowledgeArtifacts): string {
 
 function summaryPath(artifacts: KnowledgeArtifacts, name: string): string {
   return join(artifacts.knowledgeSummaryDir, `${name}.md`)
+}
+
+function compactionPath(artifacts: KnowledgeArtifacts): string {
+  return artifacts.knowledgeCompactionPath || summaryPath(artifacts, 'context-compacted')
 }
 
 async function safeRead(path: string): Promise<string> {
@@ -188,6 +202,7 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
     knowledgeStatePath: join(knowledgeDir, 'state.json'),
     knowledgeSummaryDir,
     knowledgeCandidatesPath: join(knowledgeDir, 'candidates.json'),
+    knowledgeCompactionPath: join(knowledgeSummaryDir, 'context-compacted.md'),
   }
 
   await mkdir(knowledgeSummaryDir, { recursive: true })
@@ -205,6 +220,7 @@ export async function createTaskKnowledge(options: CreateTaskKnowledgeOptions): 
   await writeFile(summaryPath(artifacts, 'plan'), '# Plan\n\nPlan not available yet.\n', 'utf-8')
   await writeFile(summaryPath(artifacts, 'open-issues'), '# Open Issues\n\n- None yet.\n', 'utf-8')
   await writeFile(summaryPath(artifacts, 'evidence'), '# Evidence\n\n- No evidence recorded yet.\n', 'utf-8')
+  await writeFile(compactionPath(artifacts), DEFAULT_COMPACTED_CONTEXT_PLACEHOLDER, 'utf-8')
   await writeFile(artifacts.knowledgeStatePath, `${JSON.stringify(toKnowledgeState({
     currentStage: 'queued',
     lastReliableResult: 'Knowledge scaffold created.',
@@ -366,7 +382,7 @@ async function listMarkdownFileNames(dir: string): Promise<string[]> {
 }
 
 async function listSummaryNames(artifacts: KnowledgeArtifacts): Promise<string[]> {
-  const entries = await listMarkdownEntries(artifacts.knowledgeSummaryDir)
+  const entries = await listMarkdownFileNames(artifacts.knowledgeSummaryDir)
   return entries.map((entry) => entry.replace(/\.md$/, ''))
 }
 
@@ -538,28 +554,130 @@ async function loadGlobalContext(repoRoot: string): Promise<string> {
   return sections.length > 0 ? `Repository knowledge:\n${sections.join('\n')}` : ''
 }
 
+async function readRecentStageDigests(artifacts: KnowledgeArtifacts, count: number): Promise<string[]> {
+  const stageEntries = (await listSummaryNames(artifacts))
+    .filter((name) => name.startsWith('stage-'))
+    .sort()
+    .reverse()
+    .slice(0, count)
+
+  const digests = await Promise.all(stageEntries.map(async (name) => {
+    const raw = stripMarkdown(await safeRead(summaryPath(artifacts, name)))
+    if (!raw) return ''
+    const label = name.replace(/^stage-/, '')
+    return `${label}: ${raw.slice(0, 200)}`
+  }))
+
+  return digests.filter(Boolean)
+}
+
+async function writeCompactedContextSummary(artifacts: KnowledgeArtifacts, content: string): Promise<void> {
+  await mkdir(artifacts.knowledgeSummaryDir, { recursive: true })
+  await writeFile(compactionPath(artifacts), `${content.trim()}\n`, 'utf-8')
+}
+
+function compactedContextHeader(compacted: ReturnType<typeof compactContextSections>): string {
+  const omitted = compacted.omittedSections.length > 0
+    ? ` omitted: ${compacted.omittedSections.join(', ')}.`
+    : ''
+  return `Context compacted from ${compacted.originalLength} to ${compacted.finalLength} chars.${omitted}`
+}
+
 export async function renderKnowledgeContext(
   artifacts: KnowledgeArtifacts,
-  repoRoot: string
+  repoRoot: string,
+  options: RenderKnowledgeContextOptions = {}
 ): Promise<string> {
   const snapshot = await loadInspectSnapshot(artifacts)
   const global = await loadGlobalContext(repoRoot)
   const memory = await loadPersistentMemoryContext(repoRoot)
+  const stageDigests = await readRecentStageDigests(artifacts, DEFAULT_STAGE_DIGEST_COUNT)
+  const maxChars = options.maxChars ?? DEFAULT_KNOWLEDGE_CONTEXT_MAX_CHARS
+
+  const compacted = compactContextSections([
+    {
+      title: 'Goal summary',
+      content: snapshot.goal || '(missing)',
+      priority: 'critical',
+    },
+    {
+      title: 'Current state',
+      content: [
+        `Current stage: ${snapshot.state.currentStage || '(missing)'}`,
+        `Last reliable result: ${snapshot.state.lastReliableResult || '(missing)'}`,
+        `Current blocker: ${snapshot.state.currentBlocker || '(none)'}`,
+      ].join('\n'),
+      priority: 'critical',
+    },
+    {
+      title: 'Retained decisions',
+      content: [
+        snapshot.latestSummary || '(missing)',
+        ...(stageDigests.length > 0 ? stageDigests.map((digest) => `- ${digest}`) : ['- No prior stage digests']),
+      ].join('\n'),
+      priority: 'high',
+    },
+    {
+      title: 'Pending actions',
+      content: [
+        `Next action: ${snapshot.state.nextAction || '(missing)'}`,
+        `Open issues: ${snapshot.openIssues || '(none)'}`,
+      ].join('\n'),
+      priority: 'critical',
+    },
+    {
+      title: 'Evidence',
+      content: snapshot.evidence || '(none)',
+      priority: 'normal',
+    },
+    {
+      title: 'Persistent memory',
+      content: memory || '(none)',
+      priority: 'high',
+    },
+    {
+      title: 'Repository knowledge',
+      content: global || '(none)',
+      priority: 'low',
+    },
+  ], maxChars)
+
+  if (compacted.compacted) {
+    const summary = [
+      '# Compacted Context',
+      '',
+      compactedContextHeader(compacted),
+      '',
+      compacted.text,
+    ].join('\n')
+    await writeCompactedContextSummary(artifacts, summary)
+
+    if (options.preferCompactedSummary) {
+      return [
+        'Task knowledge context (compacted summary):',
+        '',
+        summary,
+      ].join('\n')
+    }
+
+    return [
+      'Task knowledge context (compacted):',
+      '',
+      compactedContextHeader(compacted),
+      '',
+      compacted.text,
+    ].join('\n')
+  }
+
+  if (options.preferCompactedSummary) {
+    await writeCompactedContextSummary(artifacts, DEFAULT_COMPACTED_CONTEXT_PLACEHOLDER)
+  }
 
   return [
     'Task knowledge context:',
     '',
-    `Goal summary: ${snapshot.goal || '(missing)'}`,
-    `Current stage: ${snapshot.state.currentStage || '(missing)'}`,
-    `Last reliable result: ${snapshot.state.lastReliableResult || '(missing)'}`,
-    `Next action: ${snapshot.state.nextAction || '(missing)'}`,
-    `Current blocker: ${snapshot.state.currentBlocker || '(none)'}`,
-    `Latest summary: ${snapshot.latestSummary || '(missing)'}`,
-    `Open issues: ${snapshot.openIssues || '(none)'}`,
-    `Evidence: ${snapshot.evidence || '(none)'}`,
-    memory ? `Persistent memory:\n${memory}` : '',
-    global,
-  ].filter(Boolean).join('\n')
+    compacted.text,
+  ].join('\n')
 }
 
 export async function loadInspectSnapshot(artifacts: KnowledgeArtifacts): Promise<InspectSnapshot> {

@@ -184,6 +184,83 @@ describe('knowledge runtime', () => {
     expect(context).toContain('Prefer staged rollout with canary verification before full release.')
   })
 
+  it('compacts oversized context and reuses compacted summary when requested', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-compaction-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const sessionDir = mkdtempSync(join(tmpdir(), 'magpie-knowledge-session-'))
+    const repoRoot = join(tmpdir(), 'magpie-knowledge-repo-compact')
+    const artifacts = await createTaskKnowledge({
+      sessionDir,
+      capability: 'loop',
+      sessionId: 'loop-compact',
+      title: 'Compact context',
+      goal: 'Keep loop context stable under long runs',
+    })
+
+    const longText = 'stable rollout constraint '.repeat(300)
+    await updateTaskKnowledgeSummary(artifacts, 'open-issues', `- ${longText}`, 'Open issues expanded.')
+    await updateTaskKnowledgeSummary(artifacts, 'stage-prd-review', `# Stage prd_review\n\n${longText}`, 'Stage digest expanded.')
+    await updateTaskKnowledgeState(artifacts, {
+      currentStage: 'implementation',
+      lastReliableResult: 'Domain boundaries confirmed.',
+      nextAction: 'Implement retry-safe execution path.',
+      currentBlocker: 'Need final test evidence.',
+    }, 'State expanded.')
+
+    const compacted = await renderKnowledgeContext(artifacts, repoRoot, { maxChars: 900 })
+    const preferred = await renderKnowledgeContext(artifacts, repoRoot, { preferCompactedSummary: true })
+
+    expect(compacted).toContain('Task knowledge context (compacted):')
+    expect(compacted).toContain('Retained decisions')
+    expect(compacted).toContain('Pending actions')
+    expect(compacted.length).toBeLessThanOrEqual(1300)
+    expect(preferred).toContain('Task knowledge context (compacted summary):')
+    expect(preferred).toContain('Compacted Context')
+    expect(readFileSync(artifacts.knowledgeCompactionPath!, 'utf-8')).toContain('Compacted Context')
+  })
+
+  it('refreshes compacted summary content before preferred reuse', async () => {
+    magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-compaction-refresh-'))
+    process.env.MAGPIE_HOME = magpieHome
+
+    const sessionDir = mkdtempSync(join(tmpdir(), 'magpie-knowledge-session-'))
+    const repoRoot = join(tmpdir(), 'magpie-knowledge-repo-compact-refresh')
+    const artifacts = await createTaskKnowledge({
+      sessionDir,
+      capability: 'loop',
+      sessionId: 'loop-compact-refresh',
+      title: 'Compact context refresh',
+      goal: 'Keep compacted summary fresh during resume',
+    })
+
+    const longText = 'stable rollout constraint '.repeat(300)
+    await updateTaskKnowledgeSummary(artifacts, 'open-issues', `- ${longText}`, 'Open issues expanded.')
+    await updateTaskKnowledgeState(artifacts, {
+      currentStage: 'implementation',
+      lastReliableResult: 'Domain boundaries confirmed.',
+      nextAction: 'Implement retry-safe execution path.',
+      currentBlocker: 'Need final test evidence.',
+    }, 'State expanded.')
+
+    const first = await renderKnowledgeContext(artifacts, repoRoot, {
+      maxChars: 900,
+      preferCompactedSummary: true,
+    })
+    expect(first).toContain('Need final test evidence.')
+
+    await updateTaskKnowledgeState(artifacts, {
+      currentBlocker: 'Need integration retry evidence.',
+    }, 'Blocker changed.')
+
+    const refreshed = await renderKnowledgeContext(artifacts, repoRoot, {
+      maxChars: 900,
+      preferCompactedSummary: true,
+    })
+    expect(refreshed).toContain('Need integration retry evidence.')
+    expect(refreshed).not.toContain('Need final test evidence.')
+  })
+
   it('syncs only promoted knowledge into project memory', async () => {
     magpieHome = mkdtempSync(join(tmpdir(), 'magpie-knowledge-memory-sync-'))
     process.env.MAGPIE_HOME = magpieHome

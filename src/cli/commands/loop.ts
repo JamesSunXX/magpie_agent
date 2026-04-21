@@ -15,7 +15,7 @@ import type { ExecutionHost } from '../../platform/integrations/operations/types
 import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js'
 import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
-import { formatLocalDateTime } from '../../shared/utils/time.js'
+import { formatLocalDateTime } from '../../platform/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 import { applyLoopConfirmationDecision, type ConfirmationDecisionOptions } from './human-confirmation-actions.js'
 
@@ -37,7 +37,7 @@ interface LoopConfirmOptions extends Pick<SharedLoopOptions, 'config'> {
 }
 
 async function runLoop(input: LoopCapabilityInput, options: SharedLoopOptions): Promise<void> {
-  const registry = createDefaultCapabilityRegistry()
+  const registry = createDefaultCapabilityRegistry({ configPath: options.config })
   const capability = getTypedCapability<
     LoopCapabilityInput,
     LoopPreparedInput,

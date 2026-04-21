@@ -5,7 +5,7 @@ import {
   stopHarnessServer,
   summarizeHarnessServer,
 } from '../../capabilities/workflows/harness-server/runtime.js'
-import { formatLocalDateTime } from '../../shared/utils/time.js'
+import { formatLocalDateTime } from '../../platform/time.js'
 
 export const harnessServerCommand = new Command('harness-server')
   .description('Run the persistent harness background server')

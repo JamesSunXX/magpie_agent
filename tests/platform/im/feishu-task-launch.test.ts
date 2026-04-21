@@ -5,8 +5,6 @@ import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sendRootTextMessageMock = vi.hoisted(() => vi.fn())
-const isHarnessServerRunningMock = vi.hoisted(() => vi.fn())
-const enqueueHarnessSessionMock = vi.hoisted(() => vi.fn())
 const launchMagpieInTmuxMock = vi.hoisted(() => vi.fn())
 const canLaunchMagpieInTmuxMock = vi.hoisted(() => vi.fn())
 
@@ -16,11 +14,6 @@ vi.mock('../../../src/platform/integrations/im/feishu/client.js', () => ({
       sendRootTextMessage: sendRootTextMessageMock,
     }
   }),
-}))
-
-vi.mock('../../../src/capabilities/workflows/harness-server/runtime.js', () => ({
-  isHarnessServerRunning: isHarnessServerRunningMock,
-  enqueueHarnessSession: enqueueHarnessSessionMock,
 }))
 
 vi.mock('../../../src/cli/commands/tmux-launch.js', () => ({
@@ -34,17 +27,12 @@ describe('launchFeishuTask', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sendRootTextMessageMock.mockResolvedValue({ messageId: 'om_task_root' })
-    isHarnessServerRunningMock.mockResolvedValue(false)
     canLaunchMagpieInTmuxMock.mockReturnValue(true)
     launchMagpieInTmuxMock.mockResolvedValue({
       sessionId: 'loop-1234',
       tmuxSession: 'magpie-loop-1234',
       tmuxWindow: '@1',
       tmuxPane: '%1',
-    })
-    enqueueHarnessSessionMock.mockResolvedValue({
-      id: 'harness-queued-1',
-      status: 'queued',
     })
   })
 
@@ -107,10 +95,9 @@ describe('launchFeishuTask', () => {
     )
   })
 
-  it('queues a harness task when harness-server is running', async () => {
+  it('launches a harness task in tmux and binds a Feishu thread', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'magpie-feishu-launch-'))
     dirs.push(cwd)
-    isHarnessServerRunningMock.mockResolvedValue(true)
 
     const { launchFeishuTask } = await import('../../../src/platform/integrations/im/feishu/task-launch.js')
     const result = await launchFeishuTask(cwd, {
@@ -127,17 +114,28 @@ describe('launchFeishuTask', () => {
       chatId: 'oc_chat',
     })
 
-    expect(result.status).toBe('queued')
-    expect(result.capability).toBe('harness')
-    expect(enqueueHarnessSessionMock).toHaveBeenCalledWith(
+    expect(result).toEqual({
+      capability: 'harness',
+      sessionId: 'loop-1234',
+      threadId: 'om_task_root',
+      status: 'running',
+    })
+    expect(launchMagpieInTmuxMock).toHaveBeenCalledWith({
+      capability: 'harness',
       cwd,
-      expect.objectContaining({
-        goal: 'Deliver payment retry flow',
-        prdPath: 'docs/plans/payment-retry.md',
-        priority: 'high',
-      }),
-      expect.any(Object)
-    )
+      configPath: undefined,
+      argv: [
+        'harness',
+        'submit',
+        'Deliver payment retry flow',
+        '--prd',
+        'docs/plans/payment-retry.md',
+        '--host',
+        'foreground',
+        '--priority',
+        'high',
+      ],
+    })
   })
 
   it('fails before sending a thread when tmux launch is unavailable', async () => {

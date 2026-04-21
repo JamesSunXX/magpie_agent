@@ -41,7 +41,7 @@ import { printKnowledgeInspectView, printKnowledgeSummary } from './knowledge.js
 import { printDocumentPlanSummary } from './document-plan.js'
 import type { KnowledgeState } from '../../knowledge/runtime.js'
 import type { ExecutionHost } from '../../platform/integrations/operations/types.js'
-import { formatLocalDateTime } from '../../shared/utils/time.js'
+import { formatLocalDateTime } from '../../platform/time.js'
 import { launchMagpieInTmux } from './tmux-launch.js'
 import { StateManager } from '../../state/state-manager.js'
 import { applyLoopConfirmationDecision, type ConfirmationDecisionOptions } from './human-confirmation-actions.js'
@@ -786,7 +786,7 @@ async function runHarnessWithSession(
   options: HarnessCommandOptions,
   sessionId?: string
 ): Promise<void> {
-  const registry = createDefaultCapabilityRegistry()
+  const registry = createDefaultCapabilityRegistry({ configPath: options.config })
   const capability = getTypedCapability<HarnessInput, HarnessPreparedInput, HarnessResult, HarnessSummary>(
     registry,
     'harness'

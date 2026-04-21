@@ -2,7 +2,7 @@ import { readFile } from 'fs/promises'
 import type { WorkflowSession } from '../../capabilities/workflows/shared/runtime.js'
 import type { HarnessRuntimeEvent } from '../../capabilities/workflows/harness/progress.js'
 import type { LoopRuntimeEvent } from '../../capabilities/loop/progress.js'
-import { formatLocalDateTime } from '../../shared/utils/time.js'
+import { formatLocalDateTime } from '../../platform/time.js'
 
 type HarnessDisplayEvent = Pick<HarnessRuntimeEvent, 'timestamp' | 'type' | 'stage' | 'cycle' | 'summary'>
 type LoopDisplayEvent = Pick<LoopRuntimeEvent, 'ts' | 'event' | 'stage' | 'cycle' | 'summary' | 'provider' | 'progressType'>
